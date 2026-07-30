@@ -166,4 +166,16 @@ await runJob(async () => {
   console.log(`${map.size} CUSIP->ticker pairs (+${map.size - before} this run)`);
   console.log(`${files} files read, ${missing} not published, ${sec.requestCount} SEC requests`);
   console.log(`written to ${OUT}`);
+
+  // This map is ENRICHMENT, not data. An empty one means holdings render with
+  // the issuer name the filer typed instead of a ticker — degraded, still
+  // correct, and never a reason to stop a pipeline run. Say so loudly rather
+  // than failing, because the alternative (a hard exit) throws away a full
+  // universe ingest over a cosmetic column.
+  if (map.size === 0) {
+    console.log(
+      "::warning::no CUSIP->ticker pairs resolved. Holdings will show issuer " +
+        "names without tickers. This does not affect any value or share figure.",
+    );
+  }
 });

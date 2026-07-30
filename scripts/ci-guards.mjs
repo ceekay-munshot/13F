@@ -63,6 +63,40 @@ function fail(guard, file, msg) {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // The liveness probe must stay cheap and static.
+  //
+  // It once probed `cgi-bin/browse-edgar` — a dynamic CGI script and the most
+  // 503-prone path on sec.gov — which made the probe less reliable than the
+  // work it guards. A 503 there killed a full universe ingest before it ran.
+  // The probe answers one question ("is this IP blocked?"), so it must target a
+  // static CDN file over HEAD, and only a 403 may stop a run.
+  // -------------------------------------------------------------------------
+  {
+    const g = "preflight-probe-is-cheap";
+    checks.push(g);
+    if (existsSync(fetchFile)) {
+      const src = readFileSync(fetchFile, "utf8");
+      const probe = /probe:\s*\(\)\s*=>\s*["'`]([^"'`]+)["'`]/.exec(src);
+      if (!probe) {
+        fail(g, fetchFile, "SEC_URLS.probe is missing — the preflight target must be declared there.");
+      } else if (/cgi-bin|\?/.test(probe[1])) {
+        fail(g, fetchFile, `the preflight probes a dynamic endpoint (${probe[1]}). It must be a static file.`);
+      }
+      const pf = /async preflight\(\)\s*\{[\s\S]*?\n  \}/.exec(src);
+      if (pf && !/method:\s*["']HEAD["']/.test(pf[0])) {
+        fail(g, fetchFile, "the preflight must use HEAD so the probe transfers no body.");
+      }
+      if (pf && /throw err/.test(pf[0])) {
+        fail(
+          g,
+          fetchFile,
+          "the preflight rethrows a non-403. Only a 403 is a block; anything else is inconclusive and must let the run proceed.",
+        );
+      }
+    }
+  }
+
   // And nothing else may talk to sec.gov directly.
   for (const f of [...walk(join(ROOT, "scripts"), [".mjs"]), ...walk(join(ROOT, "functions"), [".js"])]) {
     if (f.endsWith("_sec-fetch.mjs") || f.endsWith("ci-guards.mjs")) continue;

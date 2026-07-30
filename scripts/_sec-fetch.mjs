@@ -75,7 +75,8 @@ export class SecFetchError extends Error {
 
 const DEFAULT_RPS = 5; // stated ceiling is 10 across ALL sec.gov hosts; leave headroom
 const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 4;
+const RETRY_BASE_MS = 2000; // 2s, 6s, 18s — see _backoff()
 
 export class SecFetcher {
   /**
@@ -84,9 +85,18 @@ export class SecFetcher {
    *   space-separated, quoted verbatim from the SEC Webmaster FAQ. NOT a
    *   browser UA. Requests without one get an "Undeclared Automated Tool" page.
    * @param {number} [opts.rps]
+   * @param {number} [opts.maxAttempts]
+   * @param {number} [opts.retryBaseMs]  exposed so tests can drive the retry
+   *   ladder without sleeping through it.
    * @param {(msg: string) => void} [opts.log]
    */
-  constructor({ userAgent, rps = DEFAULT_RPS, log = () => {} } = {}) {
+  constructor({
+    userAgent,
+    rps = DEFAULT_RPS,
+    maxAttempts = MAX_ATTEMPTS,
+    retryBaseMs = RETRY_BASE_MS,
+    log = () => {},
+  } = {}) {
     if (!userAgent || !/\S+@\S+\.\S+/.test(userAgent)) {
       throw new Error(
         "SEC_USER_AGENT must be set and must contain a contact email, " +
@@ -95,10 +105,24 @@ export class SecFetcher {
     }
     this.userAgent = userAgent;
     this.minIntervalMs = Math.ceil(1000 / rps);
+    this.maxAttempts = maxAttempts;
+    this.retryBaseMs = retryBaseMs;
     this.log = log;
     this.requestCount = 0;
     this.blocked = false;
     this._nextSlot = 0;
+  }
+
+  /**
+   * Exponential backoff with jitter: ~2s, ~6s, ~18s.
+   *
+   * Linear 5s/10s was too shallow for the sec.gov edge under load — a burst of
+   * 503s inside 15 seconds killed a whole pipeline run. Tripling gives the far
+   * side ~26s to recover across three retries, which is short enough to stay
+   * inside a job timeout and long enough to outlast the transient.
+   */
+  _backoff(attempt) {
+    return Math.round(this.retryBaseMs * 3 ** (attempt - 1) * (0.85 + Math.random() * 0.3));
   }
 
   /** Single-flight token bucket with jitter. Serializes ALL SEC traffic. */
@@ -123,13 +147,15 @@ export class SecFetcher {
   /**
    * @param {string} url
    * @param {object} [opts]
+   * @param {'GET'|'HEAD'} [opts.method]  HEAD is for liveness probes: it answers
+   *   "will this IP be served?" without transferring a body.
    * @param {string} [opts.accept]
    * @param {'text'|'json'|'buffer'} [opts.as]
    * @param {string} [opts.etag]          previous ETag -> conditional request
    * @param {string} [opts.lastModified]  previous Last-Modified
    * @returns {Promise<{status:number, notModified:boolean, body:any, etag:string|null, lastModified:string|null}>}
    */
-  async get(url, { accept, as = "text", etag, lastModified } = {}) {
+  async get(url, { method = "GET", accept, as = "text", etag, lastModified } = {}) {
     if (this.blocked) {
       throw new SecBlockedError(url, this.requestCount);
     }
@@ -140,17 +166,17 @@ export class SecFetcher {
     if (accept) conditional.Accept = accept;
 
     let lastErr;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
       await this._throttle();
       this.requestCount++;
 
       let res;
       try {
-        res = await fetch(url, { headers: this._headers(conditional) });
+        res = await fetch(url, { method, headers: this._headers(conditional) });
       } catch (err) {
         lastErr = err;
-        if (attempt === MAX_ATTEMPTS) break;
-        await sleep(attempt * 2000);
+        if (attempt === this.maxAttempts) break;
+        await sleep(this._backoff(attempt));
         continue;
       }
 
@@ -169,11 +195,13 @@ export class SecFetcher {
 
       if (res.ok) {
         const body =
-          as === "buffer"
-            ? Buffer.from(await res.arrayBuffer())
-            : as === "json"
-              ? await res.json()
-              : await res.text();
+          method === "HEAD"
+            ? null
+            : as === "buffer"
+              ? Buffer.from(await res.arrayBuffer())
+              : as === "json"
+                ? await res.json()
+                : await res.text();
         return {
           status: res.status,
           notModified: false,
@@ -183,9 +211,9 @@ export class SecFetcher {
         };
       }
 
-      if (RETRY_STATUSES.has(res.status) && attempt < MAX_ATTEMPTS) {
-        const wait = attempt * 5000;
-        this.log(`  ${res.status} on ${url}; retrying in ${wait}ms (${attempt}/${MAX_ATTEMPTS})`);
+      if (RETRY_STATUSES.has(res.status) && attempt < this.maxAttempts) {
+        const wait = this._backoff(attempt);
+        this.log(`  ${res.status} on ${url}; retrying in ${wait}ms (${attempt}/${this.maxAttempts})`);
         await sleep(wait);
         lastErr = new SecFetchError(url, res.status, null);
         continue;
@@ -201,14 +229,39 @@ export class SecFetcher {
    * Cheap probe run FIRST by every job. If our IP is blocked we find out after
    * one request instead of part-way through a batch, and we stop having spent
    * essentially nothing.
+   *
+   * ---------------------------------------------------------------------------
+   * THE PROBE ASKS EXACTLY ONE QUESTION: "IS THIS IP BLOCKED?"
+   * ---------------------------------------------------------------------------
+   * Two properties follow from that, and both were learned the hard way when a
+   * probe failure took down a run that had nothing wrong with it.
+   *
+   * 1. It targets a STATIC file over HEAD, not `cgi-bin/browse-edgar`.
+   *    browse-edgar is a dynamic CGI script — the slowest, busiest, most
+   *    frequently 503-ing path on sec.gov. Probing liveness through the least
+   *    reliable endpoint available means the probe fails more often than the
+   *    thing it is protecting. A HEAD against a CDN-served static file
+   *    transfers zero bytes and answers the same question.
+   *
+   * 2. A non-403 failure is INCONCLUSIVE, not fatal. A 503 says the SEC is
+   *    busy; it says nothing about whether we are blocked. Treating it as fatal
+   *    converts someone else's load spike into our outage — which is precisely
+   *    the class of failure this whole module exists to avoid. So we log it and
+   *    proceed: the real fetches carry their own retries and will fail on their
+   *    own merits if the SEC is genuinely unreachable.
+   *
+   * Only a 403 is decisive, and only a 403 stops the run.
    */
   async preflight() {
     try {
-      await this.get("https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR&count=1&output=atom");
+      await this.get(SEC_URLS.probe(), { method: "HEAD" });
       return { ok: true };
     } catch (err) {
       if (err instanceof SecBlockedError) return { ok: false, blocked: true, error: err.message };
-      throw err;
+      this.log(
+        `  preflight probe inconclusive (${err.message}) — not a 403, so not a block. Proceeding.`,
+      );
+      return { ok: true, degraded: true, error: err.message };
     }
   }
 }
@@ -306,4 +359,11 @@ export const SEC_URLS = {
 
   companyTickers: () => "https://www.sec.gov/files/company_tickers.json",
   companyTickersExchange: () => "https://www.sec.gov/files/company_tickers_exchange.json",
+
+  /**
+   * Liveness probe target. MUST be a static, CDN-served file — see the comment
+   * on SecFetcher.preflight(). Probed with HEAD, so its size is irrelevant and
+   * nothing is transferred.
+   */
+  probe: () => "https://www.sec.gov/files/company_tickers.json",
 };

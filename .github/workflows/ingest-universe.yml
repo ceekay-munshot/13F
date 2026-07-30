@@ -65,11 +65,29 @@ jobs:
       - name: Correctness gates
         run: npm run check
 
+      # ENRICHMENT, NOT DATA — and therefore continue-on-error.
+      #
+      # This step resolves CUSIPs to tickers. If it fails, holdings render with
+      # the issuer name the filer typed instead of a ticker: a cosmetic
+      # degradation that changes no value, share count, or delta. It previously
+      # ran without this guard and a transient SEC 503 killed the whole job
+      # BEFORE the ingest and the R2 publish had run — throwing away the entire
+      # universe refresh over a display column.
+      #
+      # The outcome is surfaced in the summary rather than swallowed, so a
+      # persistently failing map is visible without being fatal.
       - name: Refresh CUSIP to ticker map
+        id: securities
+        continue-on-error: true
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '5'
         run: node scripts/build-securities.mjs --months=6
+
+      - name: Note degraded enrichment
+        if: steps.securities.outcome != 'success'
+        run: |
+          echo "::warning::CUSIP->ticker refresh failed — holdings will show issuer names without tickers. Values and deltas are unaffected."
 
       - name: Ingest universe
         env:
@@ -96,8 +114,17 @@ jobs:
         if: always()
         run: |
           echo '### Universe ingest' >> "$GITHUB_STEP_SUMMARY"
-          echo "objects: $(find public/data -type f | wc -l)" >> "$GITHUB_STEP_SUMMARY"
-          echo "size: $(du -sh public/data | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d public/data ]; then
+            echo "objects: $(find public/data -type f | wc -l)" >> "$GITHUB_STEP_SUMMARY"
+            echo "size: $(du -sh public/data | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "objects: none — ingest did not produce a tree" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${{ steps.securities.outcome }}" = "success" ]; then
+            echo "ticker map: refreshed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ticker map: **not refreshed** (holdings show issuer names; values unaffected)" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Open or update failure issue
         if: failure()

@@ -79,7 +79,11 @@ jobs:
       - name: Correctness gates
         run: npm run check
 
+      # continue-on-error: this is a display column, not data. A transient SEC
+      # 503 here must never cost the filings ingest that follows it.
       - name: Refresh CUSIP to ticker map
+        id: securities
+        continue-on-error: true
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '5'
@@ -87,6 +91,11 @@ jobs:
         # a short window each day is enough to stay current without re-reading a
         # year of archives every run.
         run: node scripts/build-securities.mjs --months=4
+
+      - name: Note degraded enrichment
+        if: steps.securities.outcome != 'success'
+        run: |
+          echo "::warning::CUSIP->ticker refresh failed — holdings will show issuer names without tickers. Values and deltas are unaffected."
 
       - name: Ingest filings and build artifacts
         env:
