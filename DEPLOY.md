@@ -84,6 +84,45 @@ After that it runs on three daily slots. `keepalive.yml` must stay enabled —
 GitHub disables scheduled workflows after 60 idle days, and 13F legitimately idles
 for about ten weeks between filing seasons.
 
+## Moving data to R2 (removes the 279 MB from git)
+
+The artifacts are committed to git today, which works but grows history on every
+refresh. R2 is the production home: 10 GB free, egress free, and a Pages Function
+serves it on the **same `pages.dev` origin** so the frontend URL never changes.
+
+Measured: all 9,396 filers × 4 quarters of holdings is ~900 MB / ~35,000 objects —
+well inside the free tier (10 GB storage, 1M Class-A writes/month).
+
+**One-time setup:**
+
+1. **Create the bucket** — R2 → Create bucket → name it `13f`.
+2. **Create an API token** — R2 → *Manage R2 API Tokens* → Create, *Object Read &
+   Write*. Note the Access Key ID and Secret.
+3. **Bind the bucket to Pages** — Pages project → Settings → Functions → R2 bucket
+   bindings → add **`F13F_R2`** → bucket `13f`. (This is what the
+   `functions/data/[[path]].js` passthrough reads; no `wrangler.toml` needed.)
+4. **Add GitHub secrets** (Settings → Secrets and variables → Actions):
+   - `R2_ACCOUNT_ID` = `489675fbe898cd94904c654de83ade00`
+   - `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` = from step 2
+   - variable `R2_BUCKET` = `13f`
+5. **Run the ingest** — `gh workflow run ingest-universe.yml`. It downloads the SEC
+   data set, builds artifacts, and uploads to R2 (with `--prune`, so R2 stays at
+   ~4 quarters).
+6. **Flip the switch** — only after step 5 confirms R2 is populated:
+   ```bash
+   git rm -r --cached public/data && echo "public/data/" >> .gitignore
+   git commit -m "chore: serve data from R2, drop committed tree"
+   git push
+   ```
+   Until this commit lands, Pages serves the committed static files and the
+   Function stays dormant (static assets take precedence). After it lands, the
+   Function serves every `/data/*` request from R2. **Do not flip before R2 is
+   populated** — the site would have nothing to serve.
+
+**How it stays on one origin:** `functions/data/[[path]].js` is a pure passthrough
+(`env.F13F_R2.get(key)` → stream). It is I/O only, so the 10 ms CPU budget is
+irrelevant, and it means no custom domain and no CORS.
+
 ## Munshot embed
 
 CORS-allowlist the deployed domain (`13f-eo2.pages.dev`, or the custom domain) on

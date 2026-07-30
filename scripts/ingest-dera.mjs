@@ -50,6 +50,10 @@ const OUT = args.out || "public/data";
 const CACHE = args.cache || ".cache";
 const TOP = args.top ? Number(args.top) : Infinity;
 const META_ONLY = Boolean(args["meta-only"]);
+// Retention: how many recent quarters keep line-item holdings. Older
+// quarters keep only the compact series/metadata (kept all-time, cheap),
+// so trends survive while the heavy files roll off. Default 4.
+const KEEP_Q = Number(args.keep || 4);
 
 /**
  * Curated comparison set: ACTIVE managers, always stored with line items.
@@ -339,9 +343,13 @@ await runJob(async () => {
   let holdingsWritten = 0;
 
   ranked.forEach(({ fund }, idx) => {
-    // Watchlist funds are always stored, however small.
-    const wantHoldings = !META_ONLY && (idx < TOP || WATCHSET.has(fund.cik));
+    // TWO gates. A fund is stored if it is large enough or on the watchlist; a
+    // stored fund keeps line items only for the newest KEEP_Q quarters. Older
+    // quarters still contribute to the compact all-time series, which is what
+    // keeps history without keeping the weight.
+    const fundStored = !META_ONLY && (idx < TOP || WATCHSET.has(fund.cik));
     const periodsAsc = [...fund.periods.keys()].sort();
+    const holdingPeriods = new Set(periodsAsc.slice(-KEEP_Q));
     const series = [];
 
     // Fold each period, then diff against the immediately preceding CALENDAR
@@ -375,6 +383,8 @@ await runJob(async () => {
     for (const period of periodsAsc) {
       const cur = folded.get(period);
       if (!cur || cur.noticeOnly) continue;
+      // Per-period gate: stored fund AND within the retention window.
+      const wantHoldings = fundStored && holdingPeriods.has(period);
       const pp = priorPeriod(period);
       const prior = folded.get(pp);
       const priorState = prior && !prior.noticeOnly ? PRIOR_STATE.OK
@@ -475,7 +485,7 @@ await runJob(async () => {
     if (series.length) {
       // Per-fund summary file ONLY where we also carry line items. For everyone
       // else the shared series index below covers it, at a fraction of the size.
-      if (wantHoldings) {
+      if (fundStored) {
         writer.write(paths.fundSummary(fund.cik), envelope({
           kind: "fund-summary", cik: fund.cik, buildId: null,
           extra: { name: fund.name, code: null, formerNames: [], state: fund.state },
@@ -484,7 +494,7 @@ await runJob(async () => {
       }
       allSeries.push({
         cik: fund.cik, name: fund.name, state: fund.state ?? null,
-        hasHoldings: wantHoldings,
+        hasHoldings: fundStored,
         watch: WATCHSET.has(fund.cik) ? 1 : 0,
         // Compact tuples, not objects: the key names would otherwise repeat once
         // per fund per quarter across the whole universe.
@@ -495,7 +505,7 @@ await runJob(async () => {
           x.turnover_position_pct == null ? null : Number(x.turnover_position_pct.toFixed(2)),
           x.priorState, x.structuralEvent, x.confidentialOmitted ? 1 : 0,
           x.filingLagDays, x.valueOptionsUsd, x.positionsLong, x.positionsOptions,
-          wantHoldings ? 1 : 0,
+          fundStored && holdingPeriods.has(x.period) ? 1 : 0,
         ]),
       });
       const latest = series.at(-1);
@@ -503,7 +513,7 @@ await runJob(async () => {
         cik: fund.cik, name: fund.name, code: null, state: fund.state ?? null,
         periods: series.length, latestPeriod: latest?.period ?? null,
         latestValueUsd: latest?.valueLongUsd ?? null,
-        hasHoldings: wantHoldings,
+        hasHoldings: fundStored,
         watch: WATCHSET.has(fund.cik),
       });
     }

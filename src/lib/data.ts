@@ -15,7 +15,18 @@
 // Which is why a fund-quarter is downloaded once, ever, and why the whole
 // product runs with no server and no bill.
 
-const BASE = import.meta.env.BASE_URL + "data";
+// Where artifacts are served from.
+//
+//   VITE_DATA_BASE unset  -> "<base>/data", the committed tree (dev, and a
+//                            working fallback if R2 is not configured)
+//   VITE_DATA_BASE set    -> an absolute R2 custom-domain origin, e.g.
+//                            "https://data.example.com"
+//
+// R2 is the production home: 10 GB free with free egress, so a fund's book costs
+// nothing to serve however often it is read, and the artifacts stay out of git
+// history where a quarterly refresh would otherwise compound forever.
+const DATA_BASE = import.meta.env.VITE_DATA_BASE as string | undefined;
+const BASE = DATA_BASE ? DATA_BASE.replace(/\/$/, "") : import.meta.env.BASE_URL + "data";
 
 export interface Manifest {
   v: number;
