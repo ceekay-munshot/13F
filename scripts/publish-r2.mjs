@@ -110,9 +110,16 @@ async function sendSigned(method, key, body, okStatuses = new Set(), query = {})
 const put = (key, body) => sendSigned("PUT", key, body);
 const del = (key) => sendSigned("DELETE", key, null, new Set([404]));
 
-/** List every key under a prefix, following continuation tokens. */
+/**
+ * List every object under a prefix as key -> size, following continuation tokens.
+ *
+ * Size is captured so an interrupted publish can resume: a re-run skips objects
+ * already present at the same size rather than re-uploading tens of thousands of
+ * unchanged files. That turns a retry from ~19 minutes into about one, and makes
+ * the monthly refresh upload only what actually changed.
+ */
 async function listAll(prefix = "") {
-  const keys = [];
+  const found = new Map();
   let token = null;
   do {
     // The query MUST go through the signer — it is part of the canonical
@@ -123,10 +130,14 @@ async function listAll(prefix = "") {
     if (token) query["continuation-token"] = token;
     const res = await sendSigned("GET", "", null, new Set(), query);
     const xml = await res.text();
-    for (const m of xml.matchAll(/<Key>([^<]+)<\/Key>/g)) keys.push(m[1]);
+    for (const m of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+      const key = (/<Key>([^<]*)<\/Key>/.exec(m[1]) ?? [])[1];
+      const size = Number((/<Size>(\d+)<\/Size>/.exec(m[1]) ?? [])[1] ?? -1);
+      if (key) found.set(key, size);
+    }
     token = (/<NextContinuationToken>([^<]+)</.exec(xml) ?? [])[1] ?? null;
   } while (token);
-  return keys;
+  return found;
 }
 
 function walk(dir, base = dir, out = []) {
@@ -168,11 +179,26 @@ if (DRY) {
   process.exit(0);
 }
 
+// What is already in the bucket? Listing first makes the publish RESUMABLE:
+// a run interrupted after uploading 35,000 objects should not upload them again.
+// Artifacts are immutable for a given build, so identical size means identical
+// content and the upload can be skipped.
+let remote = new Map();
+try {
+  remote = await listAll();
+  if (remote.size) console.log(`${remote.size} objects already in the bucket`);
+} catch (err) {
+  console.log(`::warning::could not list the bucket (${err.message}) — uploading everything.`);
+}
+
 // Upload the manifest LAST. Until it lands, readers keep resolving the previous
 // build, so a half-finished upload never serves a torn mix of old and new.
-const manifestFirst = files.filter((f) => f !== "manifest.json");
-console.log(`\nuploading ${manifestFirst.length} artifacts…`);
-await pool(manifestFirst, CONCURRENCY, async (f) => {
+const candidates = files.filter((f) => f !== "manifest.json");
+const todo = candidates.filter((f) => remote.get(f) !== statSync(join(DIR, f)).size);
+const skipped = candidates.length - todo.length;
+
+console.log(`\nuploading ${todo.length} artifacts${skipped ? ` (${skipped} already present, skipped)` : ""}…`);
+await pool(todo, CONCURRENCY, async (f) => {
   await put(f, readFileSync(join(DIR, f)));
 });
 
@@ -194,9 +220,33 @@ console.log(`\nmanifest published — build is now live.`);
 
 async function prune() {
   console.log(`\npruning keys no longer in the build…`);
-  const remote = await listAll();
+  const current = await listAll();
   const local = new Set(files);
-  const stale = remote.filter((k) => !local.has(k));
-  console.log(`  ${remote.length} remote, ${stale.length} stale`);
+  const stale = [...current.keys()].filter((k) => !local.has(k));
+  console.log(`  ${current.size} remote, ${stale.length} stale`);
+
+  // SAFETY RAIL. Prune decides what to delete by diffing remote keys against
+  // local paths, so any mismatch in key FORMAT — a leading slash, a Windows
+  // separator, a changed prefix — makes every remote object look stale and
+  // wipes the bucket we just spent twenty minutes filling.
+  //
+  // In normal operation stale objects are the fund-quarters that rolled out of
+  // the retention window: a small fraction. A diff proposing to delete most of
+  // the bucket is far more likely to be a bug than a real retention event, so
+  // refuse and report rather than proceed. Deleting is the one irreversible
+  // thing this script does.
+  const ratio = current.size ? stale.length / current.size : 0;
+  const MAX_PRUNE_RATIO = 0.5;
+  if (stale.length > 100 && ratio > MAX_PRUNE_RATIO) {
+    console.log(
+      `::warning::refusing to prune — ${stale.length} of ${current.size} ` +
+      `(${(ratio * 100).toFixed(0)}%) look stale, which suggests a key-format ` +
+      `mismatch rather than a retention roll-off. Nothing deleted.`,
+    );
+    console.log(`  sample remote: ${[...current.keys()].slice(0, 3).join(", ")}`);
+    console.log(`  sample local : ${files.slice(0, 3).join(", ")}`);
+    return;
+  }
+
   await pool(stale, CONCURRENCY, del);
 }
