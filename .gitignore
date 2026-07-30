@@ -1,0 +1,34 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.local
+*.local
+.DS_Store
+*.log
+
+*.tsbuildinfo
+
+# Bulk SEC downloads land here. The DERA quarterly ZIP is ~99 MB compressed /
+# ~402 MB uncompressed (INFOTABLE.tsv alone is 396 MB) — never commit these.
+.cache/
+tmp/
+*.idx
+*.zip
+
+# ---------------------------------------------------------------------------
+# NEVER COMMIT: this is a CUSIP-KEYED DATABASE.
+#
+# data/securities.json maps ~20,000 CUSIPs to tickers. CUSIP identifiers are
+# proprietary (American Bankers Association, licensed through CUSIP Global
+# Services / S&P Global Market Intelligence), and committing this file to a
+# public repository is redistribution of a CUSIP-keyed database — the exact
+# thing the rest of this project is built to avoid. Git history is permanent and
+# forks are outside our control, so a single push cannot be walked back.
+#
+# It costs nothing to leave out: the ingest workflow rebuilds it from the SEC's
+# own fails-to-deliver files in ~31 requests on every run. The published
+# artifacts carry ticker and an opaque issuerId, never the CUSIP.
+# ---------------------------------------------------------------------------
+data/securities.json

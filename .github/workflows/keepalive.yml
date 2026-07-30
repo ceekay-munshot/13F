@@ -1,0 +1,81 @@
+name: Keepalive
+
+# ---------------------------------------------------------------------------
+# NOT OPTIONAL for this project.
+#
+# GitHub disables scheduled workflows after 60 days without repository activity,
+# and only commits to the default branch reset that timer — issues, PRs and
+# workflow_dispatch runs do not.
+#
+# 13F is quarterly. Between filing seasons this pipeline legitimately has nothing
+# to do for roughly ten weeks, which is LONGER than the disable threshold. So
+# without this heartbeat the ingest silently switches itself off during the quiet
+# period and misses the next deadline entirely. That is the default outcome, not
+# a tail risk.
+#
+# 25 days gives two heartbeats inside every 60-day window.
+# ---------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: '17 4 */25 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: 13f-keepalive
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+  issues: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write heartbeat
+        run: |
+          mkdir -p .github
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/keepalive.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          # A keepalive that silently succeeds without changing anything is worse
+          # than none at all: the timer keeps running and nobody notices until the
+          # workflows are already disabled.
+          if git diff --cached --quiet; then
+            echo "::error::Heartbeat file did not change — the keepalive is not working."
+            exit 1
+          fi
+          git commit -m "chore: keepalive heartbeat"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      # Do not trust the heartbeat — verify the outcome it is supposed to produce.
+      - name: Verify no workflow is disabled
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.actions.listRepoWorkflows({ ...context.repo });
+            const dead = data.workflows.filter((w) => w.state !== 'active');
+            if (!dead.length) {
+              core.info(`All ${data.workflows.length} workflows active.`);
+              return;
+            }
+            const body = [
+              'These workflows are not active:',
+              '',
+              ...dead.map((w) => `- **${w.name}** — \`${w.state}\``),
+              '',
+              'A state of `disabled_inactivity` means GitHub switched it off after 60 quiet days.',
+              'Re-enable it in the Actions tab; the keepalive should have prevented this, so also',
+              'check whether the heartbeat commits are actually landing on the default branch.',
+            ].join('\n');
+            await github.rest.issues.create({
+              ...context.repo, title: 'Scheduled workflows are disabled', body,
+              labels: ['13f-freshness'],
+            });
+            core.setFailed(`${dead.length} workflow(s) inactive`);

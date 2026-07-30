@@ -1,0 +1,189 @@
+name: Ingest 13F filings
+
+# ---------------------------------------------------------------------------
+# THREE off-minute slots, all after the EDGAR cutoff.
+#
+# Filings submitted after 17:30 ET are assigned the NEXT business day's filing
+# date, so a job that runs at UTC midnight systematically truncates the day it
+# thinks it is covering. These slots are 19:07, 21:13 and 23:31 ET.
+#
+# Three, not one, because GitHub is explicit that scheduled runs are best-effort:
+# "The schedule event can be delayed during periods of high loads... some queued
+# jobs may be dropped." A single slot has silently lost multi-day windows in a
+# sibling repo. The job is idempotent, so extra runs are free.
+#
+# Never :00 or :30 — those minutes are the most contended on the whole platform.
+# ---------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: '7 23 * * *'
+    - cron: '13 1 * * *'
+    - cron: '31 3 * * *'
+  workflow_dispatch:
+    inputs:
+      periods:
+        description: 'Quarters of history to ingest'
+        default: '8'
+      funds:
+        description: 'Comma-separated CIKs (blank = the seed watchlist)'
+        default: ''
+      force:
+        description: 'Rebuild artifacts even if nothing changed'
+        type: boolean
+        default: false
+
+# Queue, never cancel: each run does real work and a cancelled run leaves the
+# artifact tree half-written.
+concurrency:
+  group: 13f-ingest
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    # Generous but bounded. A full seed ingest is ~4 minutes; anything past 30
+    # means something is hung, and failing fast beats burning six hours.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Fail before doing any work, with a message that says what to fix.
+      - name: Validate configuration
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+        run: |
+          if [ -z "$SEC_USER_AGENT" ]; then
+            echo "::error::Repository variable SEC_USER_AGENT is not set."
+            echo "::error::The SEC rejects undeclared automated access. Set it to"
+            echo "::error::'<App or Company Name> <contact email>', e.g. 'Munshot 13F Pipeline you@example.com'."
+            exit 1
+          fi
+          case "$SEC_USER_AGENT" in
+            *@*.*) ;;
+            *) echo "::error::SEC_USER_AGENT must contain a contact email address."; exit 1 ;;
+          esac
+
+      - run: npm ci
+
+      # The correctness gates run BEFORE any network call. If the parser is
+      # broken we would rather publish nothing than publish wrong numbers.
+      - name: Correctness gates
+        run: npm run check
+
+      - name: Refresh CUSIP to ticker map
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '5'
+        # The map only grows, and the fails-to-deliver files publish on a lag, so
+        # a short window each day is enough to stay current without re-reading a
+        # year of archives every run.
+        run: node scripts/build-securities.mjs --months=4
+
+      - name: Ingest filings and build artifacts
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '5'
+        run: |
+          node scripts/ingest-funds.mjs \
+            --periods=${{ github.event.inputs.periods || '8' }} \
+            ${{ github.event.inputs.funds && format('--funds={0}', github.event.inputs.funds) || '' }} \
+            --out=public/data | tee /tmp/ingest.log
+
+      - name: Summary
+        if: always()
+        run: |
+          echo '### 13F ingest' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -25 /tmp/ingest.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo '(no log)' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # Publish.
+      #
+      # The artifact tree IS the database, so committing it is the deploy:
+      # Cloudflare Pages rebuilds on push and serves the files straight off the
+      # edge. No server, no upload credentials, and the data is versioned and
+      # auditable in git for free.
+      #
+      # This works because the seed tree is ~6 MB. It does NOT scale to the full
+      # universe — see the R2 step below, which takes over once the tree is large
+      # enough that git history would become the problem.
+      # ---------------------------------------------------------------------
+      - name: Commit artifacts
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # NOT data/securities.json — it is a CUSIP-keyed map and this repo is
+          # public. It is rebuilt from the SEC each run, so there is nothing to
+          # persist. See .gitignore.
+          git add public/data public/_headers
+          if git diff --cached --quiet; then
+            echo "No artifact change; nothing to commit."
+            exit 0
+          fi
+          # Deliberately NO [skip ci]: Cloudflare Pages reads it as a build-skip
+          # directive, and this is precisely the build that publishes the data.
+          git commit -m "data: refresh 13F artifacts ($(date -u +%Y-%m-%d))"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      # Optional and additive: once the tree outgrows git, set these secrets and
+      # this step becomes the serving path while the commit above can be dropped.
+      - name: Publish to R2
+        if: ${{ env.R2_ACCOUNT_ID != '' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || 'muns-13f' }}
+        run: |
+          aws s3 sync public/data "s3://${R2_BUCKET}/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-encoding gzip \
+            --content-type application/json \
+            --cache-control 'public, max-age=31536000, immutable' \
+            --exclude 'manifest.json'
+          # The manifest is the ONLY mutable file and must not be cached long, or
+          # a new quarter never becomes visible.
+          aws s3 cp public/data/manifest.json "s3://${R2_BUCKET}/manifest.json" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --content-type application/json \
+            --cache-control 'public, max-age=60, must-revalidate'
+
+      # One rolling issue per failure mode, so a transient blip does not bury the
+      # alert that matters.
+      - name: Open or update failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const label = '13f-ingest-failure';
+            const title = '13F ingest is failing';
+            const body = [
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'If the log shows a SEC 403: that is an IP-level block on a shared GitHub runner and is',
+              'NOT retryable. The next scheduled slot draws a different IP and normally recovers.',
+              'Escalate only if several CONSECUTIVE runs are blocked — that means the block is',
+              'following our behaviour rather than our luck.',
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              ...context.repo, state: 'open', labels: label,
+            });
+            if (existing.data.length) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: existing.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({ ...context.repo, title, body, labels: [label] });
+            }

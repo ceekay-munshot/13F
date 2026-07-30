@@ -1,0 +1,463 @@
+// src/views/ConsensusView.tsx
+//
+// The client's core ask: what these funds agree on, what moved, and — the stated
+// "anchor" — what was newly bought and what was sold out of.
+
+import { useEffect, useMemo, useState } from "react";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip, Cell as RCell } from "recharts";
+import { WidgetCard, ViewToggle, CaveatStrip } from "../components/WidgetCard";
+import { Kpi, KpiRow } from "../components/Kpi";
+import { ConsensusMatrix, MatrixLegend } from "../components/ConsensusMatrix";
+import { MatrixSkeleton, EmptyState, ErrorState, PartialNotice, TableSkeleton } from "../components/states";
+import { t, fundColor, ACTION_COLORS } from "../theme";
+import { usd, pp, count, periodLabel, dateLabel } from "../lib/format";
+import { buildConsensus, sortConsensus, overlapDistribution, buildAnchor, type FundInput, type SortKey } from "../lib/consensus";
+import { loadFundPeriodAll, MissingArtifactError, type Manifest, type Filer } from "../lib/data";
+import { recentPeriods } from "../../shared/calendar.mjs";
+
+const GRID_WIDE: React.CSSProperties = {
+  display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
+};
+
+const THRESHOLDS = [
+  { key: "2", label: "≥2 funds", min: 2 },
+  { key: "3", label: "≥3 funds", min: 3 },
+  { key: "all", label: "Unanimous", min: 0 }, // resolved against fund count
+] as const;
+
+function FundDot({ color, code }: { color: string; code: string }) {
+  return (
+    <span
+      title={code}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700,
+        color: t.textMuted, whiteSpace: "nowrap",
+      }}
+    >
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }} />
+      {code}
+    </span>
+  );
+}
+
+function AnchorList({
+  items, tone, emptyMessage,
+}: {
+  items: ReturnType<typeof buildAnchor>["entries"];
+  tone: "new" | "exit";
+  emptyMessage: string;
+}) {
+  if (!items.length) {
+    return <EmptyState icon={tone === "new" ? "★" : "○"} message={emptyMessage} />;
+  }
+  const accent = tone === "new" ? ACTION_COLORS.NEW : ACTION_COLORS.EXITED;
+  return (
+    <div style={{ maxHeight: 300, overflow: "auto" }}>
+      {items.slice(0, 40).map((e) => (
+        <div
+          key={e.issuerId}
+          style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "7px 14px",
+            borderBottom: "1px solid #f3f4f6",
+          }}
+        >
+          <span style={{ width: 3, height: 22, background: accent, borderRadius: 2, flexShrink: 0 }} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: t.textPrimary }}>{e.ticker ?? "—"}</div>
+            <div style={{ fontSize: 10.5, color: t.textHint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {e.name}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 160 }}>
+            {e.funds.map((f) => <FundDot key={f.cik} color={f.color} code={f.code} />)}
+          </div>
+          <div style={{ fontSize: 11, color: t.textMuted, minWidth: 62, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+            {tone === "new" ? usd(e.value) : pp(-(e.weight ?? 0))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ConsensusView({
+  filers, period, mf, longsOnly, onFund,
+}: {
+  filers: Filer[];
+  period: string;
+  mf: Manifest;
+  longsOnly: boolean;
+  onFund: (cik: string) => void;
+}) {
+  const [funds, setFunds] = useState<FundInput[] | null>(null);
+  const [history, setHistory] = useState<Map<string, number[]>>(new Map());
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [threshold, setThreshold] = useState<string>("2");
+  const [sortKey, setSortKey] = useState<SortKey>("funds");
+  const [showAll, setShowAll] = useState(false);
+
+  // Load every watchlist fund for this quarter, plus the five quarters behind it
+  // for the holder-count sparkline. Fourteen-odd cached file reads and a
+  // client-side group-by — no server, no precomputed per-watchlist table, so any
+  // arbitrary fund set answers immediately.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErr(null);
+    setFunds(null);
+
+    const load = async () => {
+      const inputs: FundInput[] = [];
+      await Promise.all(
+        filers.map(async (f, i) => {
+          const color = fundColor(i);
+          const code = f.code ?? f.name.slice(0, 3).toUpperCase();
+          try {
+            const fp = await loadFundPeriodAll(f.cik, period, mf);
+            inputs[i] = {
+              cik: f.cik, name: f.name, code, color,
+              holdings: fp.holdings, exits: fp.exits ?? [],
+              suppressed: Boolean(fp.meta.deltasSuppressed), missing: false,
+            };
+          } catch (e) {
+            // A fund with no filing for the quarter is normal, not an error.
+            if (!(e instanceof MissingArtifactError)) throw e;
+            inputs[i] = { cik: f.cik, name: f.name, code, color, holdings: [], exits: [], suppressed: false, missing: true };
+          }
+        }),
+      );
+      if (cancelled) return;
+      setFunds(inputs.filter(Boolean));
+
+      // Holder history, best-effort: it decorates the matrix and must never
+      // block or fail it.
+      const periods = (recentPeriods(period, 6) as string[]).slice().reverse();
+      const counts = new Map<string, number[]>();
+      for (const p of periods) {
+        const perIssuer = new Set<string>();
+        const tally = new Map<string, number>();
+        await Promise.all(
+          filers.map(async (f) => {
+            try {
+              const fp = await loadFundPeriodAll(f.cik, p, mf);
+              const seen = new Set<string>();
+              for (const h of fp.holdings) {
+                if (!h.issuerId || (longsOnly && (h.type !== "" || h.unit !== "SH"))) continue;
+                if (seen.has(h.issuerId)) continue;
+                seen.add(h.issuerId);
+                tally.set(h.issuerId, (tally.get(h.issuerId) ?? 0) + 1);
+              }
+            } catch { /* missing quarter — contributes zero */ }
+          }),
+        );
+        for (const [id, n] of tally) {
+          if (!counts.has(id)) counts.set(id, []);
+          counts.get(id)!.push(n);
+          perIssuer.add(id);
+        }
+        // Keep series aligned: an issuer nobody held that quarter gets a 0.
+        for (const [id, arr] of counts) if (!perIssuer.has(id)) arr.push(0);
+      }
+      if (!cancelled) setHistory(counts);
+    };
+
+    load()
+      .catch((e) => !cancelled && setErr(String(e.message ?? e)))
+      .finally(() => !cancelled && setLoading(false));
+    return () => { cancelled = true; };
+  }, [filers, period, mf, longsOnly]);
+
+  const present = useMemo(() => (funds ?? []).filter((f) => !f.missing), [funds]);
+
+  const minFunds = useMemo(() => {
+    const th = THRESHOLDS.find((x) => x.key === threshold);
+    if (!th) return 2;
+    return th.key === "all" ? Math.max(2, present.length) : th.min;
+  }, [threshold, present.length]);
+
+  const rows = useMemo(() => {
+    if (!funds) return [];
+    return sortConsensus(buildConsensus(funds, { minFunds, longsOnly }), sortKey);
+  }, [funds, minFunds, longsOnly, sortKey]);
+
+  // Anchor + distribution pass: every name any fund touched, INCLUDING names
+  // the whole group exited (zero holders, which no holder threshold would keep).
+  const allRows = useMemo(() => {
+    if (!funds) return [];
+    return buildConsensus(funds, { minFunds: 1, longsOnly, includeExitOnly: true });
+  }, [funds, longsOnly]);
+
+  const dist = useMemo(() => overlapDistribution(allRows, Math.max(1, present.length)), [allRows, present.length]);
+  const anchor = useMemo(() => (funds ? buildAnchor(funds, allRows) : null), [funds, allRows]);
+
+  const combinedValue = useMemo(
+    () => present.reduce((a, f) => a + f.holdings.filter((h) => h.type === "" && h.unit === "SH").reduce((s, h) => s + h.value, 0), 0),
+    [present],
+  );
+
+  if (err) {
+    return <div style={GRID_WIDE}><WidgetCard title="Consensus" span={2}><ErrorState message={err} /></WidgetCard></div>;
+  }
+
+  const missing = (funds ?? []).filter((f) => f.missing);
+  const suppressed = (funds ?? []).filter((f) => f.suppressed);
+
+  return (
+    <>
+      <KpiRow>
+        <Kpi
+          label="Funds filed"
+          value={loading ? "…" : `${present.length} of ${funds?.length ?? 0}`}
+          scope={missing.length ? `${missing.length} not yet filed` : "All tracked funds"}
+        />
+        <Kpi
+          label="Consensus names"
+          value={loading ? "…" : count(rows.length)}
+          scope={`Held by ${minFunds}+ of ${present.length}`}
+        />
+        <Kpi
+          label="New this quarter"
+          value={loading ? "…" : count(anchor?.entries.length ?? 0)}
+          scope="First appearance in any fund"
+        />
+        <Kpi
+          label="Exited this quarter"
+          value={loading ? "…" : count(anchor?.exits.length ?? 0)}
+          scope={anchor?.suppressedExits ? `${anchor.suppressedExits} withheld` : "Position closed"}
+        />
+        <Kpi
+          label="Combined long value"
+          value={loading ? "…" : usd(combinedValue)}
+          scope="13F equity longs only"
+        />
+      </KpiRow>
+
+      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+        {/* PRIMARY */}
+        <WidgetCard
+          title="Consensus matrix"
+          subtitle={`Names held by ${minFunds}+ funds · shading is portfolio weight, glyph is this quarter's move`}
+          span={2}
+          bodyMinHeight={300}
+          actions={
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <ViewToggle
+                options={THRESHOLDS.map((x) => x.label) as unknown as readonly string[]}
+                value={THRESHOLDS.find((x) => x.key === threshold)!.label}
+                onChange={(label) => setThreshold(THRESHOLDS.find((x) => x.label === label)!.key)}
+              />
+              <ViewToggle
+                options={["Funds", "Value", "Net move"] as const}
+                value={sortKey === "funds" ? "Funds" : sortKey === "value" ? "Value" : "Net move"}
+                onChange={(v) => setSortKey(v === "Funds" ? "funds" : v === "Value" ? "value" : "net")}
+              />
+            </div>
+          }
+          caveat={
+            missing.length || suppressed.length ? (
+              <CaveatStrip>
+                {missing.length > 0 && `${missing.map((f) => f.name).join(", ")} ${missing.length === 1 ? "has" : "have"} not filed for ${periodLabel(period)}. `}
+                {suppressed.length > 0 && `${suppressed.map((f) => f.name).join(", ")} filed a structural change, so ${suppressed.length === 1 ? "its" : "their"} moves are excluded from group totals.`}
+              </CaveatStrip>
+            ) : undefined
+          }
+        >
+          {loading ? (
+            <MatrixSkeleton
+              funds={(funds ?? []).length
+                ? funds!.map((f) => f.code)
+                : filers.map((f) => f.code ?? f.name.slice(0, 3).toUpperCase())}
+            />
+          ) : rows.length === 0 ? (
+            <EmptyState
+              icon="▦"
+              message={`No names held by ${minFunds} or more funds`}
+              hint="Lower the overlap threshold, or step back a quarter."
+            />
+          ) : (
+            <>
+              <ConsensusMatrix
+                rows={rows}
+                funds={funds ?? []}
+                holderHistory={history}
+                maxRows={showAll ? 500 : 12}
+                onFund={onFund}
+              />
+              <div
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                  padding: "8px 14px", borderTop: `1px solid ${t.border}`, flexWrap: "wrap",
+                }}
+              >
+                <MatrixLegend />
+                {rows.length > 12 && (
+                  <button
+                    className="pressable"
+                    onClick={() => setShowAll((v) => !v)}
+                    style={{
+                      border: "none", background: "transparent", color: t.primaryText, cursor: "pointer",
+                      fontSize: 11, fontWeight: 700, fontFamily: "inherit", textDecoration: "underline",
+                    }}
+                  >
+                    {showAll ? "Show top 12" : `Show all ${rows.length} consensus names`}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </WidgetCard>
+
+        {/* THE ANCHOR — both halves visible at once, no toggle: "what are they
+            focused on" is a comparison question, and hiding one side behind a
+            tab breaks the comparison. */}
+        <WidgetCard
+          title="Entries &amp; exits"
+          subtitle="New positions and closed positions across the group — the anchor"
+          span={2}
+          bodyMinHeight={260}
+          caveat={
+            // Only surface this when something was ACTUALLY withheld. "0 moves
+            // withheld" is noise that trains the reader to skip the strip, which
+            // costs us the one time it matters.
+            anchor && anchor.suppressedExits > 0 ? (
+              <CaveatStrip>
+                {anchor.suppressedExits} move{anchor.suppressedExits === 1 ? "" : "s"} withheld from{" "}
+                {anchor.suppressedFunds.join(", ")} — a structural change, not trading.
+              </CaveatStrip>
+            ) : undefined
+          }
+        >
+          {loading || !anchor ? (
+            <TableSkeleton rows={6} cols={3} />
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr" }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: ACTION_COLORS.NEW, padding: "9px 14px 4px" }}>
+                  New positions ({anchor.entries.length})
+                </div>
+                <AnchorList items={anchor.entries} tone="new" emptyMessage="No new positions this quarter" />
+              </div>
+              <div style={{ background: t.border }} />
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: ACTION_COLORS.EXITED, padding: "9px 14px 4px" }}>
+                  Exited ({anchor.exits.length})
+                </div>
+                <AnchorList items={anchor.exits} tone="exit" emptyMessage="No positions exited this quarter" />
+              </div>
+            </div>
+          )}
+        </WidgetCard>
+
+        {/* INSIGHT — doubles as the matrix filter: it answers a question the
+            matrix cannot, namely whether this group is a herd or independent. */}
+        <WidgetCard title="Overlap distribution" subtitle="How many names each number of funds shares" bodyMinHeight={220}>
+          {loading ? (
+            <MatrixSkeleton funds={["·", "·", "·"]} rows={4} />
+          ) : (
+            <div style={{ padding: "14px 10px 4px", height: 220 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={dist} margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
+                  <CartesianGrid stroke={t.gridline} vertical={false} />
+                  <XAxis dataKey="funds" tick={{ fontSize: 10, fill: t.textHint }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: t.textHint }} axisLine={false} tickLine={false} width={30} />
+                  <Tooltip
+                    cursor={{ fill: "rgba(79,70,229,0.06)" }}
+                    contentStyle={{ background: "#fff", border: `1px solid ${t.borderSolid}`, borderRadius: 8, fontSize: 12 }}
+                    formatter={(v: number, _n, p) => [`${v} names`, `held by ${p.payload.funds} fund${p.payload.funds === 1 ? "" : "s"}`]}
+                  />
+                  <Bar dataKey="names" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                    {dist.map((d) => (
+                      <RCell key={d.funds} fill={d.funds >= minFunds ? t.primary : "#e0e7ff"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </WidgetCard>
+
+        {/* INSIGHT — group activity */}
+        <WidgetCard title="Group activity" subtitle="Aggregate moves across every filing fund" bodyMinHeight={220}>
+          {loading || !funds ? (
+            <TableSkeleton rows={4} cols={2} />
+          ) : (
+            <div style={{ padding: "16px 16px 8px" }}>
+              {(["NEW", "ADDED", "TRIMMED", "EXITED"] as const).map((action) => {
+                const n = allRows.reduce(
+                  (a, r) => a + Object.values(r.cells).filter((c) => c.action === action).length, 0,
+                );
+                const max = Math.max(
+                  1,
+                  ...(["NEW", "ADDED", "TRIMMED", "EXITED"] as const).map((k) =>
+                    allRows.reduce((a, r) => a + Object.values(r.cells).filter((c) => c.action === k).length, 0),
+                  ),
+                );
+                return (
+                  <div key={action} style={{ marginBottom: 13 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 4 }}>
+                      <span style={{ color: t.textSecondary, fontWeight: 600 }}>
+                        {action.charAt(0) + action.slice(1).toLowerCase()}
+                      </span>
+                      <span style={{ color: t.textMuted, fontVariantNumeric: "tabular-nums" }}>{count(n)}</span>
+                    </div>
+                    <div style={{ height: 8, background: "#f3f4f6", borderRadius: 4, overflow: "hidden" }}>
+                      <div
+                        className="flow-bar"
+                        style={{ height: "100%", width: "100%", background: ACTION_COLORS[action], transform: `scaleX(${n / max})` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+              <p style={{ fontSize: 10.5, color: t.textHint, margin: "12px 0 0", lineHeight: 1.5 }}>
+                Counted per fund per name, across {present.length} filing fund{present.length === 1 ? "" : "s"}.
+              </p>
+            </div>
+          )}
+        </WidgetCard>
+
+        {/* SOURCE */}
+        <WidgetCard title="Sources &amp; provenance" subtitle="What this view is built from" span={2}>
+          <div style={{ padding: "12px 16px" }}>
+            {missing.length > 0 && (
+              <PartialNotice>
+                Showing {present.length} of {funds?.length ?? 0} funds. 13F is due 45 days after each
+                quarter ends and most managers file close to the deadline, so a just-closed quarter is
+                always incomplete.
+              </PartialNotice>
+            )}
+            <div style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.65 }}>
+              <p style={{ margin: "0 0 8px" }}>
+                Overlap is computed per <strong>issuer</strong>, not per share class — GOOG and GOOGL
+                are one company, and comparing them separately would report zero overlap on Alphabet.
+                Class counts appear in each cell's tooltip.
+              </p>
+              <p style={{ margin: 0 }}>
+                Positions are as of {dateLabel(period)}. 13F covers long US-listed equity and options
+                only — no shorts, cash, bonds or non-US listings. Ticker and issuer name only; CUSIPs
+                are licensed by CGS/ABA and are neither displayed nor exported.
+              </p>
+            </div>
+            <div
+              style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                borderTop: `1px solid ${t.border}`, paddingTop: 10, marginTop: 12, fontSize: 11, color: t.textHint,
+              }}
+            >
+              <span>Data © SEC EDGAR (public domain) · build {mf.buildId}</span>
+              <a
+                href="https://www.sec.gov/edgar"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: t.primaryText, fontWeight: 600, textDecoration: "none" }}
+              >
+                sec.gov/edgar ↗
+              </a>
+            </div>
+          </div>
+        </WidgetCard>
+      </div>
+    </>
+  );
+}

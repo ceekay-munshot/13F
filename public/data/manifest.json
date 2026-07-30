@@ -1,0 +1,75 @@
+{
+  "v": 1,
+  "buildId": "0kp1kam",
+  "generatedAt": "2026-07-30T01:50:36.145Z",
+  "coverage": {
+    "from": "2024-09-30",
+    "to": "2026-06-30",
+    "holdingsFrom": "2024-09-30"
+  },
+  "periods": [
+    {
+      "period": "2026-06-30",
+      "label": "Q2 2026",
+      "deadline": "2026-08-14",
+      "filings": 1,
+      "funds": 1
+    },
+    {
+      "period": "2026-03-31",
+      "label": "Q1 2026",
+      "deadline": "2026-05-15",
+      "filings": 8,
+      "funds": 8
+    },
+    {
+      "period": "2025-12-31",
+      "label": "Q4 2025",
+      "deadline": "2026-02-17",
+      "filings": 9,
+      "funds": 8
+    },
+    {
+      "period": "2025-09-30",
+      "label": "Q3 2025",
+      "deadline": "2025-11-14",
+      "filings": 9,
+      "funds": 8
+    },
+    {
+      "period": "2025-06-30",
+      "label": "Q2 2025",
+      "deadline": "2025-08-14",
+      "filings": 9,
+      "funds": 8
+    },
+    {
+      "period": "2025-03-31",
+      "label": "Q1 2025",
+      "deadline": "2025-05-15",
+      "filings": 10,
+      "funds": 8
+    },
+    {
+      "period": "2024-12-31",
+      "label": "Q4 2024",
+      "deadline": "2025-02-14",
+      "filings": 8,
+      "funds": 8
+    },
+    {
+      "period": "2024-09-30",
+      "label": "Q3 2024",
+      "deadline": "2024-11-14",
+      "filings": 8,
+      "funds": 8
+    }
+  ],
+  "funds": {},
+  "counts": {
+    "filers": 8,
+    "filings": 62,
+    "holdings": 117
+  },
+  "notes": []
+}

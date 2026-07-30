@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>13F Fund Tracker</title>
+
+    <!-- REQUIRED: classic script, in <head>, before the app module.
+         Defines window.MunshotDashboardSDK. Do NOT add type="module",
+         async, or defer — load order matters, because src/lib/sdk.ts
+         constructs its client at import time so the message listener is
+         live before host:init can arrive.
+
+         SRI: this is an unversioned third-party script that gets handed the
+         user's session token, so it should be pinned by hash. Generate with:
+
+           curl -sL https://munshot.s3.ap-south-1.amazonaws.com/SDK+script/munshot-dashboard-sdk.v1.0.0.min.js \
+             | openssl dgst -sha384 -binary | openssl base64 -A
+
+         then add integrity="sha384-<hash>" crossorigin="anonymous" below.
+         Deliberately left off until the hash is verified — a WRONG hash blocks
+         the script entirely and the dashboard renders unauthenticated. -->
+    <script src="https://munshot.s3.ap-south-1.amazonaws.com/SDK+script/munshot-dashboard-sdk.v1.0.0.min.js"></script>
+
+    <style>
+      html, body, #root { margin: 0; padding: 0; height: 100%; }
+      body { overflow: hidden; } /* only the dashboard's Zone 2 scrolls */
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,214 @@
+/* src/styles.css
+ *
+ * Only transform and opacity are animated anywhere in this file. Those two skip
+ * layout and paint and run on the compositor; animating width/height/margin/
+ * padding/all triggers all three rendering stages and drops frames on a dense
+ * table. No animation library is used — none of this needs one.
+ */
+
+:root {
+  /* The built-in CSS easings are too weak to read as intentional. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --house: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { box-sizing: border-box; }
+
+/* ---------------------------------------------------------------------------
+ * Loading. A shimmer skeleton shaped like the final widget, never a spinner:
+ * it tells the reader what is arriving and keeps the layout from jumping when
+ * it does.
+ * ------------------------------------------------------------------------- */
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.shimmer {
+  background-image: linear-gradient(90deg, #e5e7eb 0%, #f3f4f6 50%, #e5e7eb 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite linear;
+  border-radius: 6px;
+}
+
+/* Refreshing: keep the previous data mounted and dim it. Never unmount — a
+ * remount would restart every chart's entrance animation on each poll. */
+.is-refreshing { opacity: 0.6; transition: opacity 180ms var(--ease-out); }
+
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+/* Refresh affordance. Deliberately longer than the 300ms UI budget: this is a
+ * status indicator for work in flight, not a transition between two states. */
+@keyframes spin { to { transform: rotate(360deg); } }
+.refresh-bar {
+  position: absolute; top: 0; left: 0; height: 2px; width: 25%;
+  background: #4f46e5; animation: indeterminate 1.1s infinite linear;
+}
+
+/* ---------------------------------------------------------------------------
+ * Widget card
+ * ------------------------------------------------------------------------- */
+.widget-card {
+  transition: transform 220ms var(--ease-out), box-shadow 220ms var(--ease-out),
+              border-color 220ms var(--ease-out);
+  will-change: transform;
+}
+
+/* Gated: touch devices fire :hover on tap, which would leave a card stuck in
+ * its lifted state after the finger leaves. */
+@media (hover: hover) and (pointer: fine) {
+  .widget-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(79, 70, 229, 0.2);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(79, 70, 229, 0.06);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Pressables. Instant feedback so the interface feels like it heard the click.
+ * ------------------------------------------------------------------------- */
+.pressable {
+  transition: transform 160ms var(--ease-out), background-color 160ms ease,
+              border-color 160ms ease, color 160ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.pressable:active { transform: scale(0.97); }
+.pressable:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; }
+
+/* ---------------------------------------------------------------------------
+ * Entrances. Never from scale(0) — nothing in the real world appears from
+ * nothing, and it reads as a glitch rather than an arrival.
+ * ------------------------------------------------------------------------- */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to   { opacity: 1; transform: none; }
+}
+
+.rise-in { animation: riseIn 220ms var(--ease-out) both; }
+
+/* Stagger is decorative and must never gate interaction. Kept short: long
+ * delays make the whole view feel slow rather than considered. */
+.stagger > * { animation: riseIn 200ms var(--ease-out) both; }
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 40ms; }
+.stagger > *:nth-child(3) { animation-delay: 80ms; }
+.stagger > *:nth-child(4) { animation-delay: 120ms; }
+.stagger > *:nth-child(5) { animation-delay: 160ms; }
+.stagger > *:nth-child(n + 6) { animation-delay: 200ms; }
+
+/* ---------------------------------------------------------------------------
+ * Ticker drawer.
+ *
+ * position: absolute inside the shell, NOT fixed — fixed drifts inside an
+ * iframe when the host resizes. Inset below the 48px header so the header stays
+ * interactive with the drawer open. Because it is absolutely positioned,
+ * opening it never reflows Zone 2, so no Recharts container re-measures and no
+ * chart replays its entrance.
+ * ------------------------------------------------------------------------- */
+.drawer {
+  position: absolute; top: 48px; right: 0; bottom: 0; width: 480px; max-width: 92vw;
+  background: #fff; border-left: 1px solid #e5e7eb;
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.08);
+  display: flex; flex-direction: column; z-index: 20;
+  /* 16px settle + opacity, not translateX(100%). A full-width slide reads as
+   * sluggish and pulls the eye to the motion instead of the content. */
+  transition: transform 220ms var(--ease-out), opacity 220ms var(--ease-out);
+}
+.drawer[data-state="closed"] { transform: translateX(16px); opacity: 0; pointer-events: none; }
+.drawer[data-state="open"]   { transform: none; opacity: 1; }
+/* Exit is faster than enter: slow where the user is deciding, fast where the
+ * system is responding. */
+.drawer[data-state="closed"] { transition-duration: 160ms; }
+
+.scrim {
+  position: absolute; top: 48px; right: 0; bottom: 0; left: 0;
+  background: rgba(17, 24, 39, 0.28); z-index: 15;
+  transition: opacity 160ms var(--ease-out);
+}
+.scrim[data-state="closed"] { opacity: 0; pointer-events: none; }
+
+/* Popovers scale from their trigger, not from the viewport centre. (Modals are
+ * the exception and stay centred — they are not anchored to anything.) */
+.popover {
+  transform-origin: var(--popover-origin, top right);
+  transition: transform 160ms var(--ease-out), opacity 160ms var(--ease-out);
+}
+.popover[data-state="closed"] { transform: scale(0.96); opacity: 0; pointer-events: none; }
+.popover[data-state="open"]   { transform: none; opacity: 1; }
+
+/* ---------------------------------------------------------------------------
+ * Tables. The first column stays put while fund columns scroll horizontally —
+ * a matrix row is unreadable once its row label has scrolled away.
+ * ------------------------------------------------------------------------- */
+.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.data-table th {
+  position: sticky; top: 0; z-index: 2;
+  background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(8px);
+  text-align: right; font-weight: 600; color: #6b7280;
+  padding: 8px 10px; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
+}
+.data-table th:first-child, .data-table td:first-child {
+  text-align: left; position: sticky; left: 0; z-index: 1; background: #fff;
+}
+.data-table th:first-child { z-index: 3; }
+.data-table td {
+  padding: 7px 10px; text-align: right; border-bottom: 1px solid #f3f4f6;
+  /* Tabular figures so digits line up column-wise and a scanning eye can
+   * compare magnitudes without reading every number. */
+  font-variant-numeric: tabular-nums;
+}
+@media (hover: hover) and (pointer: fine) {
+  .data-table tbody tr:hover td { background: #fafafa; }
+  .data-table tbody tr:hover td:first-child { background: #fafafa; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Consensus matrix
+ * ------------------------------------------------------------------------- */
+.matrix-cell {
+  transition: transform 140ms var(--ease-out), opacity 140ms var(--ease-out);
+  will-change: transform;
+}
+@media (hover: hover) and (pointer: fine) {
+  .matrix-cell:hover { transform: scale(1.04); z-index: 2; }
+}
+/* Crosshair by opacity only: no border repaint, no layout. */
+.matrix[data-hover-col] .matrix-cell:not([data-active]) { opacity: 0.45; }
+
+/* Keyboard-driven focus moves get NO motion. These are repeated dozens of
+ * times per session and animating them makes the grid feel laggy. */
+.matrix-cell:focus-visible { outline: 2px solid #4f46e5; outline-offset: -2px; transition: none; }
+
+/* ---------------------------------------------------------------------------
+ * Flow bars — four bars do not justify a charting library, a ResponsiveContainer
+ * and a layout pass. scaleX is free on the compositor.
+ * ------------------------------------------------------------------------- */
+.flow-bar { transform-origin: left center; transition: transform 260ms var(--ease-out); }
+
+/* ---------------------------------------------------------------------------
+ * Reduced motion means fewer and gentler animations, not zero: opacity and
+ * colour still aid comprehension, so only movement is removed.
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 120ms !important;
+  }
+  .widget-card:hover { transform: none; }
+  .pressable:active { transform: none; }
+  .matrix-cell:hover { transform: none; }
+  .drawer[data-state="closed"] { transform: none; }
+  .stagger > * { animation-delay: 0ms !important; }
+  .shimmer { animation: none; background: #eef0f2; }
+}
+
+/* Scrollbars: present but quiet. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 8px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #d1d5db; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }

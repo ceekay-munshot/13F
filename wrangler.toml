@@ -1,0 +1,47 @@
+# Cloudflare Pages configuration.
+#
+# `name` MUST equal the Pages project name exactly. The Git-integrated build
+# validates this file and fails the whole deploy on a mismatch, leaving
+# production stuck on the last good build.
+name = "muns-13f"
+compatibility_date = "2025-11-01"
+pages_build_output_dir = "dist"
+
+# ---------------------------------------------------------------------------
+# D1 + R2 bindings — KEEP COMMENTED UNTIL REAL UUIDs EXIST.
+#
+# Placeholder or invalid UUIDs make Cloudflare Pages log
+#   "A Wrangler configuration file was found but it does not appear to be
+#    valid. ... Skipping file and continuing."
+# and then SILENTLY IGNORE THE ENTIRE FILE — production freezes on an older
+# build with no error surfaced anywhere. Create the resources first, paste the
+# real IDs, then uncomment.
+#
+#   npx wrangler d1 create muns-13f
+#   npx wrangler d1 create muns-13f-preview
+#   npx wrangler r2 bucket create muns-13f-filings
+#   npx wrangler r2 bucket create muns-13f-filings-preview
+#
+# DO NOT collapse prod and preview onto one database_id. A preview-branch
+# backfill must never be able to corrupt production holdings.
+# ---------------------------------------------------------------------------
+
+# [[d1_databases]]
+# binding             = "F13F_DB"
+# database_name       = "muns-13f"
+# database_id         = "<real prod uuid>"
+# preview_database_id = "<real preview uuid>"
+# migrations_dir      = "migrations"
+
+# [[r2_buckets]]
+# binding             = "F13F_R2"
+# bucket_name         = "muns-13f-filings"
+# preview_bucket_name = "muns-13f-filings-preview"
+
+[observability]
+enabled = true
+
+# Secrets are NOT declared here. Set them in the Cloudflare dashboard under
+# Settings -> Variables and Secrets, separately for Production and Preview:
+#   F13F_CAPTURE_SECRET   shared with the GitHub Actions ingest workflows
+# See .env.example.

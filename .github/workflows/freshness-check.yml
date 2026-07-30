@@ -1,0 +1,62 @@
+name: Freshness check
+
+# ---------------------------------------------------------------------------
+# An INDEPENDENT watchdog. The ingest workflow opens an issue when it fails, but
+# it cannot detect the failure that matters most: a run that never started at all.
+# This job checks the published output instead of the process.
+#
+# The thresholds are deadline-aware because a flat "did it run today?" alert is
+# useless here — for most of the year, doing nothing IS the correct behaviour.
+# Alerting on quiet days trains everyone to ignore the alert, so it stays silent
+# until the calendar says something should have happened.
+# ---------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: '41 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Evaluate freshness
+        id: check
+        run: node scripts/freshness-check.mjs --data=public/data
+
+      - name: Open or update freshness issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const label = '13f-freshness';
+            let detail = '(no detail written)';
+            try { detail = fs.readFileSync('/tmp/freshness.md', 'utf8'); } catch {}
+            const body = [
+              detail,
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              ...context.repo, state: 'open', labels: label,
+            });
+            if (existing.data.length) {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: existing.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                ...context.repo, title: '13F data is going stale', body, labels: [label],
+              });
+            }
