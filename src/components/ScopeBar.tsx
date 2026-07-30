@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../theme";
-import { periodLabel } from "../lib/format";
+import { periodLabel, usd } from "../lib/format";
 import type { Filer } from "../lib/data";
 
 function Chip({
@@ -42,6 +42,31 @@ function Chip({
   );
 }
 
+/** Highlight the matched run so it is obvious WHY a row matched. */
+function Highlight({ text, needle }: { text: string; needle: string }) {
+  if (!needle) return <>{text}</>;
+  const i = text.toLowerCase().indexOf(needle.toLowerCase());
+  if (i < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark style={{ background: "#fde68a", color: "inherit", borderRadius: 2, padding: "0 1px" }}>
+        {text.slice(i, i + needle.length)}
+      </mark>
+      {text.slice(i + needle.length)}
+    </>
+  );
+}
+
+/**
+ * Fund search. Built as a search FIELD rather than a select, because the universe
+ * is thousands of managers — a dropdown arrow implies "pick from a short list"
+ * and reads as the wrong affordance entirely.
+ *
+ * Search runs against a file downloaded once, so there is no request per
+ * keystroke, no debounce, and nothing to rate-limit. That is what makes it
+ * feel instant.
+ */
 export function FundPicker({
   filers, value, onChange,
 }: {
@@ -51,94 +76,183 @@ export function FundPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const [cursor, setCursor] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const selected = filers.find((f) => f.cik === value);
+  const needle = q.trim();
 
-  // Search runs entirely in the browser against a file downloaded once. No
-  // request per keystroke, no debounce needed, no server to rate-limit.
   const results = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return filers.slice(0, 60);
-    return filers.filter((f) => f.name.toLowerCase().includes(needle)).slice(0, 60);
-  }, [filers, q]);
+    const n = needle.toLowerCase();
+    if (!n) return filers;
+    // Rank prefix matches above substring matches: typing "co" should offer
+    // Coatue before Renaissance Technologies.
+    const starts: Filer[] = [];
+    const contains: Filer[] = [];
+    for (const f of filers) {
+      const name = f.name.toLowerCase();
+      if (name.startsWith(n)) starts.push(f);
+      else if (name.includes(n) || (f.code ?? "").toLowerCase().includes(n)) contains.push(f);
+    }
+    return [...starts, ...contains];
+  }, [filers, needle]);
+
+  useEffect(() => setCursor(0), [needle]);
 
   useEffect(() => {
     if (!open) return;
     inputRef.current?.focus();
+    inputRef.current?.select();
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  // Keep the keyboard cursor in view without animating — scroll-into-view on a
+  // repeated keypress is exactly the kind of high-frequency action that should
+  // never animate.
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>(`[data-idx="${cursor}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Escape") { setOpen(false); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, results.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const pick = results[cursor];
+      if (pick) { onChange(pick.cik); setOpen(false); setQ(""); }
+    }
+  }
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         className="pressable"
         onClick={() => setOpen((v) => !v)}
+        title="Search funds"
         style={{
-          height: 28, padding: "0 10px", borderRadius: 8, cursor: "pointer",
-          fontSize: 11.5, fontWeight: 600, fontFamily: "inherit",
-          border: `1px solid ${t.borderSolid}`, background: "#fff", color: t.textPrimary,
-          display: "inline-flex", alignItems: "center", gap: 6, maxWidth: 260,
+          height: 36, minWidth: 300, padding: "0 12px", borderRadius: 10, cursor: "text",
+          fontSize: 13, fontFamily: "inherit", textAlign: "left",
+          border: `1px solid ${open ? t.primary : t.borderSolid}`,
+          boxShadow: open ? `0 0 0 3px ${t.primaryLight}` : "0 1px 2px rgba(0,0,0,0.04)",
+          background: "#fff", color: t.textPrimary,
+          display: "inline-flex", alignItems: "center", gap: 9,
         }}
       >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {selected?.name ?? "Select a fund"}
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} aria-hidden="true">
+          <circle cx="6.8" cy="6.8" r="4.6" stroke={t.textMuted} strokeWidth="1.7" />
+          <path d="M10.4 10.4 L14 14" stroke={t.textMuted} strokeWidth="1.7" strokeLinecap="round" />
+        </svg>
+        <span style={{ flex: 1, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {selected?.name ?? "Search funds…"}
         </span>
-        <span style={{ color: t.textHint, fontSize: 9 }}>▼</span>
+        <span style={{ fontSize: 10.5, color: t.textHint, flexShrink: 0 }}>{filers.length} funds</span>
       </button>
 
       <div
         className="popover"
         data-state={open ? "open" : "closed"}
-        // Origin-aware: scales from the trigger it is anchored to, not from the
-        // middle of the viewport.
         style={{
           ["--popover-origin" as string]: "top left",
-          position: "absolute", top: 34, left: 0, zIndex: 40, width: 320,
-          background: "#fff", border: `1px solid ${t.borderSolid}`, borderRadius: 12,
-          boxShadow: "0 12px 32px rgba(0,0,0,0.12)", overflow: "hidden",
+          position: "absolute", top: 42, left: 0, zIndex: 40, width: 420, maxWidth: "92vw",
+          background: "#fff", border: `1px solid ${t.borderSolid}`, borderRadius: 14,
+          boxShadow: "0 18px 48px rgba(17,24,39,0.16)", overflow: "hidden",
         }}
       >
-        <input
-          ref={inputRef}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search funds…"
-          style={{
-            width: "100%", border: "none", borderBottom: `1px solid ${t.border}`,
-            padding: "9px 12px", fontSize: 12.5, outline: "none", fontFamily: "inherit",
-          }}
-        />
-        <div style={{ maxHeight: 280, overflow: "auto" }}>
-          {results.length === 0 && (
-            <div style={{ padding: "14px 12px", fontSize: 12, color: t.textHint }}>No funds match “{q}”.</div>
-          )}
-          {results.map((f) => (
+        <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "11px 14px", borderBottom: `1px solid ${t.border}` }}>
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} aria-hidden="true">
+            <circle cx="6.8" cy="6.8" r="4.6" stroke={t.primary} strokeWidth="1.7" />
+            <path d="M10.4 10.4 L14 14" stroke={t.primary} strokeWidth="1.7" strokeLinecap="round" />
+          </svg>
+          <input
+            ref={inputRef}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Search by manager name…"
+            style={{
+              flex: 1, border: "none", padding: 0, fontSize: 14, outline: "none",
+              fontFamily: "inherit", color: t.textPrimary, background: "transparent",
+            }}
+          />
+          {q && (
             <button
-              key={f.cik}
-              onClick={() => { onChange(f.cik); setOpen(false); setQ(""); }}
-              style={{
-                display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between",
-                gap: 10, padding: "7px 12px", border: "none", cursor: "pointer", textAlign: "left",
-                background: f.cik === value ? t.primaryLight : "transparent",
-                fontSize: 12, fontFamily: "inherit",
-                color: f.cik === value ? t.primaryText : t.textSecondary,
-              }}
+              className="pressable"
+              onClick={() => { setQ(""); inputRef.current?.focus(); }}
+              aria-label="Clear"
+              style={{ border: "none", background: "transparent", cursor: "pointer", color: t.textHint, fontSize: 14, padding: 0 }}
             >
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
-              <span style={{ fontSize: 10.5, color: t.textHint, flexShrink: 0 }}>{f.periods}q</span>
+              ✕
             </button>
-          ))}
+          )}
+        </div>
+
+        <div
+          style={{
+            display: "flex", justifyContent: "space-between", padding: "6px 14px",
+            fontSize: 10.5, color: t.textHint, background: "#fafafa", borderBottom: `1px solid ${t.border}`,
+          }}
+        >
+          <span>{results.length} of {filers.length}{needle ? ` matching “${needle}”` : ""}</span>
+          <span>↑↓ navigate · ↵ select · esc close</span>
+        </div>
+
+        <div ref={listRef} style={{ maxHeight: 380, overflowY: "auto" }}>
+          {results.length === 0 ? (
+            <div style={{ padding: "22px 14px", fontSize: 13, color: t.textHint, textAlign: "center" }}>
+              No manager matches “{needle}”.
+            </div>
+          ) : (
+            results.map((f, i) => {
+              const active = i === cursor;
+              const isSel = f.cik === value;
+              return (
+                <button
+                  key={f.cik}
+                  data-idx={i}
+                  onMouseEnter={() => setCursor(i)}
+                  onClick={() => { onChange(f.cik); setOpen(false); setQ(""); }}
+                  style={{
+                    display: "flex", width: "100%", alignItems: "center", gap: 10,
+                    padding: "9px 14px", border: "none", cursor: "pointer", textAlign: "left",
+                    background: active ? t.primaryLight : "transparent",
+                    fontFamily: "inherit",
+                    borderLeft: `3px solid ${isSel ? t.primary : "transparent"}`,
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: 13, fontWeight: 600, color: t.textPrimary,
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}
+                    >
+                      <Highlight text={f.name} needle={needle} />
+                    </div>
+                    <div style={{ fontSize: 10.5, color: t.textHint, marginTop: 1 }}>
+                      {f.latestPeriod ? `latest ${periodLabel(f.latestPeriod)}` : "no filings"}
+                      {f.state ? ` · ${f.state}` : ""}
+                      {` · ${f.periods} quarter${f.periods === 1 ? "" : "s"}`}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11.5, fontWeight: 600, color: t.textMuted,
+                      fontVariantNumeric: "tabular-nums", flexShrink: 0,
+                    }}
+                  >
+                    {usd(f.latestValueUsd)}
+                  </div>
+                </button>
+              );
+            })
+          )}
         </div>
       </div>
     </div>

@@ -66,11 +66,26 @@ if (!existsSync(manifestPath)) {
     notes.push(`Most recent past-due period: ${periodLabel(closed)} (due ${closedDue}, ${daysPast}d ago)`);
     if (!row) {
       fail(`${periodLabel(closed)} was due ${closedDue} (${daysPast}d ago) and is not in the manifest at all.`);
-    } else if (daysPast >= 3 && row.funds < peakFunds) {
-      fail(
-        `${periodLabel(closed)} was due ${closedDue} (${daysPast}d ago) but only **${row.funds} of ${peakFunds}** funds have filed. ` +
-        `Either the ingest is missing filings, or those managers genuinely have not reported — check the Filings view's Outstanding card.`,
-      );
+    } else if (daysPast >= 3) {
+      // Compare against the PRIOR period with a tolerance, not the all-time peak.
+      //
+      // Filer counts churn every quarter — managers wind down, cross the $100M
+      // threshold, or merge — so 8,472 against a peak of 8,586 is ordinary
+      // variation, not a missing-data incident. Comparing to the peak made this
+      // fire on a perfectly healthy build, and an alert that cries wolf is worse
+      // than no alert.
+      const priorRow = periods.find((p) => p.period === priorPeriod(closed));
+      const baseline = priorRow?.funds ?? peakFunds;
+      const TOLERANCE = 0.85;
+      if (baseline > 0 && row.funds < baseline * TOLERANCE) {
+        fail(
+          `${periodLabel(closed)} was due ${closedDue} (${daysPast}d ago) and has **${row.funds}** filers ` +
+          `against ${baseline} the prior quarter — a drop of ${(100 - (row.funds / baseline) * 100).toFixed(0)}%. ` +
+          `Either the ingest is missing filings, or those managers genuinely have not reported.`,
+        );
+      } else {
+        notes.push(`Filer count ${row.funds} vs ${baseline} prior — within normal churn.`);
+      }
     }
   }
 
@@ -89,7 +104,7 @@ if (!existsSync(manifestPath)) {
   //    manifest referencing missing artifacts is worse than no manifest: the UI
   //    renders chrome and then fails per widget.
   for (const p of periods.slice(0, 2)) {
-    const path = `${DATA}/period/${p.period}/filings.json.gz`;
+    const path = `${DATA}/period/${p.period}/filings.json`;
     if (!existsSync(path)) fail(`Manifest lists ${periodLabel(p.period)} but \`${path}\` is missing.`);
   }
 }

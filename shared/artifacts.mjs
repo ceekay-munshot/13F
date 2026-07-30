@@ -51,6 +51,14 @@ export const paths = {
   manifest: () => MANIFEST_PATH,
   filers: () => "meta/filers.json",
   periods: () => "meta/periods.json",
+  // One file carrying the value/position series for EVERY filer.
+  //
+  // Replaces ~8,500 individual summary.json files, which cost 33 MB and 8,500
+  // requests-worth of objects for ONE quarter and would have multiplied by every
+  // quarter of history added. The same information keyed compactly in a single
+  // file is a few MB, is fetched once, and makes history affordable for the whole
+  // universe rather than just the funds whose line items we store.
+  series: () => "meta/series.json",
   periodFilings: (period) => `period/${period}/filings.json`,
   periodLeaderboard: (period) => `period/${period}/leaderboard.json`,
   periodSectors: (period) => `period/${period}/sectors.json`,

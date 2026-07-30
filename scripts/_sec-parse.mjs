@@ -33,16 +33,35 @@ const parser = new XMLParser({
 // Normalize at the boundary so nothing downstream has to know.
 // ---------------------------------------------------------------------------
 
-/** "03-31-2026" or "2026-03-31" or "20260331" -> "2026-03-31" */
+const MONTHS = {
+  JAN: "01", FEB: "02", MAR: "03", APR: "04", MAY: "05", JUN: "06",
+  JUL: "07", AUG: "08", SEP: "09", OCT: "10", NOV: "11", DEC: "12",
+};
+
+/**
+ * Normalize the FOUR date shapes the SEC uses for 13F.
+ *
+ *   2026-03-31    submissions API (ISO)
+ *   03-31-2026    primary_doc.xml periodOfReport (MM-DD-YYYY)
+ *   20260331      SGML header
+ *   31-MAR-2026   the DERA quarterly data set (DD-MON-YYYY)
+ *
+ * The last one is easy to miss because it only appears in the bulk data set. It
+ * silently returned null for every row, which made every period_end null, which
+ * made the full-universe loader produce zero funds while otherwise appearing to
+ * work perfectly.
+ */
 export function normalizeDate(s) {
   if (!s) return null;
-  const v = String(s).trim();
+  const v = String(s).trim().toUpperCase();
   let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
-  if (m) return v;
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
   m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(v);
   if (m) return `${m[3]}-${m[1]}-${m[2]}`;
   m = /^(\d{4})(\d{2})(\d{2})$/.exec(v);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = /^(\d{1,2})-([A-Z]{3})-(\d{4})$/.exec(v);
+  if (m && MONTHS[m[2]]) return `${m[3]}-${MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
   return null;
 }
 

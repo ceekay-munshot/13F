@@ -163,6 +163,17 @@ export function detectStructuralEvent(current, prior, opts = {}) {
   }
 
   // 1. UNIFORM-RATIO — the pro-rata detector.
+  //
+  // The DISCRIMINATOR is the IQR, not the magnitude. An earlier version also
+  // required `median < 0.5`, tuned to the dramatic case where a book shrank
+  // ~95%. That gate made the detector miss the ordinary version of the same
+  // event: Cantillon's 2026-Q1 filing shows an identical -11.9% across roughly
+  // 30 of 38 positions, which is just as clearly one structural event and was
+  // being rendered as 30 independent sells.
+  //
+  // Thirty positions do not move by the same percentage to four significant
+  // figures by coincidence, at ANY magnitude. So the only magnitude condition
+  // that belongs here is "it moved at all".
   if (ratios.length >= 5) {
     const sorted = [...ratios].sort((a, b) => a - b);
     const med = quantile(sorted, 0.5);
@@ -170,16 +181,19 @@ export function detectStructuralEvent(current, prior, opts = {}) {
     detail.retained = ratios.length;
     detail.medianRatio = med;
     detail.iqr = iqr;
-    if (med > 0 && iqr < 0.02 * med && med < 0.5) {
+    if (med > 0 && iqr < 0.02 * med && Math.abs(1 - med) > 0.02) {
+      const pctMoved = Math.abs(1 - med) * 100;
+      const direction = med < 1 ? "reduced" : "increased";
       return {
         event: "PRO_RATA_REDUCTION",
         detail: {
           ...detail,
           reductionPct: (1 - med) * 100,
           message:
-            `All ${ratios.length} retained positions were reduced by an identical ` +
-            `~${((1 - med) * 100).toFixed(1)}%. This is characteristic of a redemption, ` +
-            `in-kind distribution, or transfer of assets — not ${ratios.length} separate trades.`,
+            `All ${ratios.length} retained positions were ${direction} by an identical ` +
+            `~${pctMoved.toFixed(1)}%. A uniform multiplier across every position is ` +
+            `characteristic of a subscription, redemption, in-kind transfer or share ` +
+            `reclassification — not ${ratios.length} separate trades.`,
         },
       };
     }

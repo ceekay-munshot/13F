@@ -83,6 +83,24 @@ export default function Dashboard() {
   }
 
   const periods = mf?.periods.map((p) => p.period).sort().reverse() ?? [];
+
+  // Consensus compares a BOUNDED set of managers, not the whole universe.
+  //
+  // Two reasons, and the first is fatal: the view joins each fund's holdings in
+  // the browser, so pointing it at 9,396 filers fired 9,396 parallel fetches and
+  // hung the page. The second is that it would not be readable anyway — overlap
+  // across nine thousand managers is a market-wide statistic, not a comparison.
+  // The product's question is "what do THESE managers agree on", so take the
+  // largest funds whose line items we actually carry.
+  const CONSENSUS_MAX = 12;
+  const consensusFunds = useMemo(() => {
+    // Prefer the curated active-manager set. Falling back to "largest by value"
+    // selects index complexes that hold the entire market, which turns consensus
+    // into a tautology.
+    const watch = filers.filter((f) => f.watch);
+    if (watch.length >= 2) return watch.slice(0, CONSENSUS_MAX);
+    return filers.filter((f) => f.hasHoldings !== false).slice(0, CONSENSUS_MAX);
+  }, [filers]);
   const freshness: Freshness = !session.token && sdkMode === "live" ? "nosession" : "fresh";
 
   return (
@@ -155,7 +173,7 @@ export default function Dashboard() {
               <FundView cik={cik} period={period} mf={mf} longsOnly={longsOnly} />
             ) : view === "consensus" ? (
               <ConsensusView
-                filers={filers}
+                filers={consensusFunds}
                 period={period}
                 mf={mf}
                 longsOnly={longsOnly}

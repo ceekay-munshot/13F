@@ -36,6 +36,9 @@ export interface Filer {
   periods: number;
   latestPeriod: string | null;
   latestValueUsd: number | null;
+  hasHoldings?: boolean;
+  /** In the curated active-manager comparison set. */
+  watch?: boolean;
 }
 
 export interface FundPeriodMeta {
@@ -130,6 +133,8 @@ export interface FundSeriesPoint {
   pages: number;
   acceptedAt: string | null;
   filingLagDays: number | null;
+  /** False when this fund-quarter's holdings are outside the stored set. */
+  hasHoldings?: boolean;
 }
 
 export interface FundSummary {
@@ -247,11 +252,70 @@ export async function loadPeriods(mf: Manifest) {
   return env.data;
 }
 
+/**
+ * Series for EVERY filer, from one shared file.
+ *
+ * Fetched once and memoised. This exists so history is available for the whole
+ * universe: writing ~8,500 individual summary files cost 33 MB for a single
+ * quarter and would have multiplied by every quarter added, whereas the same
+ * information keyed compactly is a few MB.
+ */
+const SERIES_FIELDS = [
+  "period", "valueLongUsd", "positions", "reportedTotalUsd", "top10WeightPct",
+  "n_new", "n_added", "n_trimmed", "n_exited", "turnover_position_pct",
+  "priorState", "structuralEvent", "confidentialOmitted", "filingLagDays",
+  "valueOptionsUsd", "positionsLong", "positionsOptions", "hasHoldings",
+] as const;
+
+interface SeriesRow { cik: string; name: string; state: string | null; hasHoldings: boolean; s: unknown[][] }
+let seriesIndex: Promise<Map<string, SeriesRow>> | null = null;
+
+function loadSeriesIndex(mf: Manifest): Promise<Map<string, SeriesRow>> {
+  if (!seriesIndex) {
+    seriesIndex = get<{ data: SeriesRow[] }>("meta/series.json", mf)
+      .then((env) => new Map(env.data.map((r) => [r.cik, r])))
+      .catch(() => new Map<string, SeriesRow>()); // optional: older builds lack it
+  }
+  return seriesIndex;
+}
+
+/** Expand a compact tuple back into a FundSeriesPoint. */
+function expandSeries(tuple: unknown[]): FundSeriesPoint {
+  const o: Record<string, unknown> = {};
+  SERIES_FIELDS.forEach((f, i) => { o[f] = tuple[i] ?? null; });
+  const period = String(o.period);
+  const q = Math.ceil(Number(period.slice(5, 7)) / 3);
+  return {
+    ...(o as unknown as FundSeriesPoint),
+    label: `Q${q} ${period.slice(0, 4)}`,
+    confidentialOmitted: o.confidentialOmitted === 1 || o.confidentialOmitted === true,
+    hasHoldings: o.hasHoldings === 1 || o.hasHoldings === true,
+    deltasSuppressed: Boolean(o.structuralEvent),
+    pages: 0,
+    acceptedAt: null,
+  };
+}
+
 export async function loadFundSummary(cik: string, mf: Manifest): Promise<FundSummary> {
-  const env = await get<{ cik: string; name: string; code: string | null; formerNames: unknown[]; state: string | null; data: { series: FundSeriesPoint[] } }>(
-    `fund/${cik}/summary.json`, mf, cik,
-  );
-  return { cik: env.cik, name: env.name, code: env.code, formerNames: env.formerNames, state: env.state, series: env.data.series };
+  try {
+    const env = await get<{ cik: string; name: string; code: string | null; formerNames: unknown[]; state: string | null; data: { series: FundSeriesPoint[] } }>(
+      `fund/${cik}/summary.json`, mf, cik,
+    );
+    return { cik: env.cik, name: env.name, code: env.code, formerNames: env.formerNames, state: env.state, series: env.data.series };
+  } catch (e) {
+    if (!(e instanceof MissingArtifactError)) throw e;
+    // No dedicated file: this manager is outside the stored line-item set. Its
+    // totals still exist in the shared index, so the Fund view can show the value
+    // history and say plainly that holdings are not carried — rather than
+    // claiming the fund never filed.
+    const idx = await loadSeriesIndex(mf);
+    const row = idx.get(cik);
+    if (!row) throw e;
+    return {
+      cik, name: row.name, code: null, formerNames: [], state: row.state,
+      series: row.s.map(expandSeries),
+    };
+  }
 }
 
 /**

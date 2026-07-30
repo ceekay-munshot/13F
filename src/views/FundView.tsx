@@ -53,44 +53,83 @@ function Delta({ value, unit = "pct", reason }: { value: number | null; unit?: "
 }
 
 /**
- * Treemap tile. Area is position value; FILL is the change in portfolio weight.
+ * Diverging scale for change in portfolio weight.
  *
- * Encoding change rather than sector or a flat brand colour is what makes one
- * treemap answer both "what do they own" and "what moved" — which is why there
- * is no separate change-heatmap widget. Green grew, amber shrank, indigo is new,
- * grey held.
+ * Fixed hex steps rather than an alpha ramp over white. An rgba ramp produces a
+ * mid-tone whose final lightness depends on whatever is behind it, so you cannot
+ * know in advance whether dark or light text will be readable on it — which is
+ * how the first version ended up with illegible labels. With a known set of
+ * fills, each one carries the text colour that actually contrasts with it.
+ *
+ * Two steps per direction, not a continuous ramp: a treemap already encodes
+ * magnitude as AREA, so colour only needs to say direction and roughly how much.
+ */
+const WEIGHT_SCALE = [
+  { min: 2.0, fill: "#047857", text: "#ffffff", sub: "#d1fae5" },   // strongly up
+  { min: 0.1, fill: "#a7f3d0", text: "#065f46", sub: "#047857" },   // up
+  { min: -0.1, fill: "#eef0f2", text: "#4b5563", sub: "#9ca3af" },  // flat
+  { min: -2.0, fill: "#fed7aa", text: "#9a3412", sub: "#c2410c" },  // down
+  { min: -Infinity, fill: "#c2410c", text: "#ffffff", sub: "#ffedd5" }, // strongly down
+] as const;
+
+const NEW_TILE = { fill: "#4f46e5", text: "#ffffff", sub: "#c7d2fe" };
+
+function tileStyle(dWeightPp: number | null, action: string | null) {
+  if (action === "NEW") return NEW_TILE;
+  const d = dWeightPp ?? 0;
+  return WEIGHT_SCALE.find((s) => d >= s.min) ?? WEIGHT_SCALE[2];
+}
+
+/**
+ * Treemap tile. Area is position value; fill is the change in portfolio weight.
+ *
+ * Encoding change rather than sector or a flat brand colour is what lets one
+ * treemap answer both "what do they own" and "what moved", which is why there is
+ * no separate change-heatmap widget.
  */
 function TreemapTile(props: {
   x?: number; y?: number; width?: number; height?: number;
   ticker?: string | null; name?: string; dWeightPp?: number | null; action?: string | null;
 }) {
-  const { x = 0, y = 0, width = 0, height = 0, ticker, name, dWeightPp, action } = props;
+  const { x = 0, y = 0, width = 0, height = 0, ticker, name, dWeightPp = null, action = null } = props;
+  const s = tileStyle(dWeightPp, action);
   const d = dWeightPp ?? 0;
-  const fill =
-    action === "NEW" ? "#4f46e5"
-    : d > 0.05 ? `rgba(5,150,105,${Math.min(0.25 + d / 8, 0.85).toFixed(2)})`
-    : d < -0.05 ? `rgba(217,119,6,${Math.min(0.25 + Math.abs(d) / 8, 0.85).toFixed(2)})`
-    : "rgba(156,163,175,0.35)";
 
-  // Below roughly 34x16 a label is unreadable and only adds visual noise; the
-  // tooltip carries it instead.
-  const showLabel = width > 34 && height > 16;
-  const showSub = width > 70 && height > 34;
+  // Below roughly 30x18 a label is noise rather than information; the tooltip
+  // carries it instead.
+  const showLabel = width > 30 && height > 18;
+  const showSub = width > 62 && height > 36 && dWeightPp != null;
 
   return (
     <g>
-      <rect x={x} y={y} width={width} height={height} fill={fill} stroke="#fff" strokeWidth={1.5} rx={2} />
+      <rect
+        x={x} y={y} width={Math.max(0, width - 2)} height={Math.max(0, height - 2)}
+        fill={s.fill} rx={3}
+        // 1px seam in the page background rather than a heavy white border: the
+        // old 1.5px white stroke visually ate the small tiles.
+        stroke="rgba(255,255,255,0.85)" strokeWidth={1}
+      />
       {showLabel && (
-        <text x={x + width / 2} y={y + height / 2 + (showSub ? -3 : 3)} textAnchor="middle" fill="#111827" fontSize={11} fontWeight={700}>
+        <text
+          x={x + width / 2} y={y + height / 2 + (showSub ? -2 : 4)}
+          textAnchor="middle" fill={s.text} fontSize={11.5} fontWeight={700}
+          // Explicit stroke:none. Recharts passes its own `stroke` prop down to
+          // custom content, and inheriting it outlined every label and made the
+          // text unreadable.
+          stroke="none" style={{ paintOrder: "stroke" }}
+        >
           {ticker ?? "—"}
         </text>
       )}
       {showSub && (
-        <text x={x + width / 2} y={y + height / 2 + 11} textAnchor="middle" fill="#374151" fontSize={9}>
-          {d === 0 ? "" : `${d > 0 ? "+" : ""}${d.toFixed(1)}pp`}
+        <text
+          x={x + width / 2} y={y + height / 2 + 12}
+          textAnchor="middle" fill={s.sub} fontSize={9.5} fontWeight={600} stroke="none"
+        >
+          {`${d > 0 ? "+" : ""}${d.toFixed(1)}pp`}
         </text>
       )}
-      {!showLabel && <title>{`${ticker ?? name}`}</title>}
+      <title>{`${ticker ?? name}${dWeightPp != null ? ` · ${d > 0 ? "+" : ""}${d.toFixed(2)}pp` : ""}`}</title>
     </g>
   );
 }
@@ -110,13 +149,16 @@ export function FundView({
   const [valueView, setValueView] = useState<"Chart" | "Filings">("Chart");
   const [moverView, setMoverView] = useState<"Δ Weight" | "Δ Value">("Δ Weight");
   const [q, setQ] = useState("");
-  const [showRaw, setShowRaw] = useState(false);
+  // Private use: show every number by default. The structural-event note still
+  // appears so the reader knows a -95.4% is one redemption rather than 27
+  // trades, but the figures themselves are never hidden behind a click.
+  const [showRaw, setShowRaw] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    setShowRaw(false);
+    setShowRaw(true);
     setFp(null);
 
     // Load the summary first and use it to decide whether this manager has a
@@ -161,7 +203,7 @@ export function FundView({
       holdings
         .filter((h) => h.type === "" && h.unit === "SH" && h.value > 0)
         .sort((a, b) => b.value - a.value)
-        .slice(0, 50)
+        .slice(0, 100)
         .map((h) => ({
           name: h.name,
           ticker: h.ticker,
@@ -196,6 +238,29 @@ export function FundView({
 
   if (err) {
     return <div style={GRID_WIDE}><WidgetCard title="Fund" span={2}><ErrorState message={err} /></WidgetCard></div>;
+  }
+
+  // Filed, but its holdings are outside the stored detail set. Distinct from
+  // "has not filed" — the filing exists and is on EDGAR, we simply do not carry
+  // the line items for every one of ~8,500 managers. Saying "has not filed" here
+  // would be a plain factual error.
+  if (!loading && summary && point && point.hasHoldings === false) {
+    return (
+      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+        <WidgetCard
+          title={summary.name}
+          subtitle={`${periodLabel(period)} · reported ${usd(point.valueLongUsd)} across ${count(point.positions)} positions`}
+          span={2}
+          bodyMinHeight={220}
+        >
+          <EmptyState
+            icon="◲"
+            message="Line-item holdings are not stored for this manager"
+            hint={`${summary.name} filed for ${periodLabel(period)} and its totals are shown above, but detailed holdings are kept for the largest managers only. The filing itself is on EDGAR.`}
+          />
+        </WidgetCard>
+      </div>
+    );
   }
 
   // Not filed for this quarter. A real, expected state — and the one that most
@@ -310,7 +375,7 @@ export function FundView({
                   padding: "8px 16px", borderTop: `1px solid ${t.border}`, fontSize: 10.5, color: t.textMuted,
                 }}
               >
-                {[["#4f46e5", "new"], ["rgba(5,150,105,0.6)", "weight up"], ["rgba(217,119,6,0.6)", "weight down"], ["rgba(156,163,175,0.35)", "flat"]].map(
+                {[["#4f46e5", "new"], ["#047857", "up >2pp"], ["#a7f3d0", "up"], ["#eef0f2", "flat"], ["#fed7aa", "down"], ["#c2410c", "down >2pp"]].map(
                   ([c, label]) => (
                     <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <span style={{ width: 9, height: 9, borderRadius: 2, background: c }} />
@@ -423,21 +488,21 @@ export function FundView({
                 action={
                   <button
                     className="pressable"
-                    onClick={() => setShowRaw(true)}
+                    onClick={() => setShowRaw(false)}
                     style={{
                       border: "none", background: "transparent", color: "#92400e", cursor: "pointer",
                       fontSize: 11, fontWeight: 700, textDecoration: "underline", fontFamily: "inherit",
                       whiteSpace: "nowrap",
                     }}
                   >
-                    Show raw deltas anyway
+                    Hide the misleading deltas
                   </button>
                 }
               >
                 {suppressionReason}
               </CaveatStrip>
             ) : showRaw && meta?.deltasSuppressed ? (
-              <CaveatStrip>Showing raw deltas. These are misleading — see the note above.</CaveatStrip>
+              <CaveatStrip>Deltas hidden — they would describe one structural event as many separate trades.</CaveatStrip>
             ) : undefined
           }
         >
@@ -530,23 +595,32 @@ export function FundView({
           ) : filtered.length === 0 ? (
             <EmptyState icon="⌕" message={q ? `Nothing matches “${q}”` : "No holdings reported"} />
           ) : (
-            <div style={{ maxHeight: 460, overflow: "auto" }}>
+            <div style={{ maxHeight: 620, overflow: "auto" }}>
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Security</th><th>Type</th><th>Implied price</th><th>Shares</th>
+                    <th>Security</th><th>Class</th><th>Implied price</th><th>Shares</th>
                     <th>Δ Shares</th><th>Value</th><th>Δ Value</th><th>Weight</th><th>Δ Weight</th><th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.slice(0, 400).map((h, i) => (
+                  {filtered.map((h, i) => (
                     <tr key={`${h.issuerId}-${h.type}-${i}`}>
                       <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         <span style={{ fontWeight: 600 }}>{h.ticker ?? h.name}</span>
                         {h.ticker && <span style={{ color: t.textHint, marginLeft: 6, fontSize: 11 }}>{h.name}</span>}
                       </td>
-                      <td style={{ color: h.type ? t.warnAmber : t.textHint, fontSize: 10.5, fontWeight: 600 }}>
-                        {h.type ? h.type.toUpperCase() : h.unit === "PRN" ? "PRN" : "—"}
+                      <td
+                        title={h.cls ?? undefined}
+                        style={{
+                          color: h.type ? t.warnAmber : h.unit === "PRN" ? t.textMuted : t.textSecondary,
+                          fontSize: 10.5, fontWeight: 600, maxWidth: 120,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}
+                      >
+                        {/* Options and debt override the class, because "CALL" is
+                            the more important fact about the row than "COM". */}
+                        {h.type ? h.type.toUpperCase() : h.unit === "PRN" ? "PRN" : (h.cls || "COM")}
                       </td>
                       {/* Named "implied price", not "avg share price": it is
                           value ÷ shares at period end, not a cost basis. */}
@@ -573,11 +647,6 @@ export function FundView({
                   ))}
                 </tbody>
               </table>
-              {filtered.length > 400 && (
-                <div style={{ padding: "9px 14px", fontSize: 11, color: t.textHint, textAlign: "center" }}>
-                  Showing the largest 400 of {count(filtered.length)} positions. Search to narrow.
-                </div>
-              )}
             </div>
           )}
         </WidgetCard>

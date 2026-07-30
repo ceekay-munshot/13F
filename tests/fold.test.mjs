@@ -287,3 +287,53 @@ describe("turnover — both definitions, because they legitimately disagree", ()
     expect(summarizeActions(changes)).toEqual({ n_new: 1, n_added: 1, n_held: 0, n_trimmed: 1, n_exited: 1 });
   });
 });
+
+describe("PRO_RATA_REDUCTION — magnitude must not gate the detector", () => {
+  // Found from a real screenshot: Cantillon's 2026-Q1 filing shows an identical
+  // -11.9% across ~30 of 38 positions. An earlier version required
+  // `median < 0.5` — tuned to the dramatic ~95% case — and so rendered this as
+  // 30 independent sells. Thirty positions do not move by the same percentage
+  // to four significant figures by coincidence, at ANY magnitude.
+  const uniform = (ratio, n) => {
+    const prior = [];
+    const current = [];
+    for (let i = 0; i < n; i++) {
+      prior.push(holding({ cusip: cusipAt(i), value: 1_000_000, shares: 100_000, weight: 100 / n }));
+      current.push(holding({
+        cusip: cusipAt(i),
+        value: Math.round(1_000_000 * ratio),
+        shares: Math.round(100_000 * ratio),
+        weight: 100 / n,
+      }));
+    }
+    return {
+      current: { period_end: "2026-03-31", holdings: current, value_long_usd: 1_000_000 * n * ratio },
+      prior: { period_end: "2025-12-31", holdings: prior, value_long_usd: 1_000_000 * n },
+    };
+  };
+
+  it("fires on a modest uniform reduction (-11.9%), not just a drastic one", () => {
+    const { current, prior } = uniform(0.881, 30);
+    const s = detectStructuralEvent(current, prior);
+    expect(s.event).toBe("PRO_RATA_REDUCTION");
+    expect(s.detail.reductionPct).toBeCloseTo(11.9, 1);
+    expect(s.detail.message).toMatch(/reduced by an identical/);
+  });
+
+  it("fires on a uniform INCREASE too — a subscription is also not N trades", () => {
+    const { current, prior } = uniform(1.15, 20);
+    const s = detectStructuralEvent(current, prior);
+    expect(s.event).toBe("PRO_RATA_REDUCTION");
+    expect(s.detail.message).toMatch(/increased by an identical/);
+  });
+
+  it("still fires on the drastic case", () => {
+    const { current, prior } = uniform(0.04605, 27);
+    expect(detectStructuralEvent(current, prior).event).toBe("PRO_RATA_REDUCTION");
+  });
+
+  it("does NOT fire when nothing moved — a flat book is not a structural event", () => {
+    const { current, prior } = uniform(1.0, 30);
+    expect(detectStructuralEvent(current, prior).event).toBeNull();
+  });
+});

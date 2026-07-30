@@ -4,14 +4,13 @@
 // "anchor" — what was newly bought and what was sold out of.
 
 import { useEffect, useMemo, useState } from "react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip, Cell as RCell } from "recharts";
 import { WidgetCard, ViewToggle, CaveatStrip } from "../components/WidgetCard";
 import { Kpi, KpiRow } from "../components/Kpi";
 import { ConsensusMatrix, MatrixLegend } from "../components/ConsensusMatrix";
 import { MatrixSkeleton, EmptyState, ErrorState, PartialNotice, TableSkeleton } from "../components/states";
 import { t, fundColor, ACTION_COLORS } from "../theme";
 import { usd, pp, count, periodLabel, dateLabel } from "../lib/format";
-import { buildConsensus, sortConsensus, overlapDistribution, buildAnchor, type FundInput, type SortKey } from "../lib/consensus";
+import { buildConsensus, sortConsensus, buildAnchor, type FundInput, type SortKey } from "../lib/consensus";
 import { loadFundPeriodAll, MissingArtifactError, type Manifest, type Filer } from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
 
@@ -52,8 +51,8 @@ function AnchorList({
   }
   const accent = tone === "new" ? ACTION_COLORS.NEW : ACTION_COLORS.EXITED;
   return (
-    <div style={{ maxHeight: 300, overflow: "auto" }}>
-      {items.slice(0, 40).map((e) => (
+    <div style={{ maxHeight: 420, overflow: "auto" }}>
+      {items.slice(0, 200).map((e) => (
         <div
           key={e.issuerId}
           style={{
@@ -95,7 +94,15 @@ export function ConsensusView({
   const [loading, setLoading] = useState(true);
   const [threshold, setThreshold] = useState<string>("2");
   const [sortKey, setSortKey] = useState<SortKey>("funds");
+  // Render a fast default and let the user ask for the rest.
+  //
+  // Across the full universe there are thousands of consensus names; at 12 fund
+  // columns that is ~67,000 cells, which took 18 seconds to lay out and froze
+  // interaction. "Show everything" stops being show-everything at the point the
+  // page cannot be used — so the default is the top slice, sorted, with the full
+  // count one click away.
   const [showAll, setShowAll] = useState(false);
+  const DEFAULT_ROWS = 60;
 
   // Load every watchlist fund for this quarter, plus the five quarters behind it
   // for the holder-count sparkline. Fourteen-odd cached file reads and a
@@ -188,7 +195,6 @@ export function ConsensusView({
     return buildConsensus(funds, { minFunds: 1, longsOnly, includeExitOnly: true });
   }, [funds, longsOnly]);
 
-  const dist = useMemo(() => overlapDistribution(allRows, Math.max(1, present.length)), [allRows, present.length]);
   const anchor = useMemo(() => (funds ? buildAnchor(funds, allRows) : null), [funds, allRows]);
 
   const combinedValue = useMemo(
@@ -237,9 +243,16 @@ export function ConsensusView({
         {/* PRIMARY */}
         <WidgetCard
           title="Consensus matrix"
-          subtitle={`Names held by ${minFunds}+ funds · shading is portfolio weight, glyph is this quarter's move`}
+          subtitle={
+            `Comparing ${funds?.length ?? filers.length} active managers · names held by ${minFunds}+ · ` +
+            `shading is portfolio weight, glyph is this quarter's move`
+          }
           span={2}
-          bodyMinHeight={300}
+          // Only reserve height while loading or when there is enough content to
+          // fill it. A fixed 300px min-height left a ~400px void under a
+          // single-row result, which reads as a broken widget rather than as a
+          // narrow filter.
+          bodyMinHeight={loading ? 300 : undefined}
           actions={
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <ViewToggle
@@ -281,7 +294,7 @@ export function ConsensusView({
                 rows={rows}
                 funds={funds ?? []}
                 holderHistory={history}
-                maxRows={showAll ? 500 : 12}
+                maxRows={showAll ? 1500 : DEFAULT_ROWS}
                 onFund={onFund}
               />
               <div
@@ -291,7 +304,7 @@ export function ConsensusView({
                 }}
               >
                 <MatrixLegend />
-                {rows.length > 12 && (
+                {rows.length > DEFAULT_ROWS && (
                   <button
                     className="pressable"
                     onClick={() => setShowAll((v) => !v)}
@@ -300,7 +313,7 @@ export function ConsensusView({
                       fontSize: 11, fontWeight: 700, fontFamily: "inherit", textDecoration: "underline",
                     }}
                   >
-                    {showAll ? "Show top 12" : `Show all ${rows.length} consensus names`}
+                    {showAll ? `Collapse to top ${DEFAULT_ROWS}` : `Show all ${count(rows.length)} consensus names`}
                   </button>
                 )}
               </div>
@@ -345,74 +358,6 @@ export function ConsensusView({
                 </div>
                 <AnchorList items={anchor.exits} tone="exit" emptyMessage="No positions exited this quarter" />
               </div>
-            </div>
-          )}
-        </WidgetCard>
-
-        {/* INSIGHT — doubles as the matrix filter: it answers a question the
-            matrix cannot, namely whether this group is a herd or independent. */}
-        <WidgetCard title="Overlap distribution" subtitle="How many names each number of funds shares" bodyMinHeight={220}>
-          {loading ? (
-            <MatrixSkeleton funds={["·", "·", "·"]} rows={4} />
-          ) : (
-            <div style={{ padding: "14px 10px 4px", height: 220 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={dist} margin={{ top: 6, right: 12, left: 0, bottom: 4 }}>
-                  <CartesianGrid stroke={t.gridline} vertical={false} />
-                  <XAxis dataKey="funds" tick={{ fontSize: 10, fill: t.textHint }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: t.textHint }} axisLine={false} tickLine={false} width={30} />
-                  <Tooltip
-                    cursor={{ fill: "rgba(79,70,229,0.06)" }}
-                    contentStyle={{ background: "#fff", border: `1px solid ${t.borderSolid}`, borderRadius: 8, fontSize: 12 }}
-                    formatter={(v: number, _n, p) => [`${v} names`, `held by ${p.payload.funds} fund${p.payload.funds === 1 ? "" : "s"}`]}
-                  />
-                  <Bar dataKey="names" radius={[4, 4, 0, 0]} isAnimationActive={false}>
-                    {dist.map((d) => (
-                      <RCell key={d.funds} fill={d.funds >= minFunds ? t.primary : "#e0e7ff"} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </WidgetCard>
-
-        {/* INSIGHT — group activity */}
-        <WidgetCard title="Group activity" subtitle="Aggregate moves across every filing fund" bodyMinHeight={220}>
-          {loading || !funds ? (
-            <TableSkeleton rows={4} cols={2} />
-          ) : (
-            <div style={{ padding: "16px 16px 8px" }}>
-              {(["NEW", "ADDED", "TRIMMED", "EXITED"] as const).map((action) => {
-                const n = allRows.reduce(
-                  (a, r) => a + Object.values(r.cells).filter((c) => c.action === action).length, 0,
-                );
-                const max = Math.max(
-                  1,
-                  ...(["NEW", "ADDED", "TRIMMED", "EXITED"] as const).map((k) =>
-                    allRows.reduce((a, r) => a + Object.values(r.cells).filter((c) => c.action === k).length, 0),
-                  ),
-                );
-                return (
-                  <div key={action} style={{ marginBottom: 13 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 4 }}>
-                      <span style={{ color: t.textSecondary, fontWeight: 600 }}>
-                        {action.charAt(0) + action.slice(1).toLowerCase()}
-                      </span>
-                      <span style={{ color: t.textMuted, fontVariantNumeric: "tabular-nums" }}>{count(n)}</span>
-                    </div>
-                    <div style={{ height: 8, background: "#f3f4f6", borderRadius: 4, overflow: "hidden" }}>
-                      <div
-                        className="flow-bar"
-                        style={{ height: "100%", width: "100%", background: ACTION_COLORS[action], transform: `scaleX(${n / max})` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-              <p style={{ fontSize: 10.5, color: t.textHint, margin: "12px 0 0", lineHeight: 1.5 }}>
-                Counted per fund per name, across {present.length} filing fund{present.length === 1 ? "" : "s"}.
-              </p>
             </div>
           )}
         </WidgetCard>

@@ -301,3 +301,25 @@ Form Type   Company Name                                                  CIK   
     expect(rows[0].accession_number).toBe("0001000097-26-000005");
   });
 });
+
+describe("normalizeDate — the DERA shape", () => {
+  // The bulk data set uses DD-MON-YYYY, a fourth format that appears nowhere
+  // else. It silently returned null, which made every period_end null, which
+  // made the full-universe loader emit zero funds while otherwise looking like
+  // it had worked perfectly.
+  it("parses 31-MAR-2026", () => {
+    expect(normalizeDate("31-MAR-2026")).toBe("2026-03-31");
+    expect(normalizeDate("30-SEP-2025")).toBe("2025-09-30");
+    expect(normalizeDate("1-JUN-2026")).toBe("2026-06-01");
+  });
+
+  it("still handles the other three shapes", () => {
+    expect(normalizeDate("2026-03-31")).toBe("2026-03-31");
+    expect(normalizeDate("03-31-2026")).toBe("2026-03-31");
+    expect(normalizeDate("20260331")).toBe("2026-03-31");
+  });
+
+  it("returns null on an unknown month rather than a wrong date", () => {
+    expect(normalizeDate("31-XXX-2026")).toBeNull();
+  });
+});

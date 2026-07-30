@@ -21,7 +21,7 @@ import { usd, pct, pp } from "../lib/format";
 import type { ConsensusRow, FundInput } from "../lib/consensus";
 
 const NAME_COL = 210;
-const GROUP_COL = 132;
+const GROUP_COL = 148;
 const CELL_W = 62;
 const ROW_H = 30;
 
@@ -54,7 +54,7 @@ function HolderSparkline({ counts, max }: { counts: number[]; max: number }) {
     .join(" ");
   const rising = counts[counts.length - 1] > counts[0];
   return (
-    <svg width={w} height={h} style={{ overflow: "visible" }} aria-hidden="true">
+    <svg width={w} height={h} style={{ flexShrink: 0, display: "block" }} aria-hidden="true">
       <polyline
         points={pts}
         fill="none"
@@ -85,7 +85,8 @@ export function ConsensusMatrix({
     <div
       className="matrix"
       data-hover-col={hoverCol ?? undefined}
-      style={{ overflow: "auto", maxHeight: 520 }}
+      // Cap only when there is enough to scroll; otherwise size to content.
+      style={{ overflow: "auto", maxHeight: shown.length > 14 ? 560 : undefined }}
       onMouseLeave={() => setHoverCol(null)}
     >
       <div style={{ minWidth: NAME_COL + funds.length * CELL_W + GROUP_COL }}>
@@ -211,7 +212,7 @@ export function ConsensusMatrix({
             <div
               style={{
                 width: GROUP_COL, flexShrink: 0, display: "flex", alignItems: "center",
-                justifyContent: "flex-end", gap: 7, padding: "0 12px",
+                justifyContent: "flex-end", gap: 9, padding: "0 12px", overflow: "hidden",
               }}
             >
               <HolderSparkline counts={holderHistory?.get(r.issuerId) ?? []} max={maxHolders} />
