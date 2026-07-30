@@ -3,7 +3,7 @@
 # `name` MUST equal the Pages project name exactly. The Git-integrated build
 # validates this file and fails the whole deploy on a mismatch, leaving
 # production stuck on the last good build.
-name = "muns-13f"
+name = "13f"
 compatibility_date = "2025-11-01"
 pages_build_output_dir = "dist"
 
@@ -17,8 +17,8 @@ pages_build_output_dir = "dist"
 # build with no error surfaced anywhere. Create the resources first, paste the
 # real IDs, then uncomment.
 #
-#   npx wrangler d1 create muns-13f
-#   npx wrangler d1 create muns-13f-preview
+#   npx wrangler d1 create 13f
+#   npx wrangler d1 create 13f-preview
 #   npx wrangler r2 bucket create muns-13f-filings
 #   npx wrangler r2 bucket create muns-13f-filings-preview
 #
@@ -28,15 +28,15 @@ pages_build_output_dir = "dist"
 
 # [[d1_databases]]
 # binding             = "F13F_DB"
-# database_name       = "muns-13f"
+# database_name       = "13f"
 # database_id         = "<real prod uuid>"
 # preview_database_id = "<real preview uuid>"
 # migrations_dir      = "migrations"
 
 # [[r2_buckets]]
 # binding             = "F13F_R2"
-# bucket_name         = "muns-13f-filings"
-# preview_bucket_name = "muns-13f-filings-preview"
+# bucket_name         = "13f-filings"
+# preview_bucket_name = "13f-filings-preview"
 
 [observability]
 enabled = true
