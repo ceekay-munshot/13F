@@ -103,17 +103,47 @@ function headersFor(key, body) {
   };
 }
 
-async function put(key, body) {
-  const { url, headers } = sign({ method: "PUT", key, body, headers: headersFor(key, body) });
-  const res = await fetch(url, { method: "PUT", body, headers });
-  if (!res.ok) throw new Error(`PUT ${key} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
+// R2 (like any S3 service) occasionally returns a 500 InternalError under load —
+// its own body says "Please try again" — plus the usual 429/502/503/504 and
+// transient network drops. Across ~35,000 uploads at least one is near-certain,
+// so a single failure must NOT kill the whole publish. Retry those with
+// exponential backoff. Each attempt is RE-SIGNED, because SigV4 embeds a
+// timestamp that a backed-off retry could otherwise push outside its window.
+//
+// (This is the opposite of the SEC 403 rule, which is terminal and never
+// retried. There a retry harms others; here it is exactly what the service
+// asks for.)
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 5;
+
+async function sendSigned(method, key, body, okStatuses = new Set()) {
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const { url, headers } = sign({ method, key, body, headers: method === "PUT" ? headersFor(key, body) : {} });
+    try {
+      const res = await fetch(url, { method, body, headers });
+      if (res.ok || okStatuses.has(res.status)) return res;
+      if (RETRYABLE.has(res.status) && attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, attempt * 500 + Math.floor(Math.random() * 400)));
+        lastErr = new Error(`${method} ${key} -> ${res.status}`);
+        continue;
+      }
+      throw new Error(`${method} ${key} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
+    } catch (err) {
+      // Network-level failure (reset, timeout): also retryable.
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS && !/-> \d{3} /.test(err.message)) {
+        await new Promise((r) => setTimeout(r, attempt * 500 + Math.floor(Math.random() * 400)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr ?? new Error(`${method} ${key} failed`);
 }
 
-async function del(key) {
-  const { url, headers } = sign({ method: "DELETE", key, body: null, headers: {} });
-  const res = await fetch(url, { method: "DELETE", headers });
-  if (!res.ok && res.status !== 404) throw new Error(`DELETE ${key} -> ${res.status}`);
-}
+const put = (key, body) => sendSigned("PUT", key, body);
+const del = (key) => sendSigned("DELETE", key, null, new Set([404]));
 
 /** List every key under a prefix, following continuation tokens. */
 async function listAll(prefix = "") {
