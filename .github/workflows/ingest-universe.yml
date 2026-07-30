@@ -76,7 +76,7 @@ jobs:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '5'
         run: |
-          node --max-old-space-size=6144 scripts/ingest-dera.mjs \
+          node --max-old-space-size=13312 scripts/ingest-dera.mjs \
             --out=public/data \
             --windows=${{ github.event.inputs.windows || '4' }} \
             --top=${{ github.event.inputs.top || '99999' }} \

@@ -280,16 +280,16 @@ await runJob(async () => {
     }
     log(`INFOTABLE: ${rowCount.toLocaleString()} rows cumulative`);
   }
-  } // end per-window loop
 
-  // ---- normalize each filing through the same gates as the watchlist path --
-  let quarantined = 0;
+  // Aggregate THIS window's filings and release their raw rows before parsing
+  // the next window. Holding all quarters' raw rows at once — ~10.6M objects
+  // across three windows — is what ran the runner out of memory. Each filing
+  // belongs to exactly one window, so aggregating per window bounds the peak to
+  // roughly one quarter of raw rows plus the compact aggregates kept so far.
   for (const f of filings.values()) {
-    if (!f.rows.length) { f.notice = true; continue; }
+    if (f.held !== undefined || f.notice !== undefined) continue; // already done (earlier window)
+    if (!f.rows.length) { f.notice = true; f.rows = null; continue; }
     f.notice = false;
-    // No schemaVersion in DERA, so the units decision leans on filing date plus
-    // the implied-price override — which is the rung that actually catches the
-    // filers who ignored the 2023 cutover anyway.
     const units = decideValueUnits({
       schemaVersion: undefined,
       acceptanceDatetime: f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
@@ -300,7 +300,6 @@ await runJob(async () => {
     f.unit_source = units.source;
     f.reconciles = recon.ok;
     f.quarantined = recon.ok === false || Boolean(units.quarantine);
-    if (f.quarantined) quarantined++;
     f.held = aggregateHoldings(f.rows, units.units).map((h) => {
       const s = SECURITIES[h.cusip];
       return { ...h, issuerId: s?.issuerId ?? issuerIdFor(h.cusip), ticker: s?.ticker ?? null };
@@ -308,6 +307,10 @@ await runJob(async () => {
     f.summary = summarizeHoldings(f.held);
     f.rows = null; // release the as-filed rows; the aggregate is what we publish
   }
+  } // end per-window loop
+
+  // Aggregation now happens per-window above; just report the total here.
+  const quarantined = [...filings.values()].filter((f) => f.quarantined).length;
   log(`normalized: ${quarantined} quarantined`);
 
   // ---- group by (cik, period) and fold ------------------------------------
