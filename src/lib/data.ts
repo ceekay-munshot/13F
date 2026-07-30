@@ -307,12 +307,36 @@ function expandSeries(tuple: unknown[]): FundSeriesPoint {
   };
 }
 
+/**
+ * Sort a fund's series OLDEST-FIRST, whatever order the producer wrote it in.
+ *
+ * The two ingest paths disagreed. scripts/ingest-funds.mjs walks quarters newest
+ * -> oldest and reverses, so it emits ascending; scripts/ingest-dera.mjs walks
+ * them oldest -> newest and reverses, so it emits DEscending. Both call the
+ * field `series` and neither records which way it runs, so the frontend had a
+ * 50% chance of being right and — since the universe ingest is what serves
+ * production — it was wrong. On screen that meant the reported-value bars ran
+ * backwards in time, "most recent filing" named the OLDEST quarter, and a
+ * quarter-on-quarter delta was computed against the quarter AFTER it.
+ *
+ * Sorting on arrival rather than trusting the producer fixes it for artifacts
+ * already sitting in R2 — no re-ingest — and makes the frontend immune to
+ * whichever order a future producer happens to pick. Ordering is cheap: a fund
+ * carries at most a few dozen quarters.
+ */
+function ascendingByPeriod<T extends { period: string }>(series: T[]): T[] {
+  return [...series].sort((a, b) => (a.period < b.period ? -1 : a.period > b.period ? 1 : 0));
+}
+
 export async function loadFundSummary(cik: string, mf: Manifest): Promise<FundSummary> {
   try {
     const env = await get<{ cik: string; name: string; code: string | null; formerNames: unknown[]; state: string | null; data: { series: FundSeriesPoint[] } }>(
       `fund/${cik}/summary.json`, mf, cik,
     );
-    return { cik: env.cik, name: env.name, code: env.code, formerNames: env.formerNames, state: env.state, series: env.data.series };
+    return {
+      cik: env.cik, name: env.name, code: env.code, formerNames: env.formerNames, state: env.state,
+      series: ascendingByPeriod(env.data.series ?? []),
+    };
   } catch (e) {
     if (!(e instanceof MissingArtifactError)) throw e;
     // No dedicated file: this manager is outside the stored line-item set. Its
@@ -324,7 +348,7 @@ export async function loadFundSummary(cik: string, mf: Manifest): Promise<FundSu
     if (!row) throw e;
     return {
       cik, name: row.name, code: null, formerNames: [], state: row.state,
-      series: row.s.map(expandSeries),
+      series: ascendingByPeriod(row.s.map(expandSeries)),
     };
   }
 }
@@ -393,6 +417,41 @@ export function defaultPeriod(mf: Manifest, quorum = 0.6): string {
   const eligible = mf.periods.filter((p) => p.funds >= threshold);
   const pool = eligible.length ? eligible : mf.periods;
   return pool.reduce((best, p) => (p.period > best.period ? p : best), pool[0]).period;
+}
+
+/**
+ * Which fund should the Fund view open on?
+ *
+ * `filers[0]` is not an answer. The filer index is ordered for lookup, not for
+ * interest, and its first entry is a Vanguard entity whose last 13F was Q4
+ * 2024 — so the dashboard's opening screen was an empty state reading "has not
+ * filed for Q1 2026". A first impression should show the product working.
+ *
+ * The rule, in order:
+ *   1. the largest CURATED manager with holdings in the opening quarter — these
+ *      are the funds the comparison set is built around, so the Fund view opens
+ *      on something the Consensus view also talks about;
+ *   2. failing that, the largest filer with holdings in that quarter;
+ *   3. failing that, anything at all, so this can never return null when a
+ *      filer exists.
+ *
+ * Size is the tiebreak rather than alphabetical order because reported value is
+ * the one ranking every user of a 13F product already has in their head.
+ */
+export function defaultFilerCik(filers: Filer[], period: string | null): string | null {
+  if (!filers.length) return null;
+
+  const usable = (f: Filer) =>
+    f.hasHoldings !== false && (period === null || (f.latestPeriod !== null && f.latestPeriod >= period));
+  const larger = (a: Filer, b: Filer) => ((b.latestValueUsd ?? 0) > (a.latestValueUsd ?? 0) ? b : a);
+
+  const pick = (pool: Filer[]) => (pool.length ? pool.reduce(larger) : null);
+
+  return (
+    pick(filers.filter((f) => f.watch && usable(f)))?.cik ??
+    pick(filers.filter(usable))?.cik ??
+    filers[0].cik
+  );
 }
 
 /** SEC EDGAR link for a filing — the citation behind every number on screen. */

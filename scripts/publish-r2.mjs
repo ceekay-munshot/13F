@@ -168,6 +168,17 @@ if (!existsSync(DIR)) {
   process.exit(1);
 }
 
+// The manifest is the ONLY entry point: the dashboard fetches it before
+// anything else and treats its absence as a hard error. A bucket full of
+// artifacts with no manifest is not a degraded site, it is a dead one — which
+// is exactly the state a failed publish left in production. Refuse to start a
+// publish that could not finish with one.
+if (!existsSync(join(DIR, "manifest.json"))) {
+  console.error(`::error::${DIR}/manifest.json is missing — the ingest did not complete.`);
+  console.error("Publishing artifacts without a manifest would leave the site unable to load.");
+  process.exit(1);
+}
+
 const files = walk(DIR);
 const totalBytes = files.reduce((a, f) => a + statSync(join(DIR, f)).size, 0);
 console.log(`${files.length} objects, ${(totalBytes / 1048576).toFixed(1)} MB from ${DIR}`);
@@ -202,21 +213,33 @@ await pool(todo, CONCURRENCY, async (f) => {
   await put(f, readFileSync(join(DIR, f)));
 });
 
-// Pruning is CLEANUP, and cleanup must never be able to block publication.
-// A failure here previously aborted the run before the manifest was uploaded,
-// leaving R2 holding a complete set of artifacts that nothing pointed at.
-// Stale objects cost a few cents of storage; an unpublished manifest costs the
-// whole build.
+// PUBLISH THE MANIFEST, THEN CLEAN UP. Never the other way round.
+//
+// The manifest is what makes a build live, and it is the one file whose absence
+// takes the whole site down. Pruning is cleanup — it deletes fund-quarters that
+// rolled out of the retention window and nothing depends on it succeeding.
+//
+// Running cleanup first is how production ended up with 35,628 artifacts and no
+// manifest: prune threw, and the run died before the one upload that mattered.
+// Wrapping prune in a try/catch fixed that particular throw, but the ordering
+// was still wrong — anything that can stop the process between "artifacts
+// uploaded" and "manifest uploaded" (a timeout, a cancelled job, an OOM) leaves
+// a dead site. With the manifest first, the worst case is a few stale objects.
+//
+// This is safe in the other direction too: prune only ever deletes keys that
+// are NOT in the local tree, and the manifest only ever references keys that
+// ARE, so a reader following the freshly-published manifest cannot be pointed
+// at something prune is about to remove.
+await put("manifest.json", readFileSync(join(DIR, "manifest.json")));
+console.log(`\nmanifest published — build is now live.`);
+
 if (PRUNE) {
   try {
     await prune();
   } catch (err) {
-    console.log(`::warning::prune failed (${err.message}) — continuing to publish the manifest.`);
+    console.log(`::warning::prune failed (${err.message}) — the build is already live; stale objects remain.`);
   }
 }
-
-await put("manifest.json", readFileSync(join(DIR, "manifest.json")));
-console.log(`\nmanifest published — build is now live.`);
 
 async function prune() {
   console.log(`\npruning keys no longer in the build…`);

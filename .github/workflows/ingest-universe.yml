@@ -110,6 +110,43 @@ jobs:
         # so R2 never grows past ~4 quarters of the universe.
         run: node scripts/publish-r2.mjs --dir=public/data --prune
 
+      # A green publish step is not proof of a working site. R2 accepted 35,628
+      # objects and the dashboard was still dead, because the one file it loads
+      # first had not landed. Assert the live origin actually serves a usable
+      # manifest, and fail loudly if it does not — silent staleness is the worst
+      # failure mode this project has.
+      - name: Smoke check the live origin
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: |
+          url="$SITE/data/manifest.json?smoke=$GITHUB_RUN_ID"
+          code=$(curl -sS -o /tmp/manifest.json -w '%{http_code}' --max-time 30 "$url" || echo 000)
+          if [ "$code" != "200" ]; then
+            echo "::error::$url returned $code — the dashboard cannot load."
+            exit 1
+          fi
+          # NOTE on what is asserted: `manifest.funds` is an OVERRIDE map — it
+          # only lists filers whose build id differs from the root one — so an
+          # empty object is normal and says nothing about coverage. The real
+          # health signals are counts.filers and the periods array.
+          node -e '
+            const m = JSON.parse(require("fs").readFileSync("/tmp/manifest.json", "utf8"));
+            const filers = m.counts?.filers ?? 0;
+            const periods = m.periods?.length ?? 0;
+            if (!m.buildId || filers < 1000 || periods < 1) {
+              console.log("::error::live manifest is unusable — buildId=" + m.buildId +
+                          " filers=" + filers + " periods=" + periods);
+              process.exit(1);
+            }
+            console.log("live manifest ok — buildId " + m.buildId + ", " + filers +
+                        " filers, " + periods + " periods, generated " + m.generatedAt);
+          '
+          # And confirm a real artifact resolves, not just the index.
+          probe="$SITE/data/fund/0001067983/summary.json"
+          pcode=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$probe" || echo 000)
+          [ "$pcode" = "200" ] || { echo "::error::$probe returned $pcode"; exit 1; }
+          echo "artifact probe ok"
+
       - name: Summary
         if: always()
         run: |

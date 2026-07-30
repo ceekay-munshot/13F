@@ -221,11 +221,14 @@ export function FundView({
     return holdings.filter((h) => h.name.toLowerCase().includes(needle) || (h.ticker ?? "").toLowerCase().includes(needle));
   }, [holdings, q]);
 
-  // `series` is stored OLDEST-FIRST because that is the order the bar chart
-  // needs. Deriving "latest" and "prior" from raw indices against that array is
-  // an easy way to get them backwards — index + 1 is the NEWER quarter, not the
-  // older one. Name the orderings explicitly so neither can be read the wrong
-  // way round.
+  // `series` arrives OLDEST-FIRST because loadFundSummary sorts it on arrival.
+  // It is NOT safe to assume the artifact was written that way — the two ingest
+  // paths emit opposite orders, and the universe ingest that serves production
+  // emits newest-first. Trusting the file put the bars in reverse chronological
+  // order and diffed each quarter against the one AFTER it.
+  //
+  // Deriving "latest" and "prior" from raw indices is still easy to get
+  // backwards, so name both orderings explicitly.
   const seriesAsc = summary?.series ?? [];
   const seriesDesc = useMemo(() => [...seriesAsc].reverse(), [seriesAsc]);
   const latestPoint = seriesDesc[0];

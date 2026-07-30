@@ -12,7 +12,7 @@ import { ErrorState, SdkMissingState, StandaloneBanner, TableSkeleton } from "./
 import { useHostContext } from "./hooks/useHostContext";
 import { sdkMode, registerCaptureHandlers } from "./lib/sdk";
 import { periodLabel, dateLabel } from "./lib/format";
-import { loadManifest, loadFilers, defaultPeriod, type Manifest, type Filer } from "./lib/data";
+import { loadManifest, loadFilers, defaultPeriod, defaultFilerCik, type Manifest, type Filer } from "./lib/data";
 import { filingSeason } from "../shared/calendar.mjs";
 import { t, font } from "./theme";
 
@@ -33,7 +33,11 @@ const GRID_WIDE: React.CSSProperties = {
 
 export default function Dashboard() {
   const { session, market } = useHostContext();
-  const [view, setView] = useState<ViewId>("fund");
+  // Consensus, not Fund. "What is the group accumulating, and who entered or
+  // exited?" is the question this product was built to answer; the Fund view is
+  // where you go once a name in the matrix makes you curious about one manager.
+  // Opening on Fund also meant opening on a single arbitrary filer.
+  const [view, setView] = useState<ViewId>("consensus");
   const [mf, setMf] = useState<Manifest | null>(null);
   const [filers, setFilers] = useState<Filer[]>([]);
   const [cik, setCik] = useState<string | null>(null);
@@ -56,8 +60,9 @@ export default function Dashboard() {
         setFilers(f);
         // Open on the newest period that actually has data, not the newest that
         // exists. A just-closed quarter is nearly empty for six weeks.
-        setPeriod((p) => p ?? defaultPeriod(m));
-        setCik((c) => c ?? f[0]?.cik ?? null);
+        const p0 = defaultPeriod(m);
+        setPeriod((p) => p ?? p0);
+        setCik((c) => c ?? defaultFilerCik(f, p0));
       })
       .catch((e) => !cancelled && setErr(String(e.message ?? e)));
     return () => { cancelled = true; };
