@@ -17,10 +17,10 @@
 // lines against the alternative of adding the AWS SDK to a project whose entire
 // runtime dependency list is currently one XML parser.
 
-import { createHash, createHmac } from "node:crypto";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
+import { signRequest } from "./_sigv4.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -45,48 +45,6 @@ if (!DRY && (!ACCOUNT || !KEY || !SECRET)) {
   console.error("::error::R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY must all be set.");
   console.error("Create an R2 API token with Object Read & Write. See DEPLOY.md.");
   process.exit(1);
-}
-
-const sha256 = (b) => createHash("sha256").update(b).digest("hex");
-const hmac = (k, d) => createHmac("sha256", k).update(d).digest();
-
-/** Minimal AWS SigV4 for a single S3-compatible request. */
-function sign({ method, key, body, headers }) {
-  const now = new Date();
-  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
-  const dateStamp = amzDate.slice(0, 8);
-  const payloadHash = body ? sha256(body) : sha256("");
-
-  const h = {
-    host: HOST,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate,
-    ...headers,
-  };
-  const signedHeaders = Object.keys(h).map((x) => x.toLowerCase()).sort();
-  const canonicalHeaders = signedHeaders.map((n) => `${n}:${String(h[Object.keys(h).find((k) => k.toLowerCase() === n)]).trim()}\n`).join("");
-
-  // Each path segment is encoded individually so the slashes survive.
-  const canonicalUri = `/${BUCKET}/${key}`.split("/").map(encodeURIComponent).join("/").replace(/%2F/g, "/");
-  const canonicalRequest = [
-    method, canonicalUri, "", canonicalHeaders, signedHeaders.join(";"), payloadHash,
-  ].join("\n");
-
-  const scope = `${dateStamp}/${REGION}/s3/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256(canonicalRequest)].join("\n");
-  const signingKey = ["AWS4" + SECRET, dateStamp, REGION, "s3", "aws4_request"]
-    .reduce((k, v) => hmac(k, v));
-  const signature = createHmac("sha256", signingKey).update(stringToSign).digest("hex");
-
-  return {
-    url: `https://${HOST}${canonicalUri}`,
-    headers: {
-      ...h,
-      Authorization:
-        `AWS4-HMAC-SHA256 Credential=${KEY}/${scope}, ` +
-        `SignedHeaders=${signedHeaders.join(";")}, Signature=${signature}`,
-    },
-  };
 }
 
 /**
@@ -116,12 +74,19 @@ function headersFor(key, body) {
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 5;
 
-async function sendSigned(method, key, body, okStatuses = new Set()) {
+async function sendSigned(method, key, body, okStatuses = new Set(), query = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const { url, headers } = sign({ method, key, body, headers: method === "PUT" ? headersFor(key, body) : {} });
+    // Re-sign per attempt: SigV4 embeds a timestamp, and a backed-off retry
+    // could otherwise fall outside its validity window. The URL comes FROM the
+    // signer so it can never drift from what was signed.
+    const { url, headers } = signRequest({
+      method, host: HOST, bucket: BUCKET, key, query, body,
+      accessKeyId: KEY, secretAccessKey: SECRET, region: REGION,
+    });
+    const extra = method === "PUT" ? headersFor(key, body) : {};
     try {
-      const res = await fetch(url, { method, body, headers });
+      const res = await fetch(url, { method, body, headers: { ...headers, ...extra } });
       if (res.ok || okStatuses.has(res.status)) return res;
       if (RETRYABLE.has(res.status) && attempt < MAX_ATTEMPTS) {
         await new Promise((r) => setTimeout(r, attempt * 500 + Math.floor(Math.random() * 400)));
@@ -150,14 +115,13 @@ async function listAll(prefix = "") {
   const keys = [];
   let token = null;
   do {
-    const qs = new URLSearchParams({ "list-type": "2", "max-keys": "1000" });
-    if (prefix) qs.set("prefix", prefix);
-    if (token) qs.set("continuation-token", token);
-    // The query string is not part of the canonical path for this simple case;
-    // sign the bucket root and append.
-    const { url, headers } = sign({ method: "GET", key: "", body: null, headers: {} });
-    const res = await fetch(`${url.replace(/\/$/, "")}?${qs}`, { headers });
-    if (!res.ok) throw new Error(`LIST -> ${res.status} ${(await res.text()).slice(0, 200)}`);
+    // The query MUST go through the signer — it is part of the canonical
+    // request. Signing the bare bucket and appending the query afterwards is
+    // what produced SignatureDoesNotMatch on every list.
+    const query = { "list-type": "2", "max-keys": "1000" };
+    if (prefix) query.prefix = prefix;
+    if (token) query["continuation-token"] = token;
+    const res = await sendSigned("GET", "", null, new Set(), query);
     const xml = await res.text();
     for (const m of xml.matchAll(/<Key>([^<]+)<\/Key>/g)) keys.push(m[1]);
     token = (/<NextContinuationToken>([^<]+)</.exec(xml) ?? [])[1] ?? null;
@@ -212,7 +176,23 @@ await pool(manifestFirst, CONCURRENCY, async (f) => {
   await put(f, readFileSync(join(DIR, f)));
 });
 
+// Pruning is CLEANUP, and cleanup must never be able to block publication.
+// A failure here previously aborted the run before the manifest was uploaded,
+// leaving R2 holding a complete set of artifacts that nothing pointed at.
+// Stale objects cost a few cents of storage; an unpublished manifest costs the
+// whole build.
 if (PRUNE) {
+  try {
+    await prune();
+  } catch (err) {
+    console.log(`::warning::prune failed (${err.message}) — continuing to publish the manifest.`);
+  }
+}
+
+await put("manifest.json", readFileSync(join(DIR, "manifest.json")));
+console.log(`\nmanifest published — build is now live.`);
+
+async function prune() {
   console.log(`\npruning keys no longer in the build…`);
   const remote = await listAll();
   const local = new Set(files);
@@ -220,6 +200,3 @@ if (PRUNE) {
   console.log(`  ${remote.length} remote, ${stale.length} stale`);
   await pool(stale, CONCURRENCY, del);
 }
-
-await put("manifest.json", readFileSync(join(DIR, "manifest.json")));
-console.log(`\nmanifest published — build is now live.`);
