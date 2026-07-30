@@ -3,6 +3,29 @@
 # `name` MUST equal the Pages project name exactly. The Git-integrated build
 # validates this file and fails the whole deploy on a mismatch, leaving
 # production stuck on the last good build.
+# ---------------------------------------------------------------------------
+# NOT ACTIVE. Renamed from wrangler.toml on purpose — see below.
+#
+# WHY: a Git-integrated Cloudflare Pages build reads wrangler.toml and validates
+# it. This file contained `[observability]`, which is a WORKERS-only key that
+# Pages does not recognise, so the config was rejected and the build failed. With
+# no successful deployment, the *.pages.dev hostname resolves but has nothing to
+# serve, and Cloudflare returns "Error 522 Connection timed out" — which reads
+# like an origin problem and is actually "there is no deployment".
+#
+# It was also providing nothing: zero bindings were declared, and its only live
+# keys (`name`, `pages_build_output_dir`) are already set in the Pages dashboard.
+# A file that can only break the deploy and cannot help it does not belong in the
+# build path.
+#
+# WHEN TO BRING IT BACK: only once R2 or D1 bindings are genuinely needed. Then
+# rename to wrangler.toml, uncomment the binding block, and note:
+#   * `name` MUST equal the Pages project name exactly ("13f")
+#   * DELETE the [observability] block — it is Workers-only
+#   * paste REAL resource UUIDs; placeholders make Pages silently skip the file
+#     and freeze production on the last good build
+# ---------------------------------------------------------------------------
+
 name = "13f"
 compatibility_date = "2025-11-01"
 pages_build_output_dir = "dist"
@@ -37,9 +60,6 @@ pages_build_output_dir = "dist"
 # binding             = "F13F_R2"
 # bucket_name         = "13f-filings"
 # preview_bucket_name = "13f-filings-preview"
-
-[observability]
-enabled = true
 
 # Secrets are NOT declared here. Set them in the Cloudflare dashboard under
 # Settings -> Variables and Secrets, separately for Production and Preview:
