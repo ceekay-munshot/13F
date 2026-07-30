@@ -12,8 +12,8 @@
 // 13F is quarterly, immutable once filed, and this dashboard asks a fixed set
 // of questions. There is no reason to answer them at request time. The pipeline
 // works every answer out on the runner — where there is no CPU limit — and
-// writes it as a gzipped JSON file. The browser fetches the one file it needs
-// straight off the CDN edge.
+// writes it as a plain JSON file. The browser fetches the one file it needs
+// straight off the CDN edge, which compresses it in transit.
 //
 // That is why the whole product runs on free tiers: R2 gives 10 GB with no
 // egress charge, and there is no server to bill. It is also simply faster than
@@ -28,15 +28,15 @@
 // ---------------------------------------------------------------------------
 //
 //   manifest.json                        pointer to the current build (NOT immutable)
-//   meta/filers.json.gz                  every filer: cik, name, code  (fund search)
-//   meta/periods.json.gz                 periods that exist, deadlines, filing counts
-//   period/{period}/filings.json.gz      one row per filing that quarter (the feed)
-//   period/{period}/leaderboard.json.gz  most-owned / biggest buys+sells, all filers
-//   period/{period}/sectors.json.gz      sector totals across all filers
-//   fund/{cik}/summary.json.gz           all-time series + activity for one fund
-//   fund/{cik}/{period}.json.gz          holdings + QoQ changes for one fund-quarter
-//   fund/{cik}/{period}.p{n}.json.gz     paged, for funds too large for one file
-//   security/{issuerId}/{period}.json.gz who holds it, across all filers
+//   meta/filers.json                  every filer: cik, name, code  (fund search)
+//   meta/periods.json                 periods that exist, deadlines, filing counts
+//   period/{period}/filings.json      one row per filing that quarter (the feed)
+//   period/{period}/leaderboard.json  most-owned / biggest buys+sells, all filers
+//   period/{period}/sectors.json      sector totals across all filers
+//   fund/{cik}/summary.json           all-time series + activity for one fund
+//   fund/{cik}/{period}.json          holdings + QoQ changes for one fund-quarter
+//   fund/{cik}/{period}.p{n}.json     paged, for funds too large for one file
+//   security/{issuerId}/{period}.json who holds it, across all filers
 //
 // EVERYTHING except manifest.json is immutable for a given build id. That is
 // what allows `Cache-Control: public, max-age=31536000, immutable` and means a
@@ -49,15 +49,15 @@ export const MANIFEST_PATH = "manifest.json";
 
 export const paths = {
   manifest: () => MANIFEST_PATH,
-  filers: () => "meta/filers.json.gz",
-  periods: () => "meta/periods.json.gz",
-  periodFilings: (period) => `period/${period}/filings.json.gz`,
-  periodLeaderboard: (period) => `period/${period}/leaderboard.json.gz`,
-  periodSectors: (period) => `period/${period}/sectors.json.gz`,
-  fundSummary: (cik) => `fund/${cik}/summary.json.gz`,
+  filers: () => "meta/filers.json",
+  periods: () => "meta/periods.json",
+  periodFilings: (period) => `period/${period}/filings.json`,
+  periodLeaderboard: (period) => `period/${period}/leaderboard.json`,
+  periodSectors: (period) => `period/${period}/sectors.json`,
+  fundSummary: (cik) => `fund/${cik}/summary.json`,
   fundPeriod: (cik, period, page = 0) =>
-    page > 0 ? `fund/${cik}/${period}.p${page}.json.gz` : `fund/${cik}/${period}.json.gz`,
-  security: (issuerId, period) => `security/${issuerId}/${period}.json.gz`,
+    page > 0 ? `fund/${cik}/${period}.p${page}.json` : `fund/${cik}/${period}.json`,
+  security: (issuerId, period) => `security/${issuerId}/${period}.json`,
 };
 
 /**
@@ -99,9 +99,9 @@ export function envelope({ kind, period, cik, asOf, acceptedAt, buildId, data, e
  * Column-oriented encoding for holdings.
  *
  * A 12,900-position fund as an array of objects repeats every key 12,900 times.
- * Storing parallel arrays instead cuts the payload roughly in half before gzip
- * and measurably more after, because each column compresses against itself
- * rather than against interleaved noise. The browser rehydrates in one pass.
+ * Storing parallel arrays instead cuts the payload roughly in half before
+ * compression and measurably more after, because each column compresses against
+ * itself rather than against interleaved noise. The browser rehydrates in one pass.
  */
 export const HOLDING_COLUMNS = [
   "ticker",       // resolved; null until enrichment runs
@@ -190,6 +190,24 @@ export const CACHE_CONTROL = {
   manifest: "public, max-age=60, must-revalidate",
   artifact: "public, max-age=31536000, immutable",
 };
+
+// ---------------------------------------------------------------------------
+// WHY ARTIFACTS ARE NOT PRE-COMPRESSED
+//
+// They used to be written as .json.gz with `Content-Encoding: gzip` set in
+// _headers. That does not survive Cloudflare: the CDN compresses responses
+// itself, so it gzipped the already-gzipped body and set the header once. The
+// browser decompressed a single layer, handed the inner gzip bytes to
+// JSON.parse, and every widget failed with `Unexpected token '\u001f'`.
+//
+// Serving plain JSON and letting Cloudflare compress in transit is simpler AND
+// smaller on the wire — the CDN negotiates brotli, which beats our gzip. The
+// only cost is a larger file in git, which is acceptable at this scale and is
+// the right trade for something that cannot silently break.
+//
+// The lesson generalises: do not hand-manage Content-Encoding behind a CDN that
+// manages it for you.
+// ---------------------------------------------------------------------------
 
 /** Deterministic short build id from the highest acceptance timestamp seen. */
 export function buildIdFrom(latestAcceptance, salt = "") {

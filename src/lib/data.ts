@@ -1,8 +1,12 @@
 // src/lib/data.ts
 //
 // The data layer. There is no API and no database — the pipeline pre-computes
-// every answer into immutable gzipped JSON, and this module fetches the one
-// file a view needs straight off the CDN edge.
+// every answer into an immutable JSON file, and this module fetches the one a
+// view needs straight off the CDN edge.
+//
+// Artifacts are NOT pre-compressed. Cloudflare compresses in transit, and
+// shipping pre-gzipped bodies behind it produced double-encoded responses that
+// reached JSON.parse as raw gzip bytes.
 //
 // Two cache classes and no third:
 //   manifest.json   60s, the only file that ever changes in place
@@ -211,8 +215,8 @@ async function get<T>(path: string, mf: Manifest, cik?: string): Promise<T> {
       // answer is "this manager has not filed that quarter yet".
       const ct = r.headers.get("content-type") ?? "";
       if (ct.includes("text/html")) throw new MissingArtifactError(path);
-      // The server sets Content-Encoding: gzip, so fetch has already
-      // decompressed by the time we get here — no client-side inflate needed.
+      // Plain JSON. The CDN negotiates its own compression and the browser
+      // has already decoded it, so there is nothing to inflate here.
       return r.json() as Promise<T>;
     });
     memo.set(url, p as Promise<unknown>);
@@ -234,18 +238,18 @@ function decodeHoldings(enc: Record<string, unknown> & { n: number; cols: string
 }
 
 export async function loadFilers(mf: Manifest): Promise<Filer[]> {
-  const env = await get<{ data: Filer[] }>("meta/filers.json.gz", mf);
+  const env = await get<{ data: Filer[] }>("meta/filers.json", mf);
   return env.data;
 }
 
 export async function loadPeriods(mf: Manifest) {
-  const env = await get<{ data: Manifest["periods"] }>("meta/periods.json.gz", mf);
+  const env = await get<{ data: Manifest["periods"] }>("meta/periods.json", mf);
   return env.data;
 }
 
 export async function loadFundSummary(cik: string, mf: Manifest): Promise<FundSummary> {
   const env = await get<{ cik: string; name: string; code: string | null; formerNames: unknown[]; state: string | null; data: { series: FundSeriesPoint[] } }>(
-    `fund/${cik}/summary.json.gz`, mf, cik,
+    `fund/${cik}/summary.json`, mf, cik,
   );
   return { cik: env.cik, name: env.name, code: env.code, formerNames: env.formerNames, state: env.state, series: env.data.series };
 }
@@ -258,7 +262,7 @@ export async function loadFundSummary(cik: string, mf: Manifest): Promise<FundSu
  * the metadata; the rest streams in behind it only if the user scrolls.
  */
 export async function loadFundPeriod(cik: string, period: string, mf: Manifest, page = 0): Promise<FundPeriod> {
-  const path = page > 0 ? `fund/${cik}/${period}.p${page}.json.gz` : `fund/${cik}/${period}.json.gz`;
+  const path = page > 0 ? `fund/${cik}/${period}.p${page}.json` : `fund/${cik}/${period}.json`;
   const env = await get<{
     period: string; cik: string; asOf: string; acceptedAt: string | null;
     page: number; pages: number; total: number; meta: FundPeriodMeta; exits?: Exit[];
@@ -284,7 +288,7 @@ export async function loadFundPeriodAll(cik: string, period: string, mf: Manifes
 }
 
 export async function loadPeriodFilings(period: string, mf: Manifest): Promise<FilingRow[]> {
-  const env = await get<{ data: FilingRow[] }>(`period/${period}/filings.json.gz`, mf);
+  const env = await get<{ data: FilingRow[] }>(`period/${period}/filings.json`, mf);
   return env.data;
 }
 
