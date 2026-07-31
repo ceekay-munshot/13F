@@ -9,6 +9,7 @@ import { Header, type ViewId, type Freshness } from "./components/Header";
 import { ScopeBar } from "./components/ScopeBar";
 import { WidgetCard } from "./components/WidgetCard";
 import { ErrorState, SdkMissingState, StandaloneBanner, TableSkeleton } from "./components/states";
+import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { useHostContext } from "./hooks/useHostContext";
 import { sdkMode, registerCaptureHandlers } from "./lib/sdk";
 import { periodLabel, dateLabel } from "./lib/format";
@@ -195,6 +196,8 @@ export default function Dashboard() {
               onLongsOnly={setLongsOnly}
             />
 
+            {/* A crash inside a view must not blank the whole document. */}
+            <ViewErrorBoundary>
             <Suspense
               fallback={
                 <div style={{ ...GRID_WIDE, marginTop: 22 }}>
@@ -233,6 +236,7 @@ export default function Dashboard() {
               />
             )}
             </Suspense>
+            </ViewErrorBoundary>
           </>
         )}
       </main>
