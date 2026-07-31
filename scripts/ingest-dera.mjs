@@ -439,12 +439,15 @@ await runJob(async () => {
       const priorState = prior && !prior.noticeOnly ? PRIOR_STATE.OK
         : prior?.noticeOnly ? PRIOR_STATE.IS_NT : PRIOR_STATE.NONE;
 
-      const { changes, suppressed, reason, structuralEvent, structural } = computeChanges(
+      const { changes, suppressed, reason, structuralEvent, structural, exitsWithheld } = computeChanges(
         { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },
         priorState === PRIOR_STATE.OK
           ? { period_end: pp, accession: prior.accessions?.at(-1) ?? null, holdings: prior.holdings, value_long_usd: prior.value_long_usd }
           : null,
         priorState,
+        // The filer declared this book incomplete, so an absent position is not
+        // evidence of a sale. Exits are withheld and counted, not fabricated.
+        { confidentialOmitted: cur.confidentialOmitted },
       );
       const acts = summarizeActions(changes);
       const turnover = priorState === PRIOR_STATE.OK
@@ -483,6 +486,10 @@ await runJob(async () => {
           structuralDetail: structural?.detail ?? null,
           confidentialOmitted: Boolean(cur.confidentialOmitted),
           foldWarnings: cur.warnings ?? [], accessions: cur.accessions ?? [],
+          // How many exits were NOT emitted because the filer withheld positions.
+          // Shown, not swallowed: a shorter list with no explanation reads as
+          // 'they sold nothing', which is a different wrong answer.
+          exitsWithheld,
           ...cur.summary, reportedTotalUsd: cur.reported_total_usd, ...acts, ...turnover,
         };
         const pages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));

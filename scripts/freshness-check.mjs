@@ -21,6 +21,9 @@ const args = Object.fromEntries(
   }),
 );
 const DATA = args.data || "public/data";
+// --origin=https://… audits what is actually SERVED. --data=… audits a local
+// build. Origin wins when both are given.
+const ORIGIN = args.origin && args.origin !== true ? String(args.origin) : null;
 const today = (args.today || new Date().toISOString().slice(0, 10)).slice(0, 10);
 
 const problems = [];
@@ -28,11 +31,60 @@ const notes = [];
 
 function fail(msg) { problems.push(msg); }
 
-const manifestPath = `${DATA}/manifest.json`;
-if (!existsSync(manifestPath)) {
-  fail(`No manifest at \`${manifestPath}\` — nothing has ever been published.`);
-} else {
-  const mf = JSON.parse(readFileSync(manifestPath, "utf8"));
+/**
+ * Load the manifest the WATCHDOG SHOULD BE GRADING — which is the one users are
+ * served, not the one sitting in the git checkout.
+ *
+ * This ran `--data=public/data` against a fresh actions/checkout, so it audited
+ * the committed tree. But `functions/data/[[path]].js` claims /data/* outright
+ * and serves from R2, so the committed copy is not what anyone reads. The
+ * watchdog was therefore blind to the serving path at exactly the moment R2
+ * became the serving path: R2 could go stale, serve a torn build, or lose its
+ * manifest entirely, and this would still report "Freshness OK" — the precise
+ * failure it exists to catch. (It did, for a day.)
+ *
+ * With --origin it fetches over HTTPS instead. The local --data mode is kept
+ * for running the check against a build before publishing it.
+ */
+async function loadManifest() {
+  if (!ORIGIN) {
+    const manifestPath = `${DATA}/manifest.json`;
+    if (!existsSync(manifestPath)) {
+      fail(`No manifest at \`${manifestPath}\` — nothing has ever been published.`);
+      return null;
+    }
+    notes.push(`Source: local tree \`${manifestPath}\``);
+    return JSON.parse(readFileSync(manifestPath, "utf8"));
+  }
+
+  // Cache-bust: the manifest is served with max-age=60, and a watchdog that can
+  // be answered from cache is measuring the cache.
+  const url = `${ORIGIN.replace(/\/+$/, "")}/data/manifest.json?freshness=${Date.now()}`;
+  let res;
+  try {
+    res = await fetch(url, { headers: { "cache-control": "no-cache" } });
+  } catch (err) {
+    fail(`Could not reach \`${url}\` — the site may be down. (${err.message})`);
+    return null;
+  }
+  if (!res.ok) {
+    fail(`\`${url}\` returned **${res.status}**. The dashboard cannot load without this file.`);
+    return null;
+  }
+  // An SPA fallback answers 200 with HTML, which JSON.parse reports as a syntax
+  // error somewhere in a <!doctype>. Check the type and say what actually
+  // happened instead.
+  const ct = res.headers.get("content-type") ?? "";
+  if (!ct.includes("json")) {
+    fail(`\`${url}\` returned 200 but \`content-type: ${ct}\` — that is the SPA fallback, not the manifest.`);
+    return null;
+  }
+  notes.push(`Source: live origin \`${ORIGIN}\``);
+  return await res.json();
+}
+
+const mf = await loadManifest();
+if (mf) {
   const season = filingSeason(today);
   const periods = mf.periods ?? [];
   const peakFunds = Math.max(1, ...periods.map((p) => p.funds ?? 0));

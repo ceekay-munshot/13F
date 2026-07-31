@@ -363,7 +363,7 @@ await runJob(async () => {
       else if (prior.noticeOnly) priorState = PRIOR_STATE.IS_NT;
       else priorState = PRIOR_STATE.OK;
 
-      const { changes, suppressed, reason, structuralEvent, structural } = computeChanges(
+      const { changes, suppressed, reason, structuralEvent, structural, exitsWithheld } = computeChanges(
         { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },
         priorState === PRIOR_STATE.OK
           ? {
@@ -374,6 +374,9 @@ await runJob(async () => {
             }
           : null,
         priorState,
+        // The filer declared this book incomplete, so an absent position is not
+        // evidence of a sale. Exits are withheld and counted, not fabricated.
+        { confidentialOmitted: cur.filings?.some((f) => f.is_confidential_omitted) },
       );
 
       const changeByKey = new Map(changes.map((c) => [`${c.cusip}|${c.put_call}`, c]));
@@ -406,6 +409,10 @@ await runJob(async () => {
         structuralDetail: structural?.detail ?? null,
         confidentialOmitted: Boolean(cur.confidentialOmitted),
         foldWarnings: cur.warnings ?? [],
+        // How many exits were NOT emitted because the filer withheld positions.
+        // Shown, not swallowed: a shorter list with no explanation reads as
+        // 'they sold nothing', which is a different wrong answer.
+        exitsWithheld,
         accessions: cur.accessions ?? [],
         ...cur.summary,
         reportedTotalUsd: cur.reported_total_usd,

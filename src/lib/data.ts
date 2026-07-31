@@ -59,6 +59,13 @@ export interface FundPeriodMeta {
   structuralEvent: string | null;
   structuralDetail: { message?: string; retained?: number; reductionPct?: number } | null;
   confidentialOmitted: boolean;
+  /**
+   * Exits NOT emitted because the filer withheld positions under a confidential
+   * treatment request. On such a quarter an absent position is indistinguishable
+   * from a sold one, so none are published — this is how many were suppressed,
+   * so the UI can say so instead of showing a silently shorter list.
+   */
+  exitsWithheld?: number;
   foldWarnings: { code: string; detail: string }[];
   accessions: string[];
   value_long_usd: number;

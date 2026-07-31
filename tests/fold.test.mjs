@@ -409,3 +409,74 @@ describe("PRO_RATA_REDUCTION — magnitude must not gate the detector", () => {
     expect(detectStructuralEvent(current, prior).event).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Confidential omission.
+//
+// This was the one gate on the plan's list with LITERALLY zero coverage: the
+// flag was parsed on both ingest paths and carried into meta, the rule was
+// written out in a comment in _sec-parse.mjs, and nothing implemented it. Nine
+// fund-periods in the shipped tree set the flag.
+//
+// The rule: a manager may request confidential treatment for positions they are
+// still building and file without them. Those positions are absent from the
+// filing and present in the portfolio. An exit is INFERRED FROM ABSENCE, so on
+// such a quarter the inference is unsound — reporting "EXITED, -100%" asserts
+// as fact the very thing the filing declines to say.
+// ---------------------------------------------------------------------------
+describe("confidential omission suppresses inferred exits", () => {
+  const h = (cusip, shares, value, weight) => ({
+    cusip, put_call: null, ssh_prnamt: shares, ssh_prnamt_type: "SH",
+    value_usd: value, weight_pct: weight, name_of_issuer: `ISSUER ${cusip}`,
+  });
+  const prior = {
+    period_end: "2026-03-31", accession: "0000000000-26-000001",
+    holdings: [h("A", 100, 1000, 50), h("B", 100, 1000, 50)],
+    value_long_usd: 2000,
+  };
+  // B is gone. Sold, or withheld? The filing alone cannot say.
+  const current = { period_end: "2026-06-30", holdings: [h("A", 100, 1000, 100)], value_long_usd: 1000 };
+
+  it("reports the exit normally on an ordinary complete filing", () => {
+    const out = computeChanges(current, prior, PRIOR_STATE.OK);
+    const exits = out.changes.filter((c) => c.action === "EXITED");
+    expect(exits).toHaveLength(1);
+    expect(exits[0].cusip).toBe("B");
+    expect(exits[0].d_value_pct).toBe(-100);
+    expect(out.exitsWithheld).toBe(0);
+  });
+
+  it("emits NO exit rows when the filing withholds positions", () => {
+    const out = computeChanges(current, prior, PRIOR_STATE.OK, { confidentialOmitted: true });
+    expect(out.changes.filter((c) => c.action === "EXITED")).toHaveLength(0);
+  });
+
+  it("counts what it withheld, so the UI can say so rather than show a short list", () => {
+    // Silence is its own wrong answer: an empty exits card reads as "they sold
+    // nothing", which is no more true than "they sold everything".
+    const out = computeChanges(current, prior, PRIOR_STATE.OK, { confidentialOmitted: true });
+    expect(out.exitsWithheld).toBe(1);
+  });
+
+  it("still reports positions that ARE disclosed", () => {
+    // Suppression is scoped to the unsound inference. A position present in
+    // both filings is reported honestly.
+    const grew = { period_end: "2026-06-30", holdings: [h("A", 150, 1500, 100)], value_long_usd: 1500 };
+    const out = computeChanges(grew, prior, PRIOR_STATE.OK, { confidentialOmitted: true });
+    const a = out.changes.find((c) => c.cusip === "A");
+    expect(a.action).toBe("ADDED");
+    expect(a.d_shares).toBe(50);
+  });
+
+  it("does not invent exits to withhold when nothing left the book", () => {
+    const same = { period_end: "2026-06-30", holdings: prior.holdings, value_long_usd: 2000 };
+    const out = computeChanges(same, prior, PRIOR_STATE.OK, { confidentialOmitted: true });
+    expect(out.exitsWithheld).toBe(0);
+  });
+
+  it("defaults to reporting exits when the flag is absent", () => {
+    // Back-compat: every existing caller passes three arguments.
+    expect(computeChanges(current, prior, PRIOR_STATE.OK).exitsWithheld).toBe(0);
+    expect(computeChanges(current, prior, PRIOR_STATE.OK, {}).changes.some((c) => c.action === "EXITED")).toBe(true);
+  });
+});

@@ -707,11 +707,23 @@ export function FundView({
           {loading ? (
             <TableSkeleton rows={5} cols={2} />
           ) : !fp?.exits?.length ? (
-            <EmptyState
-              icon="○"
-              message={meta?.priorState === "PRIOR_OK" ? "No positions exited" : "Changes not comparable"}
-              hint={meta?.priorState === "PRIOR_OK" ? undefined : "The prior quarter is missing or was a 13F notice."}
-            />
+            /* Three genuinely different reasons for an empty list, and saying
+               "No positions exited" for all of them is a lie in two of them.
+               The confidential case matters most: positions were withheld, so
+               an exit cannot be inferred at all — see shared/fold.mjs. */
+            meta?.exitsWithheld ? (
+              <EmptyState
+                icon="◐"
+                message={`${count(meta.exitsWithheld)} positions not reported this quarter`}
+                hint="This filing withholds positions pending a confidential treatment request, so a position's absence is not evidence it was sold. Exits are not inferred for this quarter."
+              />
+            ) : (
+              <EmptyState
+                icon="○"
+                message={meta?.priorState === "PRIOR_OK" ? "No positions exited" : "Changes not comparable"}
+                hint={meta?.priorState === "PRIOR_OK" ? undefined : "The prior quarter is missing or was a 13F notice."}
+              />
+            )
           ) : (
             <div style={{ maxHeight: 260, overflow: "auto" }}>
               <table className="data-table">

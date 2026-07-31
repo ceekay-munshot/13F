@@ -29,9 +29,19 @@ jobs:
         with:
           node-version: '20'
 
+      # Audit the LIVE ORIGIN, not the checkout.
+      #
+      # This used to pass --data=public/data, so it graded the committed tree.
+      # That tree is not served — functions/data/[[path]].js claims /data/* and
+      # answers from R2 — so the one independent watchdog was blind to the
+      # serving path. R2 could go stale, serve a torn build, or lose its
+      # manifest, and this still reported "Freshness OK". It did exactly that
+      # for a day while the dashboard was showing a 404.
       - name: Evaluate freshness
         id: check
-        run: node scripts/freshness-check.mjs --data=public/data
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: node scripts/freshness-check.mjs --origin="$SITE"
 
       - name: Open or update freshness issue
         if: failure()

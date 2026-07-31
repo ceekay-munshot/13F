@@ -253,8 +253,13 @@ export function detectStructuralEvent(current, prior, opts = {}) {
  * @param {{period_end, holdings, value_long_usd}} current
  * @param {{period_end, accession, holdings, value_long_usd}|null} prior
  * @param {string} priorState  one of PRIOR_STATE
+ * @param {{confidentialOmitted?: boolean}} [opts]  `confidentialOmitted` marks
+ *   the CURRENT filing as incomplete by the filer's own declaration, which
+ *   makes an inferred exit unsound — see the note above the exit loop.
  */
-export function computeChanges(current, prior, priorState) {
+export function computeChanges(current, prior, priorState, opts = {}) {
+  const confidentialOmitted = Boolean(opts.confidentialOmitted);
+
   if (priorState !== PRIOR_STATE.OK || !prior) {
     // NOTE the two distinct fields, and why they are not one.
     //
@@ -277,6 +282,7 @@ export function computeChanges(current, prior, priorState) {
       reason: priorState,
       structuralEvent: null, // having no prior quarter is not an event
       structural: null,
+      exitsWithheld: 0,
     };
   }
 
@@ -366,9 +372,29 @@ export function computeChanges(current, prior, priorState) {
     });
   }
 
-  // Exits: in prior, absent from current.
+  // ---------------------------------------------------------------------------
+  // EXITS, AND WHY THEY ARE WITHHELD ON A CONFIDENTIAL-OMISSION QUARTER.
+  //
+  // An exit is inferred from ABSENCE: the position was in the prior book and is
+  // not in this one. That inference is only valid if this book is complete.
+  //
+  // A manager may request confidential treatment for positions they are still
+  // accumulating, and file without them. Those positions are absent from the
+  // filing and present in the portfolio — indistinguishable, from the outside,
+  // from a sale. Reporting them as "EXITED, -100%" states as fact something the
+  // filing explicitly declines to say, and it is the same fabricated-sell error
+  // the pro-rata detector exists to prevent, wearing a different hat.
+  //
+  // So on such a quarter no exit rows are emitted at all, and the count that
+  // WOULD have been emitted is returned instead, so the UI can say plainly how
+  // many are unaccounted for rather than silently showing a shorter list.
+  // Additions and increases are unaffected: a position that IS reported is
+  // reported honestly.
+  // ---------------------------------------------------------------------------
+  let exitsWithheld = 0;
   for (const p of prior.holdings) {
     if (currentByKey.has(key(p))) continue;
+    if (confidentialOmitted) { exitsWithheld++; continue; }
     changes.push({
       cusip: p.cusip,
       put_call: p.put_call,
@@ -398,6 +424,7 @@ export function computeChanges(current, prior, priorState) {
     // Only a real structural finding reaches this field — see the note above.
     structuralEvent: structural.event ?? null,
     structural,
+    exitsWithheld,
   };
 }
 
