@@ -80,15 +80,19 @@ function AnchorList({
 }
 
 export function ConsensusView({
-  filers, period, mf, longsOnly, onFund,
+  filers, period, mf, longsOnly, refreshing, onFund,
 }: {
   filers: Filer[];
   period: string;
   mf: Manifest;
   longsOnly: boolean;
+  /** A manual refresh is in flight. Data stays mounted and dims; it never
+      unmounts to skeletons, which would throw away the reading position. */
+  refreshing?: boolean;
   onFund: (cik: string) => void;
 }) {
   const [funds, setFunds] = useState<FundInput[] | null>(null);
+  const [failedFunds, setFailedFunds] = useState<string[]>([]);
   const [history, setHistory] = useState<Map<string, number[]>>(new Map());
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -110,31 +114,51 @@ export function ConsensusView({
   // arbitrary fund set answers immediately.
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Keep whatever is already on screen mounted while reloading. Blanking to
+    // skeletons on every refresh throws away the user's reading position to
+    // repaint, usually, the identical numbers. WidgetCard's `refreshing` state
+    // (dim + a 2px indeterminate bar) exists precisely for this.
+    setLoading((prev) => prev || funds === null);
     setErr(null);
-    setFunds(null);
 
     const load = async () => {
       const inputs: FundInput[] = [];
+      const failed: string[] = [];
       await Promise.all(
         filers.map(async (f, i) => {
           const color = fundColor(i);
           const code = f.code ?? f.name.slice(0, 3).toUpperCase();
+          const blank = { cik: f.cik, name: f.name, code, color, holdings: [], exits: [], suppressed: false };
           try {
             const fp = await loadFundPeriodAll(f.cik, period, mf);
             inputs[i] = {
-              cik: f.cik, name: f.name, code, color,
+              ...blank,
               holdings: fp.holdings, exits: fp.exits ?? [],
               suppressed: Boolean(fp.meta.deltasSuppressed), missing: false,
             };
           } catch (e) {
-            // A fund with no filing for the quarter is normal, not an error.
-            if (!(e instanceof MissingArtifactError)) throw e;
-            inputs[i] = { cik: f.cik, name: f.name, code, color, holdings: [], exits: [], suppressed: false, missing: true };
+            // ONE FUND MUST NOT TAKE DOWN THE VIEW.
+            //
+            // This is a Promise.all over twelve funds. It used to rethrow
+            // anything that was not a MissingArtifactError, so a single R2 5xx
+            // or truncated body rejected the whole batch and the entire page —
+            // KPIs, matrix, entries and exits, sources — collapsed to one
+            // "Couldn't load this widget" card while eleven funds had loaded
+            // perfectly well.
+            //
+            // Two different absences, kept distinct: `missing` means the
+            // manager did not file this quarter, which is ordinary and gets a
+            // dimmed column; a genuine failure is counted and named, so the
+            // matrix can say which funds are absent rather than pretending
+            // they hold nothing.
+            const missing = e instanceof MissingArtifactError;
+            if (!missing) failed.push(f.name);
+            inputs[i] = { ...blank, missing: true };
           }
         }),
       );
       if (cancelled) return;
+      setFailedFunds(failed);
       setFunds(inputs.filter(Boolean));
 
       // Holder history, best-effort: it decorates the matrix and must never
@@ -173,7 +197,8 @@ export function ConsensusView({
       .catch((e) => !cancelled && setErr(String(e.message ?? e)))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [filers, period, mf, longsOnly]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mf is keyed by buildId on purpose; see below
+  }, [filers, period, mf.buildId, longsOnly]);
 
   const present = useMemo(() => (funds ?? []).filter((f) => !f.missing), [funds]);
 
@@ -242,6 +267,7 @@ export function ConsensusView({
       <div style={{ ...GRID_WIDE, marginTop: 22 }}>
         {/* PRIMARY */}
         <WidgetCard
+          refreshing={refreshing}
           title="Consensus matrix"
           subtitle={
             `Comparing ${funds?.length ?? filers.length} active managers · names held by ${minFunds}+ · ` +
@@ -325,6 +351,7 @@ export function ConsensusView({
             focused on" is a comparison question, and hiding one side behind a
             tab breaks the comparison. */}
         <WidgetCard
+          refreshing={refreshing}
           title="Entries &amp; exits"
           subtitle="New positions and closed positions across the group — the anchor"
           span={2}
@@ -363,8 +390,19 @@ export function ConsensusView({
         </WidgetCard>
 
         {/* SOURCE */}
-        <WidgetCard title="Sources &amp; provenance" subtitle="What this view is built from" span={2}>
+        <WidgetCard title="Sources &amp; provenance" subtitle="What this view is built from" span={2} refreshing={refreshing}>
           <div style={{ padding: "12px 16px" }}>
+            {/* A fund that did not FILE and a fund that failed to LOAD are
+                different facts and must not share one sentence. The first is
+                ordinary and expected; the second means the numbers on screen
+                are computed over fewer funds than the user thinks. */}
+            {failedFunds.length > 0 && (
+              <PartialNotice>
+                {failedFunds.length} of {funds?.length ?? 0} funds could not be loaded
+                ({failedFunds.join(", ")}). Every figure on this page is computed over the
+                {" "}{present.length} that did load. Refresh to try again.
+              </PartialNotice>
+            )}
             {missing.length > 0 && (
               <PartialNotice>
                 Showing {present.length} of {funds?.length ?? 0} funds. 13F is due 45 days after each

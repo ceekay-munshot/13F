@@ -175,13 +175,14 @@ export default function Dashboard() {
               }
             >
             {view === "fund" && cik ? (
-              <FundView cik={cik} period={period} mf={mf} longsOnly={longsOnly} />
+              <FundView cik={cik} period={period} mf={mf} longsOnly={longsOnly} refreshing={refreshing} />
             ) : view === "consensus" ? (
               <ConsensusView
                 filers={consensusFunds}
                 period={period}
                 mf={mf}
                 longsOnly={longsOnly}
+                refreshing={refreshing}
                 onFund={(c) => { setCik(c); setView("fund"); }}
               />
             ) : (
@@ -189,6 +190,7 @@ export default function Dashboard() {
                 filers={filers}
                 period={period}
                 mf={mf}
+                refreshing={refreshing}
                 onFund={(c) => { setCik(c); setView("fund"); }}
               />
             )}

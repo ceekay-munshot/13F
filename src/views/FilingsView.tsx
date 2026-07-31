@@ -6,7 +6,7 @@
 // because here it IS the subject: a filing's accepted-at, its lag, and how many
 // managers are still outstanding.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip, ReferenceLine, Cell as RCell } from "recharts";
 import { WidgetCard, ViewToggle } from "../components/WidgetCard";
 import { Kpi, KpiRow } from "../components/Kpi";
@@ -74,13 +74,17 @@ function StatusDot({ row }: { row: FilingRow }) {
 }
 
 export function FilingsView({
-  filers, period, mf, onFund,
+  filers, period, mf, refreshing, onFund,
 }: {
   filers: Filer[];
   period: string;
   mf: Manifest;
+  /** Reload in flight: dim in place, never unmount to skeletons. */
+  refreshing?: boolean;
   onFund: (cik: string) => void;
 }) {
+  // First load vs reload. A ref so it cannot itself retrigger the effect.
+  const hasData = useRef(false);
   const [rows, setRows] = useState<FilingRow[] | null>(null);
   const [timeline, setTimeline] = useState<{ cik: string; fund: string; lag: number; period: string; color: string }[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -90,7 +94,8 @@ export function FilingsView({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Only blank on a FIRST load; a reload dims in place (see WidgetCard).
+    setLoading((prev) => prev || !hasData.current);
     setErr(null);
 
     const colorOf = new Map(filers.map((f, i) => [f.cik, fundColor(i)]));
@@ -129,9 +134,18 @@ export function FilingsView({
       if (!cancelled) { setTimeline(pts); setExcludedAmendments(lateAmendments); }
     })()
       .catch((e) => !cancelled && setErr(String(e.message ?? e)))
-      .finally(() => !cancelled && setLoading(false));
+      .finally(() => {
+        if (cancelled) return;
+        hasData.current = true;
+        setLoading(false);
+      });
     return () => { cancelled = true; };
-  }, [period, mf, filers]);
+    // Key on the BUILD ID, not the manifest object. loadManifest(true) returns
+    // a fresh object on every refresh even when the build has not changed, so
+    // depending on `mf` retriggered this loader and remounted the view to
+    // skeletons in order to repaint identical numbers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period, mf.buildId, filers]);
 
   const filtered = useMemo(() => {
     if (!rows) return [];
@@ -193,6 +207,7 @@ export function FilingsView({
       <div style={{ ...GRID_WIDE, marginTop: 22 }}>
         {/* PRIMARY — the feed */}
         <WidgetCard
+          refreshing={refreshing}
           title="Latest 13F filings"
           subtitle="Newest first, by the timestamp the SEC accepted the submission"
           span={2}
@@ -259,6 +274,7 @@ export function FilingsView({
         {/* INSIGHT — arrival timing. A dot-lane, not a Gantt: the question is
             "how late", and one axis answers it. */}
         <WidgetCard
+          refreshing={refreshing}
           title="Filing timeline"
           subtitle={
             `Days after quarter end, last 6 quarters — the line is the 45-day deadline` +

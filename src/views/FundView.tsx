@@ -4,7 +4,7 @@
 // nine widgets. Content order follows the mandated hierarchy: filters, KPIs,
 // primary analysis, insights, detail, sources.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Cell, Tooltip, Treemap,
 } from "recharts";
@@ -175,13 +175,18 @@ function TreemapTile(props: {
 }
 
 export function FundView({
-  cik, period, mf, longsOnly,
+  cik, period, mf, longsOnly, refreshing,
 }: {
   cik: string;
   period: string;
   mf: Manifest;
   longsOnly: boolean;
+  /** Reload in flight: dim in place, never unmount to skeletons. */
+  refreshing?: boolean;
 }) {
+  // Distinguishes a FIRST load (skeletons are right) from a reload (keep the
+  // data mounted and dim it). A ref, not state: it must not itself retrigger.
+  const hasData = useRef(false);
   const [summary, setSummary] = useState<FundSummary | null>(null);
   const [fp, setFp] = useState<FundPeriod | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -196,10 +201,12 @@ export function FundView({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Only blank on a FIRST load; a reload dims in place (see WidgetCard).
+    setLoading((prev) => prev || !hasData.current);
     setErr(null);
     setShowRaw(true);
-    setFp(null);
+    // Deliberately NOT setFp(null): clearing it here is what blanked the whole
+    // fund page on every refresh. Stale-but-labelled beats a flash of skeleton.
 
     // Load the summary first and use it to decide whether this manager has a
     // filing for the requested quarter. Asking for the artifact blind and
@@ -215,9 +222,18 @@ export function FundView({
         if (!cancelled) setFp(p);
       })
       .catch((e) => !cancelled && setErr(String(e.message ?? e)))
-      .finally(() => !cancelled && setLoading(false));
+      .finally(() => {
+        if (cancelled) return;
+        hasData.current = true;
+        setLoading(false);
+      });
     return () => { cancelled = true; };
-  }, [cik, period, mf]);
+    // Key on the BUILD ID, not the manifest object. loadManifest(true) returns
+    // a fresh object on every refresh even when the build has not changed, so
+    // depending on `mf` retriggered this loader and remounted the view to
+    // skeletons in order to repaint identical numbers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cik, period, mf.buildId]);
 
   const holdings = useMemo(() => {
     if (!fp) return [];
@@ -291,6 +307,7 @@ export function FundView({
     return (
       <div style={{ ...GRID_WIDE, marginTop: 22 }}>
         <WidgetCard
+          refreshing={refreshing}
           title={summary.name}
           subtitle={`${periodLabel(period)} · reported ${usd(point.valueLongUsd)} across ${count(point.positions)} positions`}
           span={2}
@@ -314,6 +331,7 @@ export function FundView({
     return (
       <div style={{ ...GRID_WIDE, marginTop: 22 }}>
         <WidgetCard
+          refreshing={refreshing}
           title={summary.name}
           subtitle={`No 13F filing for ${periodLabel(period)}`}
           span={2}
@@ -378,6 +396,7 @@ export function FundView({
         {/* PRIMARY — the holdings treemap. Top 50 only: 100 tiles in a 480px
             card is ~40 unlabelled slivers, which is decoration rather than data. */}
         <WidgetCard
+          refreshing={refreshing}
           title="Holdings map"
           subtitle="Area is position size · colour is change in portfolio weight"
           span={2}
@@ -439,6 +458,7 @@ export function FundView({
             real gaps, and an area would interpolate between filings, asserting
             continuous knowledge the data does not have. */}
         <WidgetCard
+          refreshing={refreshing}
           title="Reported 13F value"
           subtitle="Long equity at each quarter end. Never labelled AUM — it excludes shorts, cash and non-US holdings."
           span={2}
@@ -523,6 +543,7 @@ export function FundView({
             cards merged into one: increases left, decreases right, split by a
             hairline rather than nested cards. */}
         <WidgetCard
+          refreshing={refreshing}
           title="Position changes"
           subtitle="Ranked by change in portfolio weight — moves can be trades or price."
           span={2}
@@ -608,6 +629,7 @@ export function FundView({
 
         {/* DETAIL — full holdings. */}
         <WidgetCard
+          refreshing={refreshing}
           title="Holdings"
           subtitle={
             fp
@@ -700,6 +722,7 @@ export function FundView({
         {/* INSIGHT — exits. A table, not a chart: the payload is names, and
             names are text. A dumbbell chart would hide the answer behind a hover. */}
         <WidgetCard
+          refreshing={refreshing}
           title="Exited this quarter"
           subtitle="Positions closed since the prior filing — half of the anchor."
           bodyMinHeight={200}
