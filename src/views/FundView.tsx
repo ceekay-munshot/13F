@@ -175,7 +175,7 @@ function TreemapTile(props: {
 }
 
 export function FundView({
-  cik, period, mf, longsOnly, refreshing,
+  cik, period, mf, longsOnly, refreshing, group = [],
 }: {
   cik: string;
   period: string;
@@ -183,11 +183,17 @@ export function FundView({
   longsOnly: boolean;
   /** Reload in flight: dim in place, never unmount to skeletons. */
   refreshing?: boolean;
+  /** The curated comparison set, so the Fund view can relate this manager back
+      to the group instead of being a one-way trip. Same bounded list the
+      Consensus view uses — never the full 9,000-filer universe. */
+  group?: { cik: string; name: string }[];
 }) {
   // Distinguishes a FIRST load (skeletons are right) from a reload (keep the
   // data mounted and dim it). A ref, not state: it must not itself retrigger.
   const hasData = useRef(false);
   const [summary, setSummary] = useState<FundSummary | null>(null);
+  // issuerId -> how many OTHER tracked managers hold it this quarter.
+  const [groupHolders, setGroupHolders] = useState<Map<string, number>>(new Map());
   const [fp, setFp] = useState<FundPeriod | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -239,6 +245,55 @@ export function FundView({
     if (!fp) return [];
     return longsOnly ? fp.holdings.filter((h) => h.type === "" && h.unit === "SH") : fp.holdings;
   }, [fp, longsOnly]);
+
+  // Group overlap, loaded separately and best-effort: it is one card, and it
+  // must never be able to delay or break the manager's own numbers. Failures
+  // per fund are swallowed — a missing fund simply does not contribute.
+  useEffect(() => {
+    let cancelled = false;
+    const others = group.filter((g) => g.cik !== cik);
+    if (!others.length) { setGroupHolders(new Map()); return; }
+    (async () => {
+      const tally = new Map<string, number>();
+      await Promise.all(
+        others.map(async (g) => {
+          try {
+            const p = await loadFundPeriodAll(g.cik, period, mf);
+            const seen = new Set<string>();
+            for (const h of p.holdings) {
+              if (h.type !== "" || h.unit !== "SH") continue;
+              seen.add(h.issuerId);
+            }
+            for (const id of seen) tally.set(id, (tally.get(id) ?? 0) + 1);
+          } catch { /* did not file, or unavailable — contributes nothing */ }
+        }),
+      );
+      if (!cancelled) setGroupHolders(tally);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cik, period, mf.buildId, group]);
+
+  /**
+   * Names this manager shares with the rest of the tracked set, biggest weight
+   * first. Computed at ISSUER level, so GOOG and GOOGL count once — two CUSIPs
+   * of one company are one overlapping idea, not two.
+   */
+  const overlap = useMemo(() => {
+    if (!holdings.length || !groupHolders.size) return [];
+    const byIssuer = new Map<string, { issuerId: string; ticker: string | null; name: string; weight: number }>();
+    for (const h of holdings) {
+      if (h.type !== "" || h.unit !== "SH") continue;
+      const prev = byIssuer.get(h.issuerId);
+      if (prev) prev.weight += h.weight ?? 0;
+      else byIssuer.set(h.issuerId, { issuerId: h.issuerId, ticker: h.ticker, name: h.name, weight: h.weight ?? 0 });
+    }
+    return [...byIssuer.values()]
+      .map((x) => ({ ...x, others: groupHolders.get(x.issuerId) ?? 0 }))
+      .filter((x) => x.others > 0)
+      .sort((a, b) => b.weight - a.weight)
+      .slice(0, 40);
+  }, [holdings, groupHolders]);
 
   const meta = fp?.meta;
   const suppressed = Boolean(meta?.deltasSuppressed) && !showRaw;
@@ -828,6 +883,103 @@ export function FundView({
                 Every weight and total on this page uses long equity as the denominator. Mixing in
                 option notional would inflate the book and deflate every position weight.
               </p>
+            </div>
+          )}
+        </WidgetCard>
+
+        {/* ACTIVITY — §6.4. Every one of these numbers was already in the
+            artifact and none of them reached the screen; only turnover did, as
+            a single KPI. This is the merged WhaleWisdom 13-row stat table, cut
+            to what is actually actionable and drawn as CSS flow bars rather
+            than a chart (five bars do not justify a ResponsiveContainer). */}
+        <WidgetCard
+          refreshing={refreshing}
+          title="Activity"
+          subtitle="How the book changed, by position count"
+          bodyMinHeight={200}
+        >
+          {loading || !meta ? (
+            <ChartSkeleton bars={5} height={160} />
+          ) : meta.deltasSuppressed ? (
+            <EmptyState
+              icon="—"
+              message="Activity not comparable"
+              hint={
+                meta.priorState !== "PRIOR_OK"
+                  ? "There is no prior quarter to measure this one against."
+                  : "The whole book moved by one structural event, so counting it as trades would mislead."
+              }
+            />
+          ) : (
+            <div style={{ padding: "14px 16px" }}>
+              {(() => {
+                const bars = [
+                  { label: "New", n: meta.n_new, color: ACTION_COLORS.NEW },
+                  { label: "Added to", n: meta.n_added, color: ACTION_COLORS.ADDED },
+                  { label: "Held flat", n: meta.n_held, color: ACTION_COLORS.HELD },
+                  { label: "Trimmed", n: meta.n_trimmed, color: ACTION_COLORS.TRIMMED },
+                  { label: "Exited", n: meta.n_exited, color: ACTION_COLORS.EXITED },
+                ];
+                const peak = Math.max(1, ...bars.map((b) => b.n ?? 0));
+                return bars.map((b) => (
+                  <div key={b.label} style={{ marginBottom: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 4 }}>
+                      <span style={{ color: t.textSecondary, fontWeight: 600 }}>{b.label}</span>
+                      <span style={{ color: t.textMuted, fontVariantNumeric: "tabular-nums" }}>{count(b.n ?? 0)}</span>
+                    </div>
+                    <div style={{ height: 8, background: "#f3f4f6", borderRadius: 4, overflow: "hidden" }}>
+                      <div
+                        className="flow-bar"
+                        style={{ height: "100%", width: "100%", background: b.color, transform: `scaleX(${(b.n ?? 0) / peak})` }}
+                      />
+                    </div>
+                  </div>
+                ));
+              })()}
+              {/* Turnover always with its formula. Never an unexplained "34%". */}
+              <p style={{ fontSize: 11, color: t.textHint, margin: "14px 0 0", lineHeight: 1.55 }}>
+                Turnover {meta.turnover_position_pct == null ? "—" : `${meta.turnover_position_pct.toFixed(1)}%`} is
+                (entries + exits) ÷ positions this quarter. Counts are of POSITIONS, not dollars: a manager
+                can exit twenty small names and still be barely changed by value.
+              </p>
+            </div>
+          )}
+        </WidgetCard>
+
+        {/* OVERLAP WITH GROUP — §6.4 calls this out specifically "so the Fund
+            view is not a dead end". Without it, drilling into a manager is a
+            one-way trip: nothing on the page relates them back to the others. */}
+        <WidgetCard
+          refreshing={refreshing}
+          title="Overlap with the group"
+          subtitle="Names this manager shares with the tracked comparison set"
+          bodyMinHeight={200}
+        >
+          {loading ? (
+            <TableSkeleton rows={5} cols={2} />
+          ) : !overlap.length ? (
+            <EmptyState
+              icon="○"
+              message="No shared names"
+              hint="Nothing in this book is also held by another tracked manager this quarter."
+            />
+          ) : (
+            <div style={{ maxHeight: 260, overflow: "auto" }}>
+              <table className="data-table">
+                <thead><tr><th>Security</th><th>Also held by</th><th>Weight here</th></tr></thead>
+                <tbody>
+                  {overlap.map((o) => (
+                    <tr key={o.issuerId}>
+                      <td style={{ maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ fontWeight: 700 }}>{o.ticker ?? "—"}</span>
+                        <span style={{ color: t.textHint, marginLeft: 6 }}>{o.name}</span>
+                      </td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{o.others} other{o.others === 1 ? "" : "s"}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{pct(o.weight)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </WidgetCard>

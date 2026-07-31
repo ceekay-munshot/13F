@@ -11,6 +11,8 @@ import { MatrixSkeleton, EmptyState, ErrorState, PartialNotice, TableSkeleton } 
 import { t, fundColor, ACTION_COLORS } from "../theme";
 import { usd, pp, count, periodLabel, dateLabel } from "../lib/format";
 import { buildConsensus, sortConsensus, buildAnchor, type FundInput, type SortKey } from "../lib/consensus";
+import { TickerDrawer } from "../components/TickerDrawer";
+import { downloadCsv } from "../lib/csv";
 import { loadFundPeriodAll, MissingArtifactError, type Manifest, type Filer } from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
 
@@ -98,6 +100,12 @@ export function ConsensusView({
   const [loading, setLoading] = useState(true);
   const [threshold, setThreshold] = useState<string>("2");
   const [sortKey, setSortKey] = useState<SortKey>("funds");
+  const [query, setQuery] = useState("");
+  // §6.3 move filters. These are the highest-signal questions the grid can
+  // answer — "show me only what somebody newly bought" — and they were the
+  // one part of the chip row that was never built.
+  const [moveFilter, setMoveFilter] = useState<"" | "new" | "exit" | "buys" | "sells">("");
+  const [openIssuer, setOpenIssuer] = useState<string | null>(null);
   // Render a fast default and let the user ask for the rest.
   //
   // Across the full universe there are thousands of consensus names; at 12 fund
@@ -208,10 +216,39 @@ export function ConsensusView({
     return th.key === "all" ? Math.max(2, present.length) : th.min;
   }, [threshold, present.length]);
 
-  const rows = useMemo(() => {
+  const allMatching = useMemo(() => {
     if (!funds) return [];
     return sortConsensus(buildConsensus(funds, { minFunds, longsOnly }), sortKey);
   }, [funds, minFunds, longsOnly, sortKey]);
+
+  /**
+   * Search + move filters, applied over the sorted set.
+   *
+   * Before this, the only way to find one name among thousands was to expand
+   * the matrix to 1,500 rows x 12 columns and use the browser's own Ctrl-F.
+   * The plan mandates one search box per view and this was the view without
+   * one — in the product's primary view.
+   *
+   * Matching is on TICKER and ISSUER NAME, the two things a user actually
+   * knows. Not on issuerId, which is an internal hash, and emphatically not on
+   * CUSIP, which never reaches the client at all.
+   */
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return allMatching.filter((r) => {
+      if (q && !(r.ticker?.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))) return false;
+      switch (moveFilter) {
+        case "new":   return r.nNew > 0;
+        case "exit":  return r.nExited > 0;
+        // "Consensus buys/sells" is about AGREEMENT, not a single mover: the
+        // group has to lean one way on balance. netDirection is +1 per
+        // add-or-new and -1 per trim-or-exit, so its sign is exactly that lean.
+        case "buys":  return r.netDirection > 0;
+        case "sells": return r.netDirection < 0;
+        default:      return true;
+      }
+    });
+  }, [allMatching, query, moveFilter]);
 
   // Anchor + distribution pass: every name any fund touched, INCLUDING names
   // the whole group exited (zero holders, which no holder threshold would keep).
@@ -291,6 +328,72 @@ export function ConsensusView({
                 value={sortKey === "funds" ? "Funds" : sortKey === "value" ? "Value" : "Net move"}
                 onChange={(v) => setSortKey(v === "Funds" ? "funds" : v === "Value" ? "value" : "net")}
               />
+              {/* §6.3 move chips. Toggling, not radio: clicking the active one
+                  clears it, so there is always a way back to everything. */}
+              {([
+                ["new", "Has NEW"], ["exit", "Has EXIT"],
+                ["buys", "Consensus buys"], ["sells", "Cons. sells"],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  className="pressable"
+                  onClick={() => setMoveFilter((v) => (v === key ? "" : key))}
+                  aria-pressed={moveFilter === key}
+                  style={{
+                    fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
+                    padding: "4px 9px", borderRadius: 7,
+                    border: `1px solid ${moveFilter === key ? t.primaryBorder : t.border}`,
+                    background: moveFilter === key ? t.primaryLight : "#fff",
+                    color: moveFilter === key ? t.primaryText : t.textMuted,
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+              <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span className="sr-only">Search consensus names</span>
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search ticker or issuer…"
+                  style={{
+                    fontSize: 11.5, fontFamily: "inherit", padding: "5px 9px", borderRadius: 7,
+                    border: `1px solid ${t.border}`, width: 168, color: t.textPrimary, outline: "none",
+                  }}
+                />
+              </label>
+              <button
+                className="pressable"
+                onClick={() =>
+                  downloadCsv(
+                    `13f-consensus-${period}.csv`,
+                    rows,
+                    // Export mirrors the view-model, so it inherits the CUSIP
+                    // exclusion and the suppressed-delta rules automatically.
+                    [
+                      { header: "Ticker", cell: (r) => r.ticker ?? "" },
+                      { header: "Issuer", cell: (r) => r.name },
+                      { header: "Funds holding", cell: (r) => r.fundCount },
+                      { header: "Combined value (USD)", cell: (r) => Math.round(r.combinedValue) },
+                      { header: "Net direction", cell: (r) => r.netDirection },
+                      { header: "New", cell: (r) => r.nNew },
+                      { header: "Exited", cell: (r) => r.nExited },
+                      { header: "Share classes", cell: (r) => r.shareClasses },
+                      ...(funds ?? []).map((f) => ({
+                        header: `${f.code} weight %`,
+                        cell: (r: typeof rows[number]) => r.cells[f.cik]?.weight ?? "",
+                      })),
+                    ],
+                  )
+                }
+                style={{
+                  fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
+                  padding: "4px 9px", borderRadius: 7, border: `1px solid ${t.border}`,
+                  background: "#fff", color: t.textMuted,
+                }}
+              >
+                Export CSV
+              </button>
             </div>
           }
           caveat={
@@ -322,6 +425,7 @@ export function ConsensusView({
                 holderHistory={history}
                 maxRows={showAll ? 1500 : DEFAULT_ROWS}
                 onFund={onFund}
+                onTicker={setOpenIssuer}
               />
               <div
                 style={{
@@ -440,7 +544,91 @@ export function ConsensusView({
             </div>
           </div>
         </WidgetCard>
+
+        {/* COMBINED HOLDINGS — §6.4. The matrix answers "who agrees on what" in
+            a grid; this answers "what does the group own, in order" as a list.
+            Same filtered set, so the search box and chips above govern both. */}
+        <WidgetCard
+          refreshing={refreshing}
+          title="Combined holdings"
+          subtitle="Every name the group holds, aggregated across funds — searchable above"
+          span={2}
+          bodyMinHeight={220}
+          actions={
+            <span style={{ fontSize: 11, color: t.textHint }}>
+              {count(rows.length)} of {count(allMatching.length)} names
+            </span>
+          }
+        >
+          {loading ? (
+            <TableSkeleton rows={6} cols={5} />
+          ) : !rows.length ? (
+            <EmptyState icon="▤" message="Nothing matches" hint="Clear the search or the move filter." />
+          ) : (
+            <div style={{ maxHeight: 420, overflow: "auto" }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Security</th><th>Funds</th><th>Combined value</th>
+                    <th>Net move</th><th>New</th><th>Exited</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice(0, 400).map((r) => (
+                    <tr key={r.issuerId}>
+                      <td>
+                        <button
+                          className="pressable"
+                          onClick={() => setOpenIssuer(r.issuerId)}
+                          style={{
+                            border: "none", background: "transparent", cursor: "pointer",
+                            fontFamily: "inherit", fontSize: 12, textAlign: "left", padding: 0,
+                            color: t.textPrimary,
+                          }}
+                        >
+                          <span style={{ fontWeight: 700 }}>{r.ticker ?? "—"}</span>
+                          <span style={{ color: t.textHint, marginLeft: 7 }}>{r.name}</span>
+                        </button>
+                      </td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.fundCount}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{usd(r.combinedValue)}</td>
+                      <td
+                        style={{
+                          fontVariantNumeric: "tabular-nums",
+                          color: r.netDirection > 0 ? "#059669" : r.netDirection < 0 ? "#dc2626" : t.textMuted,
+                        }}
+                      >
+                        {r.netDirection > 0 ? "+" : ""}{r.netDirection}
+                      </td>
+                      <td style={{ color: r.nNew ? ACTION_COLORS.NEW : t.textHint }}>{r.nNew || "—"}</td>
+                      <td style={{ color: r.nExited ? ACTION_COLORS.EXITED : t.textHint }}>{r.nExited || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {rows.length > 400 && (
+                <div style={{ padding: "8px 14px", fontSize: 11, color: t.textHint }}>
+                  Showing the first 400 of {count(rows.length)}. Narrow with the search box above, or export the full set.
+                </div>
+              )}
+            </div>
+          )}
+        </WidgetCard>
       </div>
+
+      {/* Ticker drill-down. Rendered from `rows` and `history` that are already
+          in memory, so opening it costs a render rather than a round trip.
+          Absolutely positioned (see .drawer), so Zone 2 never reflows and no
+          chart behind it re-measures or replays its entrance. */}
+      <TickerDrawer
+        row={allMatching.find((r) => r.issuerId === openIssuer) ?? null}
+        funds={funds ?? []}
+        history={history}
+        period={period}
+        open={Boolean(openIssuer)}
+        onClose={() => setOpenIssuer(null)}
+        onFund={(c) => { setOpenIssuer(null); onFund(c); }}
+      />
     </>
   );
 }

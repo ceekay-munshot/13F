@@ -175,7 +175,14 @@ export default function Dashboard() {
               }
             >
             {view === "fund" && cik ? (
-              <FundView cik={cik} period={period} mf={mf} longsOnly={longsOnly} refreshing={refreshing} />
+              <FundView
+                cik={cik}
+                period={period}
+                mf={mf}
+                longsOnly={longsOnly}
+                refreshing={refreshing}
+                group={consensusFunds}
+              />
             ) : view === "consensus" ? (
               <ConsensusView
                 filers={consensusFunds}
