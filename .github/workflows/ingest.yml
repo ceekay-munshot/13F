@@ -164,23 +164,31 @@ jobs:
       # ---------------------------------------------------------------------
       # THERE IS NO R2 PUBLISH HERE, AND THAT IS DELIBERATE.
       #
-      # A step used to live here. It had never once executed — its guard was
-      # `if: ${{ env.R2_ACCOUNT_ID != '' }}`, and a step's own `env:` block is
-      # not in scope for its own `if:`, so the expression was always empty and
-      # the step was always skipped. That accident is the only reason production
-      # survived it, because had it run it would have done four damaging things:
+      # A step used to live here, and on 2026-07-31 it took the live dashboard
+      # from 9,396 funds down to 8. What it did wrong, in order of what actually
+      # bit:
       #
-      #   1. `--content-encoding gzip` on artifacts that have been PLAIN JSON
+      #   1. It overwrote manifest.json and meta/filers.json — the shared
+      #      indexes describing the whole 9,396-filer universe — with this job's
+      #      SEED-WATCHLIST versions. Both jobs write the same two keys, and
+      #      this one only ever knows about a dozen managers. OBSERVED, twice,
+      #      in runs 30592851223 and 30604563470.
+      #   2. `--content-encoding gzip` on artifacts that have been PLAIN JSON
       #      since 37b23b3. R2 persists contentEncoding as object metadata and
       #      functions/data/[[path]].js replays it via writeHttpMetadata, so
       #      every artifact would arrive claiming a gzip wrapper it does not
-      #      have. That exact mistake already broke every widget on this site
-      #      once; in R2 it would be baked into 35,000 objects.
-      #   2. Written to `muns-13f`, which is not the bucket (`13f`).
-      #   3. Overwritten manifest.json and meta/filers.json — which describe the
-      #      whole 9,396-filer universe — with this job's SEED-WATCHLIST
-      #      versions, collapsing the dashboard to a dozen funds.
+      #      have — the exact mistake that broke every widget on this site once
+      #      before. It did NOT surface this time (responses carried no
+      #      content-encoding), but nothing in the pipeline was preventing it;
+      #      `npm run guard` now does.
+      #   3. Wrote to `muns-13f` by default, which is not the bucket (`13f`).
       #   4. Cached every object `immutable` for a year with no build-id key.
+      #
+      # For the record, because the wrong version of this note was committed in
+      # b045114: the step's `if: ${{ env.R2_ACCOUNT_ID != '' }}` guard DID
+      # evaluate true and the step DID run. A step's own `env:` block IS in
+      # scope for its own `if:`. It was never dormant, and treating it as
+      # harmless-because-dead was wrong.
       #
       # R2 has ONE writer: scripts/publish-r2.mjs, driven by
       # ingest-universe.yml. It is signature-tested, resumable, refuses to run
