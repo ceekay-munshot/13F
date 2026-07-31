@@ -14,7 +14,7 @@ import { ChartSkeleton, TableSkeleton, EmptyState, ErrorState, PartialNotice } f
 import { t, ACTION_COLORS, type Action } from "../theme";
 import { usd, pct, pp, deltaPct, shares as fmtShares, count, periodLabel, dateLabel, utcStamp } from "../lib/format";
 import {
-  loadFundSummary, loadFundPeriod, loadFundPeriodAll, edgarUrl,
+  loadFundSummary, loadFundPeriod, edgarUrl,
   type Manifest, type FundSummary, type FundPeriod, type Holding,
 } from "../lib/data";
 
@@ -291,7 +291,15 @@ export function FundView({
       await Promise.all(
         others.map(async (g) => {
           try {
-            const p = await loadFundPeriodAll(g.cik, period, mf);
+            // PAGE 0 ONLY, not the whole book.
+            //
+            // Page 0 is the largest positions by value. Overlap is a "do these
+            // managers own the same things" question, and a name sitting in the
+            // tail of an 12,000-line book is not a shared conviction — so the
+            // long tail costs three-quarters of the requests and changes almost
+            // nothing. Fetching every page of eleven funds to decorate one card
+            // is what made switching funds feel heavy.
+            const p = await loadFundPeriod(g.cik, period, mf, 0);
             const seen = new Set<string>();
             for (const h of p.holdings) {
               if (h.type !== "" || h.unit !== "SH") continue;
@@ -985,7 +993,7 @@ export function FundView({
         <WidgetCard
           refreshing={refreshing}
           title="Overlap with the group"
-          subtitle="Names this manager shares with the tracked comparison set"
+          subtitle="Largest names shared with the tracked comparison set"
           bodyMinHeight={200}
         >
           {loading ? (
