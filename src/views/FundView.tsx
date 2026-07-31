@@ -609,8 +609,13 @@ export function FundView({
                     // user who wants a different one naturally reaches for the
                     // bar rather than walking the stepper to it. Honour that.
                     cursor={onPeriod ? "pointer" : undefined}
-                    onClick={(d: { period?: string } | undefined) => {
-                      if (d?.period && d.period !== period) onPeriod?.(d.period);
+                    // Recharts hands the click a WRAPPER, not the datum: the
+                    // row lives on `.payload`. Reading `.period` off the top
+                    // level silently yielded undefined and the click did
+                    // nothing, which looks identical to "not wired up".
+                    onClick={(d: { period?: string; payload?: { period?: string } } | undefined) => {
+                      const next = d?.payload?.period ?? d?.period;
+                      if (next && next !== period) onPeriod?.(next);
                     }}
                   >
                     {series.map((s) => {

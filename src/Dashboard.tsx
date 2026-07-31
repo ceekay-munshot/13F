@@ -23,9 +23,39 @@ import { t, font } from "./theme";
 // of it up front to render a header and a KPI row is exactly the kind of bulk
 // worth removing: the shell now ships in a fraction of the bytes and each view
 // arrives on demand, cached thereafter.
-const FundView = lazy(() => import("./views/FundView").then((m) => ({ default: m.FundView })));
-const ConsensusView = lazy(() => import("./views/ConsensusView").then((m) => ({ default: m.ConsensusView })));
-const FilingsView = lazy(() => import("./views/FilingsView").then((m) => ({ default: m.FilingsView })));
+/**
+ * Lazy import that survives a deploy.
+ *
+ * Chunk filenames are content-hashed, so a deploy replaces them. A browser
+ * holding the previous index.html — an open tab, or a cached shell — then asks
+ * for a chunk that no longer exists, the dynamic import rejects, and React
+ * unmounts the tree: a WHITE PAGE, with no error and nothing to click. Observed
+ * live, switching views on a tab that had been open across a deploy.
+ *
+ * The app is stale, not broken, and the fix is to fetch the current shell. One
+ * reload does that. `sessionStorage` guards against a reload loop if the chunk
+ * is genuinely missing rather than merely renamed — better to fall through to
+ * the error boundary once than to spin forever.
+ */
+function withChunkReload<T>(load: () => Promise<T>): () => Promise<T> {
+  return async () => {
+    try {
+      return await load();
+    } catch (err) {
+      const KEY = "13f:chunk-reload";
+      if (!sessionStorage.getItem(KEY)) {
+        sessionStorage.setItem(KEY, "1");
+        location.reload();
+        return await new Promise<T>(() => {}); // never resolves; the reload takes over
+      }
+      throw err;
+    }
+  };
+}
+
+const FundView = lazy(withChunkReload(() => import("./views/FundView").then((m) => ({ default: m.FundView }))));
+const ConsensusView = lazy(withChunkReload(() => import("./views/ConsensusView").then((m) => ({ default: m.ConsensusView }))));
+const FilingsView = lazy(withChunkReload(() => import("./views/FilingsView").then((m) => ({ default: m.FilingsView }))));
 
 const GRID_WIDE: React.CSSProperties = {
   display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
