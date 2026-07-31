@@ -14,6 +14,8 @@ import { useHostContext } from "./hooks/useHostContext";
 import { sdkMode, registerCaptureHandlers } from "./lib/sdk";
 import { periodLabel, dateLabel } from "./lib/format";
 import { loadManifest, loadFilers, defaultPeriod, defaultFilerCik, type Manifest, type Filer } from "./lib/data";
+import { FavouritesBar } from "./components/FavouritesBar";
+import { loadFavourites, saveFavourites, resetFavourites, CLIENT_WATCHLIST, codeFor } from "./lib/favourites";
 import { filingSeason } from "../shared/calendar.mjs";
 import { t, font } from "./theme";
 
@@ -76,6 +78,16 @@ export default function Dashboard() {
   const [longsOnly, setLongsOnly] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // The comparison set AND the Fund view's shortcuts are the same list. Keeping
+  // them as one piece of state is deliberate: a user who stars a manager means
+  // "this one matters to me", and having to say that twice — once for the
+  // matrix, once for the shortcut row — would be the app's filing cabinet
+  // leaking into their head.
+  const [favourites, setFavourites] = useState<string[]>(() => loadFavourites());
+
+  const setFavs = (next: string[]) => { setFavourites(next); saveFavourites(next); };
+  const toggleFav = (c: string) =>
+    setFavs(favourites.includes(c) ? favourites.filter((x) => x !== c) : [...favourites, c]);
 
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const season = useMemo(() => filingSeason(today), [today]);
@@ -128,15 +140,28 @@ export default function Dashboard() {
   // across nine thousand managers is a market-wide statistic, not a comparison.
   // The product's question is "what do THESE managers agree on", so take the
   // largest funds whose line items we actually carry.
-  const CONSENSUS_MAX = 12;
+  //
+  // The cap is a RENDER limit, not an opinion about how many funds matter: each
+  // fund is a matrix column, and past roughly sixteen the grid stops being
+  // readable on a laptop before it stops being computable.
+  const CONSENSUS_MAX = 16;
   const consensusFunds = useMemo(() => {
-    // Prefer the curated active-manager set. Falling back to "largest by value"
-    // selects index complexes that hold the entire market, which turns consensus
-    // into a tautology.
+    const byCik = new Map(filers.map((f) => [f.cik, f]));
+    // The user's own set, in THEIR order — resolved against the index so a CIK
+    // that has stopped filing simply drops out rather than rendering an empty
+    // column.
+    const chosen = favourites.map((c) => byCik.get(c)).filter(Boolean) as Filer[];
+    if (chosen.length >= 2) {
+      return chosen.slice(0, CONSENSUS_MAX).map((f) => ({ ...f, code: codeFor(f.cik, f.name) }));
+    }
+    // Only if they have emptied the list entirely. Falling back to "largest by
+    // value" would select index complexes that between them hold the whole
+    // market, which turns consensus into a tautology — so prefer the flagged
+    // active managers, and take size only as a last resort.
     const watch = filers.filter((f) => f.watch);
-    if (watch.length >= 2) return watch.slice(0, CONSENSUS_MAX);
-    return filers.filter((f) => f.hasHoldings !== false).slice(0, CONSENSUS_MAX);
-  }, [filers]);
+    const pool = watch.length >= 2 ? watch : filers.filter((f) => f.hasHoldings !== false);
+    return pool.slice(0, CONSENSUS_MAX).map((f) => ({ ...f, code: codeFor(f.cik, f.name) }));
+  }, [filers, favourites]);
   const freshness: Freshness = !session.token && sdkMode === "live" ? "nosession" : "fresh";
 
   return (
@@ -195,6 +220,27 @@ export default function Dashboard() {
               longsOnly={longsOnly}
               onLongsOnly={setLongsOnly}
             />
+
+            {/* FUND VIEW ONLY.
+                On Consensus this same list IS the matrix columns, already named
+                across the top of the grid — a second copy of them as chips
+                would be the same information twice, and the row would compete
+                with the filters directly above it. Here it is navigation, which
+                the Fund view otherwise lacks entirely. */}
+            {view === "fund" && (
+              <FavouritesBar
+                favourites={favourites}
+                filers={filers}
+                cik={cik}
+                onCik={setCik}
+                onToggle={toggleFav}
+                onReset={() => setFavourites(resetFavourites())}
+                canReset={
+                  favourites.length !== CLIENT_WATCHLIST.length ||
+                  favourites.some((c, i) => c !== CLIENT_WATCHLIST[i].cik)
+                }
+              />
+            )}
 
             {/* A crash inside a view must not blank the whole document. */}
             <ViewErrorBoundary>

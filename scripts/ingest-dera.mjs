@@ -68,21 +68,23 @@ const KEEP_Q = Number(args.keep || 4);
  * comparison. Every other filer stays searchable in the Fund view.
  */
 const WATCHLIST = [
+  // Kept in step with src/lib/favourites.ts, which is what the dashboard
+  // actually renders. This copy only sets the `watch` flag in meta/filers.json,
+  // used as the fallback comparison set if a user empties their own list.
   "0001067983", // Berkshire Hathaway
-  "0001350694", // Bridgewater Associates
-  "0001423053", // Citadel Advisors
-  "0001037389", // Renaissance Technologies
-  "0001167483", // Tiger Global Management
-  "0001135730", // Coatue Management
+  "0001590531", // Foxhaven Asset Management
   "0001061165", // Lone Pine Capital
-  "0001656456", // Appaloosa
-  "0001040273", // Third Point
-  "0001061768", // Baupost Group
-  "0001649339", // Scion Asset Management
-  "0001279936", // Cantillon Capital Management
-  "0001273087", // Millennium Management
-  "0001791786", // Elliott Investment Management
-  "0001536411", // Duquesne Family Office
+  "0001336528", // Pershing Square Capital Management (NOT Pershing Square Holdco)
+  "0001960830", // SurgoCap Partners
+  "0001647251", // TCI Fund Management (NOT TCI Wealth Advisors)
+  "0001599383", // WindAcre Partnership
+  "0001768375", // Aspex Management (HK)
+  "0001798849", // Durable Capital Partners
+  "0001358706", // Abrams Capital Management (NOT Abrams Bison)
+  "0001609098", // Darsana Capital Partners
+  "0002087378", // Avantyr Capital Partners
+  "0001279936", // Cantillon Capital Management — its pro-rata quarter keeps the
+                //   structural-event detector exercised against live data
 ];
 const WATCHSET = new Set(WATCHLIST);
 const log = (m) => console.log(m);
