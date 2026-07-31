@@ -190,7 +190,18 @@ await runJob(async () => {
   // ---- read the small tables in full, stream the big one ------------------
   const entries = listEntries(zip);
   log(`\nentries: ${entries.map((e) => `${e.name} ${(e.size / 1048576).toFixed(1)}MB`).join(", ")}`);
-  const find = (n) => entries.find((e) => e.name.toUpperCase() === n);
+  // Match on the BASENAME. The archive layout is not consistent across windows:
+  // recent sets put the tables at the root ("SUBMISSION.tsv") while older ones
+  // nest them one level down ("01JUN2025-31AUG2025_form13f/SUBMISSION.tsv").
+  // An exact full-path match found nothing in the nested case and the run died
+  // with "data set is missing SUBMISSION.tsv or INFOTABLE.tsv" on a file that
+  // was plainly listed in the very next log line.
+  //
+  // This only surfaced once the walk-back fix let the loader reach a fourth,
+  // older window for the first time — the layout change had been sitting there
+  // the whole time, unreachable behind the other bug.
+  const base = (name) => name.toUpperCase().split("/").pop();
+  const find = (n) => entries.find((e) => base(e.name) === n);
 
   const subEntry = find("SUBMISSION.TSV");
   const coverEntry = find("COVERPAGE.TSV");
