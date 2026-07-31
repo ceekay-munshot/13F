@@ -140,8 +140,16 @@ function TreemapTile(props: {
   const showLabel = width > 30 && height > 18;
   const showSub = width > 62 && height > 36 && dWeightPp != null;
 
+  // aria-label, NOT <title>.
+  //
+  // An SVG <title> is both the accessible name AND a native browser tooltip, so
+  // hovering a tile popped the OS tooltip on top of the Recharts one — two
+  // boxes, different shapes, overlapping each other and the map underneath.
+  // aria-label gives screen readers the same string with no second popup.
+  const label = `${ticker ?? name}${dWeightPp != null ? ` · ${d > 0 ? "+" : ""}${d.toFixed(2)}pp` : ""}`;
+
   return (
-    <g>
+    <g role="img" aria-label={label}>
       <rect
         x={x} y={y} width={Math.max(0, width - 2)} height={Math.max(0, height - 2)}
         fill={s.fill} rx={3}
@@ -169,7 +177,6 @@ function TreemapTile(props: {
           {`${d > 0 ? "+" : ""}${d.toFixed(1)}pp`}
         </text>
       )}
-      <title>{`${ticker ?? name}${dWeightPp != null ? ` · ${d > 0 ? "+" : ""}${d.toFixed(2)}pp` : ""}`}</title>
     </g>
   );
 }
@@ -538,7 +545,20 @@ export function FundView({
                     content={<TreemapTile />}
                   >
                     <Tooltip
-                      contentStyle={{ background: "#fff", border: `1px solid ${t.borderSolid}`, borderRadius: 8, fontSize: 12 }}
+                      // Sit CLEAR of the cursor and above the map. A treemap is
+                      // wall-to-wall tiles, so a tooltip anchored on the pointer
+                      // always covers a neighbour — and often the tile being
+                      // read. Offsetting it up and to the right keeps the tile
+                      // under the cursor visible, and allowEscapeViewBox lets it
+                      // leave the plot rather than being shoved back over the
+                      // map at the edges.
+                      offset={16}
+                      allowEscapeViewBox={{ x: true, y: true }}
+                      wrapperStyle={{ zIndex: 5, pointerEvents: "none" }}
+                      contentStyle={{
+                        background: "#fff", border: `1px solid ${t.borderSolid}`, borderRadius: 8,
+                        fontSize: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.10)", padding: "6px 10px",
+                      }}
                       formatter={(v: number, _n, p) => [
                         `${usd(v)} · ${pct(p.payload?.weight)}${p.payload?.dWeightPp != null ? ` · ${pp(p.payload.dWeightPp)}` : ""}`,
                         p.payload?.name ?? "",
