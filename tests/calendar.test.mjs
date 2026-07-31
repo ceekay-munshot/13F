@@ -204,6 +204,52 @@ describe("deraWindowFor", () => {
     expect(runs.map((r) => r.length)).toEqual([2, 3, 3, 3, 1]); // Jan-Feb … Dec
   });
 
+  // -------------------------------------------------------------------------
+  // WHICH WINDOW COVERS A QUARTER.
+  //
+  // Windows are keyed by FILING date, quarters by period end, and the ingest
+  // needs to know whether it holds the data for a quarter at all. The answer is
+  // the window containing that quarter's DEADLINE — which is where essentially
+  // every filing for it lands.
+  //
+  // Getting this wrong is not a blank quarter, it is a WRONG one: the handful
+  // of stragglers and late amendments that did fall inside a loaded window get
+  // published as though they were the book. Berkshire's 2025-Q1 shipped as
+  // $1.1B across 4 positions against a real ~$263B across ~40, and the quarter
+  // after it then diffed against that stub and reported a 23,000% move.
+  // -------------------------------------------------------------------------
+  it("maps each quarter to the window holding its filing deadline", () => {
+    const covering = (period) => deraWindowFor(filingDeadline(period)).slug;
+    expect(covering("2026-03-31")).toBe("01mar2026-31may2026"); // due 15 May 2026
+    expect(covering("2025-12-31")).toBe("01dec2025-28feb2026"); // due 17 Feb 2026
+    expect(covering("2025-09-30")).toBe("01sep2025-30nov2025"); // due 14 Nov 2025
+    expect(covering("2025-06-30")).toBe("01jun2025-31aug2025"); // due 14 Aug 2025
+    expect(covering("2025-03-31")).toBe("01mar2025-31may2025"); // due 15 May 2025
+  });
+
+  it("gives each of the four quarters a DISTINCT covering window", () => {
+    // If two quarters shared one, loading N windows would not yield N quarters
+    // and the retention target could never be met.
+    const periods = ["2025-06-30", "2025-09-30", "2025-12-31", "2026-03-31"];
+    const slugs = periods.map((p) => deraWindowFor(filingDeadline(p)).slug);
+    expect(new Set(slugs).size).toBe(4);
+  });
+
+  it("marks a quarter uncovered when its window was not loaded", () => {
+    // The exact check the ingest makes. A four-window run from mid-2026 covers
+    // Q2 2025 through Q1 2026 and must reject Q1 2025 — which is precisely the
+    // quarter that produced the Berkshire fragment.
+    const loaded = new Set([
+      "01mar2026-31may2026", "01dec2025-28feb2026",
+      "01sep2025-30nov2025", "01jun2025-31aug2025",
+    ]);
+    const covers = (p) => loaded.has(deraWindowFor(filingDeadline(p)).slug);
+    expect(covers("2026-03-31")).toBe(true);
+    expect(covers("2025-06-30")).toBe(true);
+    expect(covers("2025-03-31")).toBe(false);
+    expect(covers("2024-12-31")).toBe(false);
+  });
+
   it("walks back far enough to reach the requested number of windows", () => {
     // The ingest passes --windows=4. Windows are 3 months wide and the newest
     // is usually unpublished, so a flat 8-month walk (what shipped) reached at

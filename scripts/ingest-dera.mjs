@@ -182,6 +182,34 @@ await runJob(async () => {
   used = loaded[0].w;
   log(`\nmerging ${loaded.length} window(s): ${loaded.map((l) => l.w.slug).join(", ")}`);
 
+  // ---------------------------------------------------------------------------
+  // WHICH QUARTERS DO THE LOADED WINDOWS ACTUALLY COVER?
+  //
+  // DERA windows are keyed by FILING date, not by the quarter being reported.
+  // Nearly every filing for a quarter arrives in the window containing that
+  // quarter's deadline — so a quarter is fully covered only if THAT window was
+  // loaded.
+  //
+  // A quarter just outside the loaded set is not empty, which is the trap: a
+  // handful of stragglers and late amendments for it did land inside our
+  // windows. Publishing those produced a "quarter" that is a fragment of the
+  // real book. Berkshire's 2025-Q1 shipped as $1.1B across 4 positions against
+  // a true book of ~$263B across ~40 — and then 2025-Q2 diffed against that
+  // stub, reported a 23,000% move, and was flagged REVIEW. One missing window
+  // cost two wrong quarters.
+  //
+  // So a quarter whose deadline-window was not loaded is DROPPED rather than
+  // published thin. Dropping loses nothing real: the fragment was never the
+  // quarter, and the quarter after it now correctly resolves to NO_PRIOR —
+  // "we cannot compare this" — instead of comparing against a stub.
+  // ---------------------------------------------------------------------------
+  const loadedSlugs = new Set(loaded.map((l) => l.w.slug));
+  const coversPeriod = (period) => {
+    const w = deraWindowFor(filingDeadline(period));
+    return Boolean(w && loadedSlugs.has(w.slug));
+  };
+  let droppedPartial = 0;
+
   /** accession -> filing metadata, accumulated ACROSS windows. */
   const filings = new Map();
   let rowCount = 0;
@@ -404,7 +432,10 @@ await runJob(async () => {
     // quarters still contribute to the compact all-time series, which is what
     // keeps history without keeping the weight.
     const fundStored = !META_ONLY && (idx < TOP || WATCHSET.has(fund.cik));
-    const periodsAsc = [...fund.periods.keys()].sort();
+    // Only quarters whose deadline-window we actually loaded. See coversPeriod.
+    const allPeriods = [...fund.periods.keys()].sort();
+    const periodsAsc = allPeriods.filter(coversPeriod);
+    droppedPartial += allPeriods.length - periodsAsc.length;
     const holdingPeriods = new Set(periodsAsc.slice(-KEEP_Q));
     const series = [];
 
@@ -717,6 +748,11 @@ await runJob(async () => {
   log(`\n${"=".repeat(64)}`);
   log(`window ${used.slug} · build ${buildId}`);
   log(`${filerIndex.length} filers · ${holdingsWritten} fund-quarters with holdings`);
+  // Say what was dropped. A silent truncation reads as "that is all there was",
+  // which is the same class of wrong answer as publishing the fragment.
+  if (droppedPartial) {
+    log(`${droppedPartial} fund-quarters dropped: their filing window was not loaded, so only stragglers were present`);
+  }
   log(`${s.files + 1} files · ${(s.gzBytes / 1048576).toFixed(1)} MB`);
   log(`${sec.requestCount} SEC requests`);
 });
