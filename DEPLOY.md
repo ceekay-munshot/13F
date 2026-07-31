@@ -56,9 +56,11 @@ dist/
 └── data/         127 artifacts + manifest.json
 ```
 
-`public/_headers` is load-bearing. It sets `Content-Encoding: gzip` on
-`/data/*.json.gz`; without it the browser receives raw gzip bytes, tries to parse
-them as JSON, and every widget fails.
+`public/_headers` sets cache policy only. It must **never** set
+`Content-Encoding` — the artifacts are plain, uncompressed JSON and Cloudflare
+compresses on the wire by itself. Declaring the header makes the browser try to
+gunzip bytes that were never gzipped and every widget fails with
+`not valid JSON`. That has happened twice; `npm run guard` now blocks it.
 
 The cron only *refreshes* that data — it is not required for a first deploy.
 
@@ -108,16 +110,29 @@ well inside the free tier (10 GB storage, 1M Class-A writes/month).
 5. **Run the ingest** — `gh workflow run ingest-universe.yml`. It downloads the SEC
    data set, builds artifacts, and uploads to R2 (with `--prune`, so R2 stays at
    ~4 quarters).
-6. **Flip the switch** — only after step 5 confirms R2 is populated:
-   ```bash
-   git rm -r --cached public/data && echo "public/data/" >> .gitignore
-   git commit -m "chore: serve data from R2, drop committed tree"
-   git push
-   ```
-   Until this commit lands, Pages serves the committed static files and the
-   Function stays dormant (static assets take precedence). After it lands, the
-   Function serves every `/data/*` request from R2. **Do not flip before R2 is
-   populated** — the site would have nothing to serve.
+6. **There is no switch to flip. Deploying the Function *was* the cutover.**
+
+   `functions/data/[[path]].js` is a `[[path]]` catch-all, so it claims
+   `/data/*` outright and **wins over the committed static tree**. This file
+   used to claim the opposite — that Pages serves matching static assets first
+   and the Function stays dormant — and that belief cost a day of downtime: a
+   publish died before writing `manifest.json`, everyone assumed the committed
+   copy was still being served, and the live dashboard showed
+   `Could not load manifest.json (404)` the whole time.
+
+   Two consequences to hold on to:
+
+   - **An R2 publish is a production deploy, not staging.** A failed or partial
+     one is visible to users within seconds.
+   - **`public/data/*` in git is not a fallback.** The single exception is
+     `manifest.json`, which the Function explicitly falls back to so a missing
+     manifest degrades to an older, clearly-labelled build instead of an error
+     card. Keep that copy describing the *universe* — a workflow that commits a
+     watchlist-scoped manifest over it shrinks the safety net to a dozen funds.
+
+   Removing `public/data` from git is therefore optional cleanup (it saves
+   clone size), **not** the thing that turns R2 on. If you do it, delete
+   everything except `manifest.json`.
 
 **How it stays on one origin:** `functions/data/[[path]].js` is a pure passthrough
 (`env.F13F_R2.get(key)` → stream). It is I/O only, so the 10 ms CPU budget is
@@ -134,6 +149,7 @@ the dashboard renders fine from public SEC data and shows "No session" in the he
 | Symptom | Cause |
 |---|---|
 | **522 Connection timed out** | No successful deployment. Check the build log; historically a rejected `wrangler.toml`. |
-| Widgets show gzip parse errors | `dist/_headers` missing, so `Content-Encoding` is unset. |
+| Widgets fail with `not valid JSON`, `�` in console | Something set `Content-Encoding` on the artifacts. They are plain JSON — remove it. Check R2 object metadata, not just headers. |
+| Whole page: `Could not load manifest.json (404)` | R2 has artifacts but no manifest — a publish died before its last step. Re-run `ingest-universe.yml`; the publish is resumable and only the manifest will upload. |
 | Every widget empty, "No session" | Expected outside the Munshot host. Not an error. |
 | `tsc -b` fails in CI | Node too old — set `NODE_VERSION=20`. |

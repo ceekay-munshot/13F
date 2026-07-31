@@ -223,6 +223,48 @@ function fail(guard, file, msg) {
 }
 
 // ---------------------------------------------------------------------------
+// GUARD 5 — never declare Content-Encoding on the artifacts.
+//
+// The artifacts are PLAIN JSON. Cloudflare compresses on the wire by itself and
+// strips its own header on the way out; declaring `Content-Encoding: gzip`
+// ourselves makes the browser try to gunzip bytes that were never gzipped, and
+// every fetch dies with "not valid JSON" and a � in the console.
+//
+// This has shipped twice. First as pre-gzipped files served with the header,
+// which took the whole dashboard down. Then, still latent, as
+// `aws s3 sync --content-encoding gzip` in the daily workflow — which never ran
+// only because its `if:` guard was broken. In R2 it is worse than in Pages: the
+// value persists as object metadata and the serving Function replays it, so one
+// bad publish poisons ~35,000 objects until they are individually rewritten.
+//
+// Only the storage/publish surfaces are checked. Accept-Encoding on OUTBOUND
+// requests to sec.gov is required and unrelated.
+// ---------------------------------------------------------------------------
+{
+  const guard = "no-content-encoding-on-artifacts";
+  checks.push(guard);
+  const surfaces = [
+    ...walk(join(ROOT, ".github/workflows"), [".yml", ".yaml"]),
+    ...walk(join(ROOT, "functions"), [".js"]),
+    join(ROOT, "scripts/publish-r2.mjs"),
+    join(ROOT, "public/_headers"),
+  ].filter((f) => existsSync(f));
+
+  for (const f of surfaces) {
+    readFileSync(f, "utf8").split(/\r?\n/).forEach((line, i) => {
+      const code = line.replace(/^\s*#.*$/, "").replace(/^\s*\/\/.*$/, "");
+      if (/content[-_]encoding/i.test(code)) {
+        fail(
+          guard,
+          f,
+          `line ${i + 1}: declares Content-Encoding on the artifact path. The artifacts are plain JSON; Cloudflare handles compression.\n      ${line.trim()}`,
+        );
+      }
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 if (failures.length) {
   console.error(`\nci-guards: ${failures.length} violation(s)\n`);

@@ -14,11 +14,27 @@ name: Ingest 13F filings
 #
 # Never :00 or :30 — those minutes are the most contended on the whole platform.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# THE SCHEDULE IS OFF. Manual dispatch only, until this job can publish safely.
+#
+# It ingests the SEED WATCHLIST (a dozen managers). ingest-universe.yml ingests
+# all 9,396 filers, and R2 — which is what the site actually reads — is built
+# from that. But both jobs write the SAME shared indexes: manifest.json and
+# meta/filers.json. So every scheduled run of this job committed a manifest
+# describing twelve funds over one describing the universe.
+#
+# That was survivable while the committed tree was dead weight. It is not
+# anymore: functions/data/[[path]].js now falls back to the deployed
+# manifest.json when R2 has none, so the committed copy is the safety net for a
+# total outage, and a twelve-fund safety net is barely a net at all.
+#
+# What this job is FOR is real — day-of freshness for tracked managers during
+# filing season, ahead of the ~3-week DERA lag. Restoring it needs one change:
+# write and publish only its own fund/* keys, never the shared indexes. Until
+# then a scheduled run costs churn and risks the fallback, so it does not run
+# on its own. Dispatch it by hand when you want a watchlist refresh.
+# ---------------------------------------------------------------------------
 on:
-  schedule:
-    - cron: '7 23 * * *'
-    - cron: '13 1 * * *'
-    - cron: '31 3 * * *'
   workflow_dispatch:
     inputs:
       periods:
@@ -145,28 +161,35 @@ jobs:
           git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
-      # Optional and additive: once the tree outgrows git, set these secrets and
-      # this step becomes the serving path while the commit above can be dropped.
-      - name: Publish to R2
-        if: ${{ env.R2_ACCOUNT_ID != '' }}
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_BUCKET || 'muns-13f' }}
-        run: |
-          aws s3 sync public/data "s3://${R2_BUCKET}/" \
-            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --content-encoding gzip \
-            --content-type application/json \
-            --cache-control 'public, max-age=31536000, immutable' \
-            --exclude 'manifest.json'
-          # The manifest is the ONLY mutable file and must not be cached long, or
-          # a new quarter never becomes visible.
-          aws s3 cp public/data/manifest.json "s3://${R2_BUCKET}/manifest.json" \
-            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
-            --content-type application/json \
-            --cache-control 'public, max-age=60, must-revalidate'
+      # ---------------------------------------------------------------------
+      # THERE IS NO R2 PUBLISH HERE, AND THAT IS DELIBERATE.
+      #
+      # A step used to live here. It had never once executed — its guard was
+      # `if: ${{ env.R2_ACCOUNT_ID != '' }}`, and a step's own `env:` block is
+      # not in scope for its own `if:`, so the expression was always empty and
+      # the step was always skipped. That accident is the only reason production
+      # survived it, because had it run it would have done four damaging things:
+      #
+      #   1. `--content-encoding gzip` on artifacts that have been PLAIN JSON
+      #      since 37b23b3. R2 persists contentEncoding as object metadata and
+      #      functions/data/[[path]].js replays it via writeHttpMetadata, so
+      #      every artifact would arrive claiming a gzip wrapper it does not
+      #      have. That exact mistake already broke every widget on this site
+      #      once; in R2 it would be baked into 35,000 objects.
+      #   2. Written to `muns-13f`, which is not the bucket (`13f`).
+      #   3. Overwritten manifest.json and meta/filers.json — which describe the
+      #      whole 9,396-filer universe — with this job's SEED-WATCHLIST
+      #      versions, collapsing the dashboard to a dozen funds.
+      #   4. Cached every object `immutable` for a year with no build-id key.
+      #
+      # R2 has ONE writer: scripts/publish-r2.mjs, driven by
+      # ingest-universe.yml. It is signature-tested, resumable, refuses to run
+      # without a manifest, and publishes the manifest before it prunes. Adding
+      # a second writer that produces a narrower universe is not a freshness
+      # win, it is a race to clobber. Re-enabling in-season freshness means
+      # teaching this job to publish only its own fund/* keys and never the
+      # shared indexes — see the note on the schedule above.
+      # ---------------------------------------------------------------------
 
       # One rolling issue per failure mode, so a transient blip does not bury the
       # alert that matters.

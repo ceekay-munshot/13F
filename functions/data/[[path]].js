@@ -36,11 +36,17 @@
 // (Pages → Settings → Functions → R2 bindings), and have the ingest workflow
 // upload with scripts/publish-r2.mjs.
 
-export async function onRequestGet({ params, env, request }) {
-  // Binding absent (e.g. before setup): fall through so a committed static file,
-  // if any, can still answer. A hard error here would take down a working site.
+export async function onRequestGet({ params, env, request, next }) {
+  // Binding absent (e.g. a preview deploy without the R2 binding). Since this
+  // Function outranks the static tree, returning an error here would 501 every
+  // artifact on a deploy that has perfectly good files sitting in it — so hand
+  // the request back to the asset server instead.
+  //
+  // The comment here used to promise exactly this and the code returned 501
+  // anyway, which is the same class of mistake as the precedence comment above:
+  // a stated intention that nothing enforced.
   if (!env || !env.F13F_R2) {
-    return new Response("R2 binding F13F_R2 not configured", { status: 501 });
+    return next();
   }
 
   const key = Array.isArray(params.path) ? params.path.join("/") : String(params.path ?? "");
