@@ -256,7 +256,28 @@ export function detectStructuralEvent(current, prior, opts = {}) {
  */
 export function computeChanges(current, prior, priorState) {
   if (priorState !== PRIOR_STATE.OK || !prior) {
-    return { changes: [], suppressed: true, reason: priorState, structural: null };
+    // NOTE the two distinct fields, and why they are not one.
+    //
+    // `reason` answers "why are there no deltas?" and its domain is the union
+    // of PRIOR_STATE codes and structural-event codes. `structuralEvent`
+    // answers "did something happen to this portfolio that makes the numbers
+    // themselves untrustworthy?" and its domain is ONLY structural events.
+    //
+    // They used to be the same field. Both ingest paths wrote
+    // `structuralEvent: suppressed ? reason : null`, so a perfectly ordinary
+    // first-covered quarter published structuralEvent: "NO_PRIOR" — and the
+    // Fund view renders that field raw in an amber warning column and paints
+    // the value bar amber. Measured on the shipped tree: 16,414 NO_PRIOR and
+    // 169 PRIOR_IS_NT against 41 genuine PRO_RATA_REDUCTIONs. The channel
+    // reserved for real data-quality warnings was 99.8% noise, which is the
+    // same as having no warning channel at all.
+    return {
+      changes: [],
+      suppressed: true,
+      reason: priorState,
+      structuralEvent: null, // having no prior quarter is not an event
+      structural: null,
+    };
   }
 
   const structural = detectStructuralEvent(current, prior);
@@ -370,7 +391,14 @@ export function computeChanges(current, prior, priorState) {
     });
   }
 
-  return { changes, suppressed: suppressAll, reason: structural.event, structural };
+  return {
+    changes,
+    suppressed: suppressAll,
+    reason: structural.event,
+    // Only a real structural finding reaches this field — see the note above.
+    structuralEvent: structural.event ?? null,
+    structural,
+  };
 }
 
 /**

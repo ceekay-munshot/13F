@@ -192,6 +192,78 @@ describe("prior-quarter states", () => {
       expect(out.suppressed).toBe(true);
       expect(out.reason).toBe(state);
     });
+
+    // --------------------------------------------------------------------
+    // ...and does NOT call that a structural event.
+    //
+    // These are two different questions sharing one answer slot until now:
+    // "why are there no deltas?" (reason — may be a coverage fact) versus
+    // "is something wrong with this portfolio's numbers?" (structuralEvent —
+    // always a warning). Both ingest paths published `suppressed ? reason`
+    // into structuralEvent, so an ordinary first-covered quarter shipped
+    // structuralEvent: "NO_PRIOR" and the Fund view painted it amber.
+    // Measured on the live tree: 16,414 NO_PRIOR + 169 PRIOR_IS_NT against
+    // 41 real PRO_RATA_REDUCTIONs — a warning channel that was 99.8% noise.
+    // --------------------------------------------------------------------
+    it(`does not report ${state} as a structural event`, () => {
+      const out = computeChanges(current, null, state);
+      expect(out.structuralEvent).toBeNull();
+      expect(out.structural).toBeNull();
+    });
+  }
+});
+
+describe("structuralEvent has a closed domain", () => {
+  // Anything published in this field must be a structural finding. If a new
+  // PRIOR_STATE code is added and leaks in, this fails.
+  const STRUCTURAL_CODES = new Set(["PRO_RATA_REDUCTION", "UNIT_SCALE_CHANGE", "REVIEW"]);
+
+  const mk = (holdings, value) => ({ period_end: "2026-06-30", accession: "a", holdings, value_long_usd: value });
+  // ssh_prnamt_type MUST be "SH": the uniform-ratio detector only counts share
+  // rows, because a PRN row is a principal amount and its ratio means something
+  // else entirely. Omitting it makes the pro-rata branch see zero ratios and
+  // fall through to the magnitude catch-all.
+  const h = (cusip, shares, value) => ({
+    cusip, put_call: null, ssh_prnamt: shares, ssh_prnamt_type: "SH", value_usd: value, weight_pct: 1,
+  });
+
+  it("is null when nothing structural happened", () => {
+    const prior = mk([h("A", 100, 1000), h("B", 200, 2000)], 3000);
+    const current = mk([h("A", 110, 1100), h("B", 190, 1900)], 3000);
+    const out = computeChanges(current, prior, PRIOR_STATE.OK);
+    expect(out.structuralEvent).toBeNull();
+    expect(out.suppressed).toBe(false);
+  });
+
+  it("emits PRO_RATA_REDUCTION and suppresses on a uniform multiplier", () => {
+    // The Cantillon signature and the reason this detector exists: every
+    // retained position moved by an identical ratio.
+    const prior = mk(Array.from({ length: 8 }, (_, i) => h(`C${i}`, 1000, 10000)), 80000);
+    const current = mk(Array.from({ length: 8 }, (_, i) => h(`C${i}`, 46, 460)), 3680);
+    const out = computeChanges(current, prior, PRIOR_STATE.OK);
+    expect(out.structuralEvent).toBe("PRO_RATA_REDUCTION");
+    expect(STRUCTURAL_CODES.has(out.structuralEvent)).toBe(true);
+    expect(out.suppressed).toBe(true);
+  });
+
+  it("publishes REVIEW even though it does not suppress deltas", () => {
+    // REVIEW means "this book changed shape too much for position-level deltas
+    // to describe" — a genuine warning worth amber. It was previously
+    // unreachable in the published field, because that field was written as
+    // `suppressed ? reason : null` and REVIEW deliberately does not suppress.
+    const prior = mk([h("A", 100, 100000), h("B", 100, 100000)], 200000);
+    const current = mk([h("A", 100, 1000)], 1000); // -99.5% value, half the positions
+    const out = computeChanges(current, prior, PRIOR_STATE.OK);
+    expect(out.structuralEvent).toBe("REVIEW");
+    expect(out.suppressed).toBe(false);
+  });
+
+  for (const state of [PRIOR_STATE.IS_NT, PRIOR_STATE.MISSING, PRIOR_STATE.NONE, PRIOR_STATE.OK]) {
+    it(`never publishes the PRIOR_STATE token ${state}`, () => {
+      const out = computeChanges(mk([h("A", 1, 1)], 1), null, state === PRIOR_STATE.OK ? PRIOR_STATE.NONE : state);
+      expect(out.structuralEvent).not.toBe(state);
+      if (out.structuralEvent !== null) expect(STRUCTURAL_CODES.has(out.structuralEvent)).toBe(true);
+    });
   }
 });
 

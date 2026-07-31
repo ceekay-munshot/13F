@@ -122,23 +122,36 @@ await runJob(async () => {
 
   // ---- resolve which quarterly window to pull -----------------------------
   const today = new Date().toISOString().slice(0, 10);
+  const WANT = Number(args.windows || 1);
   let windows;
   if (args.window) {
     windows = [{ slug: String(args.window), url: `https://www.sec.gov/files/structureddata/data/form-13f-data-sets/${args.window}_form13f.zip` }];
   } else {
-    // Walk back through recent windows until one is actually published; the
-    // newest is typically not yet available.
+    // Walk back month by month, collecting distinct windows, until we have
+    // enough candidates to satisfy --windows.
+    //
+    // The depth is DERIVED, not a magic number. Windows are three months wide,
+    // so reaching N of them needs at least 3N months; the newest is typically
+    // not yet published (it 404s), and a walk that starts mid-window covers
+    // only part of it. Hence 3N + 6 months of slack, floored at 15 so the
+    // default is never thinner than a year.
+    //
+    // It used to be a flat 8 months. That reaches four windows at best — one of
+    // which is the unpublished current one — so `--windows=4`, which is what
+    // the workflow passes, could never be satisfied and the run quietly
+    // delivered two or three quarters while reporting success.
+    const depth = Math.max(15, WANT * 3 + 6);
     const seen = new Set();
     windows = [];
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < depth; i++) {
       const d = new Date(today);
       d.setUTCMonth(d.getUTCMonth() - i);
       const w = deraWindowFor(d.toISOString().slice(0, 10));
       if (w && !seen.has(w.slug)) { seen.add(w.slug); windows.push(w); }
     }
+    log(`window candidates (${windows.length}, need ${WANT}): ${windows.map((w) => w.slug).join(", ")}`);
   }
 
-  const WANT = Number(args.windows || 1);
   const loaded = [];
   let zip = null;
   let used = null;
@@ -384,6 +397,39 @@ await runJob(async () => {
     }
 
     for (const period of periodsAsc) {
+      // ---------------------------------------------------------------------
+      // THE FILINGS FEED IS RECORDED FIRST, AND UNCONDITIONALLY.
+      //
+      // It answers "did this manager file for the quarter?", which has nothing
+      // to do with whether we could compute holdings from what they filed. A
+      // 13F-NT is a filing — it says "another manager reports my positions" —
+      // and a quarantined 13F-HR is a filing too.
+      //
+      // This used to sit at the BOTTOM of the loop, below the
+      // `if (!cur || cur.noticeOnly) continue` guard, so every notice-only
+      // fund-quarter was dropped before it was ever recorded. Measured on the
+      // shipped tree: 0 of 7,714 published rows were notices, against 2,045
+      // 13F-NT submissions in the source window — roughly 18% of all real
+      // filings invisible, and the per-period filing/fund counts understated
+      // by the same amount. A user checking whether a manager had filed saw
+      // nothing and concluded they were delinquent.
+      // ---------------------------------------------------------------------
+      const rawFilings = fund.periods.get(period) ?? [];
+      if (rawFilings.length) {
+        if (!filingsByPeriod.has(period)) filingsByPeriod.set(period, []);
+        for (const f of rawFilings) {
+          filingsByPeriod.get(period).push({
+            cik: fund.cik, fund: fund.name, code: null, accession: f.accession,
+            form: f.form, filed: f.filing_date, accepted: f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
+            positions: f.held?.length ?? 0, rawRows: f.table_entry_total ?? 0,
+            value: f.summary?.value_long_usd ?? null,
+            amendment: f.is_amendment ? (f.amendment_type || "AMENDED") : null,
+            amendmentNo: f.amendment_no, confidentialOmitted: Boolean(f.is_confidential_omitted),
+            reconciles: f.reconciles ?? null, quarantined: Boolean(f.quarantined), notice: Boolean(f.notice),
+          });
+        }
+      }
+
       const cur = folded.get(period);
       if (!cur || cur.noticeOnly) continue;
       // Per-period gate: stored fund AND within the retention window.
@@ -393,7 +439,7 @@ await runJob(async () => {
       const priorState = prior && !prior.noticeOnly ? PRIOR_STATE.OK
         : prior?.noticeOnly ? PRIOR_STATE.IS_NT : PRIOR_STATE.NONE;
 
-      const { changes, suppressed, reason, structural } = computeChanges(
+      const { changes, suppressed, reason, structuralEvent, structural } = computeChanges(
         { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },
         priorState === PRIOR_STATE.OK
           ? { period_end: pp, accession: prior.accessions?.at(-1) ?? null, holdings: prior.holdings, value_long_usd: prior.value_long_usd }
@@ -433,7 +479,7 @@ await runJob(async () => {
 
         const meta = {
           priorState, priorPeriod: priorState === PRIOR_STATE.OK ? pp : null,
-          deltasSuppressed: suppressed, structuralEvent: suppressed ? reason : null,
+          deltasSuppressed: suppressed, structuralEvent,
           structuralDetail: structural?.detail ?? null,
           confidentialOmitted: Boolean(cur.confidentialOmitted),
           foldWarnings: cur.warnings ?? [], accessions: cur.accessions ?? [],
@@ -461,7 +507,7 @@ await runJob(async () => {
         positionsOptions: cur.summary.positions_options,
         top10WeightPct: cur.summary.top10_weight_pct,
         ...acts, ...turnover, priorState,
-        deltasSuppressed: suppressed, structuralEvent: suppressed ? reason : null,
+        deltasSuppressed: suppressed, structuralEvent,
         confidentialOmitted: Boolean(cur.confidentialOmitted),
         pages: wantHoldings ? Math.max(1, Math.ceil(cur.holdings.length / ROWS_PER_PAGE)) : 0,
         acceptedAt: cur.acceptance,
@@ -471,18 +517,6 @@ await runJob(async () => {
         hasHoldings: wantHoldings,
       });
 
-      if (!filingsByPeriod.has(period)) filingsByPeriod.set(period, []);
-      for (const f of fund.periods.get(period)) {
-        filingsByPeriod.get(period).push({
-          cik: fund.cik, fund: fund.name, code: null, accession: f.accession,
-          form: f.form, filed: f.filing_date, accepted: f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
-          positions: f.held?.length ?? 0, rawRows: f.table_entry_total ?? 0,
-          value: f.summary?.value_long_usd ?? null,
-          amendment: f.is_amendment ? (f.amendment_type || "AMENDED") : null,
-          amendmentNo: f.amendment_no, confidentialOmitted: Boolean(f.is_confidential_omitted),
-          reconciles: f.reconciles ?? null, quarantined: Boolean(f.quarantined), notice: Boolean(f.notice),
-        });
-      }
     }
 
     if (series.length) {

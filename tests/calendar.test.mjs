@@ -153,4 +153,75 @@ describe("deraWindowFor", () => {
     expect(w.slug).toBe("01mar2026-31may2026");
     expect(w.url).toContain("form-13f-data-sets/01mar2026-31may2026_form13f.zip");
   });
+
+  // -------------------------------------------------------------------------
+  // The year boundary. Dec-Jan-Feb is the only window that straddles one, and
+  // which two years it spans depends on which of its three months you are in.
+  // Anchoring all three on `y - 1` sent every DECEMBER date to a window a full
+  // year stale — 2025-12-15 resolved to 01dec2024-28feb2025 — so a walk-back
+  // that crossed a December silently pulled an 18-month-old data set and
+  // produced non-contiguous quarters.
+  // -------------------------------------------------------------------------
+  it("maps December to the window that OPENS that December, not last year's", () => {
+    expect(deraWindowFor("2025-12-01").slug).toBe("01dec2025-28feb2026");
+    expect(deraWindowFor("2025-12-31").slug).toBe("01dec2025-28feb2026");
+  });
+
+  it("maps January and February to the window opened the PREVIOUS December", () => {
+    expect(deraWindowFor("2026-01-15").slug).toBe("01dec2025-28feb2026");
+    expect(deraWindowFor("2026-02-28").slug).toBe("01dec2025-28feb2026");
+  });
+
+  it("puts all three winter months in the SAME window", () => {
+    const dec = deraWindowFor("2025-12-15").slug;
+    expect(deraWindowFor("2026-01-15").slug).toBe(dec);
+    expect(deraWindowFor("2026-02-15").slug).toBe(dec);
+  });
+
+  it("ends the winter window on Feb 29 in a leap year", () => {
+    expect(deraWindowFor("2023-12-15").slug).toBe("01dec2023-29feb2024");
+    expect(deraWindowFor("2024-12-15").slug).toBe("01dec2024-28feb2025");
+  });
+
+  it("assigns every month of a year to exactly one window", () => {
+    // A CALENDAR year touches FIVE windows, not four: the winter window
+    // straddles the boundary, so January/February belong to the one that opened
+    // last December while December belongs to the one opening next.
+    const byMonth = [];
+    for (let m = 1; m <= 12; m++) {
+      const w = deraWindowFor(`2026-${String(m).padStart(2, "0")}-15`);
+      expect(w).not.toBeNull();
+      byMonth.push(w.slug);
+    }
+    expect(new Set(byMonth).size).toBe(5);
+    expect(byMonth[0]).toBe(byMonth[1]);          // Jan and Feb together
+    expect(byMonth[11]).not.toBe(byMonth[0]);     // December is NOT with them
+    expect(byMonth[11]).toBe("01dec2026-28feb2027");
+
+    // Consecutive months either stay in the same window or advance to the next,
+    // and every window runs exactly three months — no gap, no overlap.
+    const runs = byMonth.reduce((acc, s) => (acc.at(-1)?.[0] === s ? (acc.at(-1).push(s), acc) : [...acc, [s]]), []);
+    expect(runs.map((r) => r.length)).toEqual([2, 3, 3, 3, 1]); // Jan-Feb … Dec
+  });
+
+  it("walks back far enough to reach the requested number of windows", () => {
+    // The ingest passes --windows=4. Windows are 3 months wide and the newest
+    // is usually unpublished, so a flat 8-month walk (what shipped) reached at
+    // most 4 candidates including the dead one, and --windows=4 could never be
+    // satisfied. Depth is now derived: max(15, 3N + 6).
+    const depthFor = (want) => Math.max(15, want * 3 + 6);
+    const reach = (todayISO, want) => {
+      const seen = new Set();
+      for (let i = 0; i < depthFor(want); i++) {
+        const d = new Date(todayISO);
+        d.setUTCMonth(d.getUTCMonth() - i);
+        const w = deraWindowFor(d.toISOString().slice(0, 10));
+        if (w) seen.add(w.slug);
+      }
+      return seen.size;
+    };
+    for (const today of ["2026-07-31", "2025-12-15", "2026-01-05", "2026-03-01"]) {
+      expect(reach(today, 4)).toBeGreaterThan(4); // > 4 so one may 404
+    }
+  });
 });

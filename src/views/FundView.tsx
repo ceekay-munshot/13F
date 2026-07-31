@@ -74,6 +74,46 @@ const WEIGHT_SCALE = [
 
 const NEW_TILE = { fill: "#4f46e5", text: "#ffffff", sub: "#c7d2fe" };
 
+/**
+ * The "Note" cell on a quarter row.
+ *
+ * Two different things used to share this cell and its amber colour: real
+ * data-quality warnings, and the ordinary fact that a quarter has no prior to
+ * compare against. Since the second is by far the more common — 16,414 NO_PRIOR
+ * against 41 genuine structural events across the universe — the amber channel
+ * was 99.8% noise and stopped carrying meaning.
+ *
+ * Warnings stay amber. Coverage facts are grey and written in words.
+ */
+type QuarterNote = {
+  structuralEvent?: string | null;
+  confidentialOmitted?: boolean;
+  priorState?: string | null;
+};
+
+const STRUCTURAL_COPY: Record<string, string> = {
+  PRO_RATA_REDUCTION: "Uniform reduction across positions",
+  UNIT_SCALE_CHANGE: "Reported unit scale changed",
+};
+
+const PRIOR_COPY: Record<string, string> = {
+  NO_PRIOR: "First covered quarter",
+  PRIOR_MISSING: "No prior quarter on file",
+  PRIOR_IS_NT: "Prior quarter was a notice",
+};
+
+function noteFor(s: QuarterNote): string {
+  if (s.structuralEvent) return STRUCTURAL_COPY[s.structuralEvent] ?? s.structuralEvent;
+  if (s.confidentialOmitted) return "Positions withheld pending confidential treatment";
+  if (s.priorState && s.priorState !== "PRIOR_OK") return PRIOR_COPY[s.priorState] ?? s.priorState;
+  return "";
+}
+
+function noteStyle(s: QuarterNote): React.CSSProperties {
+  const warn = Boolean(s.structuralEvent || s.confidentialOmitted);
+  return { color: warn ? t.warnAmber : t.textHint };
+}
+
 function tileStyle(dWeightPp: number | null, action: string | null) {
   if (action === "NEW") return NEW_TILE;
   const d = dWeightPp ?? 0;
@@ -465,9 +505,12 @@ export function FundView({
                       <td>{count(s.positions)}</td>
                       <td>{usd(s.valueLongUsd)}</td>
                       <td>{s.filingLagDays != null ? `${s.filingLagDays}d` : "—"}</td>
-                      <td style={{ color: t.warnAmber, fontSize: 11 }}>
-                        {s.structuralEvent ?? (s.confidentialOmitted ? "CONFIDENTIAL OMISSION" : "")}
-                      </td>
+                      {/* Amber is for WARNINGS about the data. "No prior
+                          quarter to compare with" is not a warning, it is a
+                          fact about coverage, so it renders grey and in plain
+                          words. When every row said NO_PRIOR in amber the
+                          channel meant nothing. */}
+                      <td style={{ fontSize: 11, ...noteStyle(s) }}>{noteFor(s)}</td>
                     </tr>
                   ))}
                 </tbody>

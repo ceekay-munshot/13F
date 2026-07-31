@@ -284,7 +284,20 @@ await runJob(async () => {
       if (!foldable.length) {
         // A period with only notices is a real, reportable state — not an
         // absence. It means another manager reports these holdings.
-        loaded.set(period, { noticeOnly: notices.length > 0, holdings: [], filings: parsed });
+        //
+        // `summary: null` is written EXPLICITLY rather than left off. The key
+        // used to be simply absent, so a consumer that forgot to check
+        // noticeOnly read `cur.summary.value_long_usd` and died on a missing
+        // property instead of on an honest null. Same shape for every period,
+        // whatever its state.
+        loaded.set(period, {
+          noticeOnly: notices.length > 0,
+          holdings: [],
+          summary: null,
+          value_long_usd: null,
+          reported_total_usd: null,
+          filings: parsed,
+        });
         continue;
       }
 
@@ -321,6 +334,23 @@ await runJob(async () => {
       const cur = loaded.get(period);
       if (!cur) continue;
 
+      // A NOTICE-ONLY QUARTER HAS NO SUMMARY. Skip it here.
+      //
+      // When nothing is foldable the period is stored as
+      // `{ noticeOnly: true, holdings: [], summary: null }` — correct, because
+      // a 13F-NT reports no positions. But this loop then read
+      // `cur.summary.value_long_usd` and threw TypeError, after having already
+      // written an empty fund-period artifact. The daily watchlist ingest
+      // aborted for every fund after the first one to file a notice, and
+      // published a zero-holdings quarter for the one that did.
+      //
+      // Notices are routine, not exotic: the current DERA window holds 2,045
+      // 13F-NT submissions. The filings feed already recorded this quarter
+      // during parsing, so nothing is lost by skipping the holdings work — and
+      // the NEXT quarter still resolves to PRIOR_IS_NT off `prior.noticeOnly`,
+      // which is what stops it reporting every position as newly bought.
+      if (cur.noticeOnly) continue;
+
       const priorP = priorPeriod(period);
       const prior = loaded.get(priorP);
 
@@ -333,7 +363,7 @@ await runJob(async () => {
       else if (prior.noticeOnly) priorState = PRIOR_STATE.IS_NT;
       else priorState = PRIOR_STATE.OK;
 
-      const { changes, suppressed, reason, structural } = computeChanges(
+      const { changes, suppressed, reason, structuralEvent, structural } = computeChanges(
         { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },
         priorState === PRIOR_STATE.OK
           ? {
@@ -372,7 +402,7 @@ await runJob(async () => {
         priorState,
         priorPeriod: priorState === PRIOR_STATE.OK ? priorP : null,
         deltasSuppressed: suppressed,
-        structuralEvent: suppressed ? reason : null,
+        structuralEvent,
         structuralDetail: structural?.detail ?? null,
         confidentialOmitted: Boolean(cur.confidentialOmitted),
         foldWarnings: cur.warnings ?? [],
@@ -413,7 +443,7 @@ await runJob(async () => {
         ...turnover,
         priorState,
         deltasSuppressed: suppressed,
-        structuralEvent: suppressed ? reason : null,
+        structuralEvent,
         confidentialOmitted: Boolean(cur.confidentialOmitted),
         pages,
         acceptedAt: cur.acceptance,

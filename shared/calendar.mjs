@@ -231,8 +231,24 @@ export function filingSeason(todayISO) {
 export function deraWindowFor(filingDateISO) {
   const y = Number(filingDateISO.slice(0, 4));
   const m = Number(filingDateISO.slice(5, 7));
+  // The Dec-Jan-Feb window is the only one that straddles a year boundary, and
+  // WHICH two years it spans depends on which of its three months you are in:
+  //
+  //   December y      belongs to the window that OPENS that December  -> y..y+1
+  //   January/February y belong to the one opened the PREVIOUS December -> y-1..y
+  //
+  // Treating all three alike — which is what `start: [12, 1, y - 1]` for every
+  // month did — sent every December date to a window a FULL YEAR stale:
+  // 2025-12-15 resolved to 01dec2024-28feb2025. The ingest walks back month by
+  // month, so one December in the walk silently pulled an 18-month-old data set
+  // and the quarters it produced were non-contiguous.
+  const winter =
+    m === 12
+      ? { start: [12, 1, y], end: [2, 28, y + 1] }
+      : { start: [12, 1, y - 1], end: [2, 28, y] };
+
   const windows = [
-    { start: [12, 1, y - 1], end: [2, 28, y], months: [12, 1, 2] },
+    { ...winter, months: [12, 1, 2] },
     { start: [3, 1, y], end: [5, 31, y], months: [3, 4, 5] },
     { start: [6, 1, y], end: [8, 31, y], months: [6, 7, 8] },
     { start: [9, 1, y], end: [11, 30, y], months: [9, 10, 11] },
