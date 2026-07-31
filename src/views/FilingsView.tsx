@@ -91,6 +91,11 @@ export function FilingsView({
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FormFilter>("All");
   const [excludedAmendments, setExcludedAmendments] = useState(0);
+  // The timeline outlives the page's own loading state now: the feed paints as
+  // soon as the current period lands, while this keeps fetching prior quarters.
+  // Without its own flag the card would render "No filing timestamps yet" —
+  // a confident wrong answer — for the second or so it is still working.
+  const [timelineLoading, setTimelineLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,10 +109,24 @@ export function FilingsView({
       const current = await loadPeriodFilings(period, mf);
       if (cancelled) return;
       setRows(current);
+      // PAINT NOW. The feed, the KPIs and the amendments card are all fully
+      // determined by this one file. Everything below only builds the timeline
+      // chart, and holding the whole page as skeletons until it finished meant
+      // waiting on roughly 4 MB of further downloads — the KPI subtitles were
+      // already on screen around empty tables, which is what made it look
+      // stuck rather than loading.
+      setLoading(false);
+      hasData.current = true;
+      setTimelineLoading(true);
 
-      // Six quarters of arrival times, so "does this manager file early or on
-      // the deadline?" becomes visible rather than folklore.
-      const periods = recentPeriods(period, 6) as string[];
+      // Arrival times, so "does this manager file early or on the deadline?"
+      // becomes visible rather than folklore.
+      //
+      // FOUR quarters, not six. Each period file is ~690 KB and takes about
+      // half a second, so the last two cost a megabyte and a second to extend
+      // a chart that already shows the pattern — and they sit outside the
+      // holdings retention window anyway.
+      const periods = recentPeriods(period, 4) as string[];
       const pts: typeof timeline = [];
       let lateAmendments = 0;
       await Promise.all(
@@ -131,7 +150,7 @@ export function FilingsView({
           } catch { /* period not ingested */ }
         }),
       );
-      if (!cancelled) { setTimeline(pts); setExcludedAmendments(lateAmendments); }
+      if (!cancelled) { setTimeline(pts); setExcludedAmendments(lateAmendments); setTimelineLoading(false); }
     })()
       .catch((e) => !cancelled && setErr(String(e.message ?? e)))
       .finally(() => {
@@ -277,13 +296,13 @@ export function FilingsView({
           refreshing={refreshing}
           title="Filing timeline"
           subtitle={
-            `Days after quarter end, last 6 quarters — the line is the 45-day deadline` +
+            `Days after quarter end, last 4 quarters — the line is the 45-day deadline` +
             (excludedAmendments ? ` · ${excludedAmendments} amendment${excludedAmendments === 1 ? "" : "s"} excluded` : "")
           }
           span={2}
           bodyMinHeight={240}
         >
-          {loading ? (
+          {loading || timelineLoading ? (
             <TableSkeleton rows={6} cols={3} />
           ) : timeline.length === 0 ? (
             <EmptyState icon="◷" message="No filing timestamps yet" />
