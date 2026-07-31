@@ -182,6 +182,7 @@ export default function Dashboard() {
                 longsOnly={longsOnly}
                 refreshing={refreshing}
                 group={consensusFunds}
+                onPeriod={setPeriod}
               />
             ) : view === "consensus" ? (
               <ConsensusView

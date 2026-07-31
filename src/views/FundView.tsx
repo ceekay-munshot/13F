@@ -175,7 +175,7 @@ function TreemapTile(props: {
 }
 
 export function FundView({
-  cik, period, mf, longsOnly, refreshing, group = [],
+  cik, period, mf, longsOnly, refreshing, group = [], onPeriod,
 }: {
   cik: string;
   period: string;
@@ -187,6 +187,10 @@ export function FundView({
       to the group instead of being a one-way trip. Same bounded list the
       Consensus view uses — never the full 9,000-filer universe. */
   group?: { cik: string; name: string }[];
+  /** Select a quarter. The value chart is a quarter picker as much as it is a
+      chart — the bars already say which quarter is selected, so not letting the
+      user click the one they are looking at is a dead end. */
+  onPeriod?: (period: string) => void;
 }) {
   // Distinguishes a FIRST load (skeletons are right) from a reload (keep the
   // data mounted and dim it). A ref, not state: it must not itself retrigger.
@@ -597,7 +601,18 @@ export function FundView({
                     }}
                     formatter={(v: number) => [usd(v), "Long equity"]}
                   />
-                  <Bar dataKey="valueLongUsd" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                  <Bar
+                    dataKey="valueLongUsd"
+                    radius={[4, 4, 0, 0]}
+                    isAnimationActive={false}
+                    // The bars ALREADY encode which quarter is selected, so a
+                    // user who wants a different one naturally reaches for the
+                    // bar rather than walking the stepper to it. Honour that.
+                    cursor={onPeriod ? "pointer" : undefined}
+                    onClick={(d: { period?: string } | undefined) => {
+                      if (d?.period && d.period !== period) onPeriod?.(d.period);
+                    }}
+                  >
                     {series.map((s) => {
                       const flagged = Boolean(s.structuralEvent || s.confidentialOmitted);
                       // FILL carries the data quality; STROKE carries selection.
