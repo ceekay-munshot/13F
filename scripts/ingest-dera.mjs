@@ -301,8 +301,35 @@ await runJob(async () => {
   // roughly one quarter of raw rows plus the compact aggregates kept so far.
   for (const f of filings.values()) {
     if (f.held !== undefined || f.notice !== undefined) continue; // already done (earlier window)
-    if (!f.rows.length) { f.notice = true; f.rows = null; continue; }
+    // A NOTICE IS DECLARED BY THE FILER, NOT INFERRED FROM AN EMPTY TABLE.
+    //
+    // This read `if (!f.rows.length) f.notice = true`, so anything that arrived
+    // with no rows became a "notice" — including a 13F-HR whose information
+    // table we failed to attach. The form type and REPORTTYPE are both right
+    // there and were being ignored: the current window carries 9,275
+    // "13F HOLDINGS REPORT", 2,045 "13F NOTICE" and 441 "13F COMBINATION
+    // REPORT".
+    //
+    // The distinction is not academic. A notice means "another manager reports
+    // my positions", which the UI states as fact to the user; saying that about
+    // a manager who filed a full holdings report is a confident, specific lie.
+    const declaredNotice =
+      /^13F-NT/i.test(f.form ?? "") || /NOTICE/i.test(f.report_type ?? "");
+    if (declaredNotice || !f.rows.length) {
+      f.notice = declaredNotice;
+      // Rows absent but the filer says this IS a holdings report: that is our
+      // problem, not theirs. Quarantine it so it neither folds nor masquerades
+      // as a notice.
+      f.emptyHoldingsReport = !declaredNotice;
+      if (f.emptyHoldingsReport) f.quarantined = true;
+      f.rows = null;
+      continue;
+    }
     f.notice = false;
+    // A combination report is a partial book by design — the manager reports
+    // some positions here and others elsewhere. Flagged so it is never read as
+    // a complete portfolio.
+    f.combination = /COMBINATION/i.test(f.report_type ?? "");
     const units = decideValueUnits({
       schemaVersion: undefined,
       acceptanceDatetime: f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
@@ -374,7 +401,31 @@ await runJob(async () => {
     for (const period of periodsAsc) {
       const list = fund.periods.get(period);
       const foldable = list.filter((f) => !f.notice && !f.quarantined);
-      if (!foldable.length) { folded.set(period, { noticeOnly: true, holdings: [] }); continue; }
+      if (!foldable.length) {
+        // TWO DIFFERENT CAUSES, AND THEY MUST NOT COLLAPSE INTO ONE.
+        //
+        //   noticeOnly    the manager filed a 13F-NT. Their holdings really are
+        //                 reported by someone else. Nothing is wrong.
+        //   quarantined   the manager filed a real 13F-HR and WE rejected it —
+        //                 it failed the cover-page reconciliation or the units
+        //                 ladder. Something is wrong, and it is ours.
+        //
+        // Both used to be stored as `{ noticeOnly: true }`, so the next quarter
+        // resolved to PRIOR_IS_NT and the fund page told the user "the prior
+        // quarter was a 13F notice — this manager's holdings were reported by
+        // another manager" about a manager who had filed a full report. A
+        // confident, specific, wrong explanation, with no hint that data had
+        // been withheld by us. 35 filings and 32 reconcile failures in the
+        // shipped tree sit behind that sentence.
+        const noticeOnly = list.some((f) => f.notice);
+        folded.set(period, {
+          noticeOnly,
+          quarantinedOnly: !noticeOnly,
+          quarantineCount: list.filter((f) => f.quarantined).length,
+          holdings: [],
+        });
+        continue;
+      }
       const res = foldFilings(foldable.map((f) => ({
         accession_number: f.accession,
         // DERA has no acceptance time, so same-day amendments tie and the fold
@@ -431,13 +482,25 @@ await runJob(async () => {
       }
 
       const cur = folded.get(period);
-      if (!cur || cur.noticeOnly) continue;
+      // Skip on "no folded holdings", not on "is a notice". Those were the same
+      // condition until noticeOnly and quarantinedOnly were split apart, and
+      // testing the narrower one let a quarantined-only period fall through to
+      // `cur.summary.value_long_usd` — the same missing-summary crash this
+      // guard exists to prevent, reintroduced by making the state more precise.
+      // The invariant is about the SHAPE of the record, so test the shape.
+      if (!cur || !cur.summary) continue;
       // Per-period gate: stored fund AND within the retention window.
       const wantHoldings = fundStored && holdingPeriods.has(period);
       const pp = priorPeriod(period);
       const prior = folded.get(pp);
-      const priorState = prior && !prior.noticeOnly ? PRIOR_STATE.OK
-        : prior?.noticeOnly ? PRIOR_STATE.IS_NT : PRIOR_STATE.NONE;
+      // IS_NT only when the manager actually filed a notice. A prior quarter we
+      // quarantined is PRIOR_MISSING — deltas are equally uncomputable, but the
+      // reason shown to the user is "we don't have it", not the false and much
+      // more specific "another manager reports their holdings".
+      const priorState = !prior ? PRIOR_STATE.NONE
+        : !prior.noticeOnly && !prior.quarantinedOnly ? PRIOR_STATE.OK
+        : prior.noticeOnly ? PRIOR_STATE.IS_NT
+        : PRIOR_STATE.MISSING;
 
       const { changes, suppressed, reason, structuralEvent, structural, exitsWithheld } = computeChanges(
         { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },

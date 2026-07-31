@@ -353,6 +353,22 @@ export function FundView({
 
   const suppressionReason = meta?.structuralDetail?.message ?? "Not comparable to the prior quarter.";
 
+  /**
+   * `origin_missing`: the earliest filing we hold for this quarter is an
+   * AMENDMENT, so the original was never ingested and this "book" is only the
+   * rows that amendment happened to add.
+   *
+   * foldFilings has emitted this warning since it was written and nothing ever
+   * consumed it — 146 of 1,864 fund-period artifacts carry it. The quarter was
+   * published with the same confidence and the same total-value stat as a
+   * complete one, and the following quarter then diffed against the stub and
+   * reported nearly every position as newly bought.
+   *
+   * It cannot be fixed at read time; the missing original is simply not in the
+   * data set. What it can do is stop presenting a fragment as a portfolio.
+   */
+  const originMissing = meta?.foldWarnings?.some((w) => w.code === "origin_missing") ?? false;
+
   return (
     <>
       <KpiRow>
@@ -570,6 +586,12 @@ export function FundView({
               </CaveatStrip>
             ) : showRaw && meta?.deltasSuppressed ? (
               <CaveatStrip>Deltas hidden — they would describe one structural event as many separate trades.</CaveatStrip>
+            ) : originMissing ? (
+              <CaveatStrip>
+                The original filing for this quarter is not in the data set — what is shown was
+                reconstructed from a later amendment, so it is a fragment of the book rather than
+                all of it. Totals and changes for this quarter understate the real portfolio.
+              </CaveatStrip>
             ) : undefined
           }
         >
