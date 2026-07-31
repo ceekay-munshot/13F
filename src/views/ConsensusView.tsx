@@ -176,10 +176,12 @@ export function ConsensusView({
       for (const p of periods) {
         const perIssuer = new Set<string>();
         const tally = new Map<string, number>();
+        let covered = 0;
         await Promise.all(
           filers.map(async (f) => {
             try {
               const fp = await loadFundPeriodAll(f.cik, p, mf);
+              covered++;
               const seen = new Set<string>();
               for (const h of fp.holdings) {
                 if (!h.issuerId || (longsOnly && (h.type !== "" || h.unit !== "SH"))) continue;
@@ -190,6 +192,21 @@ export function ConsensusView({
             } catch { /* missing quarter — contributes zero */ }
           }),
         );
+
+        // DROP QUARTERS WE BARELY COVER, rather than plotting them as a dip.
+        //
+        // Holdings are retained for 4 quarters across the whole universe, so
+        // the 5th and 6th quarters back exist for almost nobody. Counting those
+        // the same way produced a trend like 9, 1, 1, 1, 10, 11 — which reads
+        // as "every manager sold out and then piled back in" when what actually
+        // happened is that we stopped keeping their line items. A sparkline
+        // that shows a collapse which did not occur is worse than a shorter
+        // sparkline.
+        //
+        // Half the funds is the bar: below that the number is measuring our
+        // retention window, not the herd.
+        if (covered * 2 < filers.length) continue;
+
         for (const [id, n] of tally) {
           if (!counts.has(id)) counts.set(id, []);
           counts.get(id)!.push(n);
