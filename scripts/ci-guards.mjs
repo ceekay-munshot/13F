@@ -265,6 +265,44 @@ function fail(guard, file, msg) {
 }
 
 // ---------------------------------------------------------------------------
+// GUARD 6 — R2 has exactly ONE writer.
+//
+// manifest.json and meta/filers.json are shared: they describe the whole
+// universe, and whichever job writes them last wins. When the daily
+// seed-watchlist ingest also published to R2, it overwrote both with its own
+// twelve-fund versions and the live dashboard dropped from 9,396 funds to 8.
+// Two writers to one bucket is not redundancy, it is a race.
+//
+// So: only ingest-universe.yml may write to R2, and only through
+// scripts/publish-r2.mjs — which is signature-tested, resumable, refuses to run
+// without a manifest, and publishes the manifest before it prunes. A raw
+// `aws s3` call bypasses every one of those properties.
+// ---------------------------------------------------------------------------
+{
+  const guard = "single-r2-writer";
+  checks.push(guard);
+  const AUTHORISED = "ingest-universe.yml";
+
+  for (const f of walk(join(ROOT, ".github/workflows"), [".yml", ".yaml"])) {
+    const lines = readFileSync(f, "utf8").split(/\r?\n/);
+    const authorised = f.endsWith(AUTHORISED);
+    lines.forEach((line, i) => {
+      if (/^\s*#/.test(line)) return; // the explanation of what was removed
+      if (/\baws\s+s3\b|\bs3:\/\//.test(line)) {
+        fail(guard, f, `line ${i + 1}: raw aws s3 call. R2 is written only by scripts/publish-r2.mjs.\n      ${line.trim()}`);
+      }
+      if (!authorised && /publish-r2\.mjs/.test(line)) {
+        fail(
+          guard,
+          f,
+          `line ${i + 1}: publishes to R2, but only ${AUTHORISED} may. This workflow ingests a narrower set of funds and would overwrite the shared indexes (manifest.json, meta/filers.json) with its own.\n      ${line.trim()}`,
+        );
+      }
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 if (failures.length) {
   console.error(`\nci-guards: ${failures.length} violation(s)\n`);
