@@ -174,6 +174,20 @@ export function FilingsView({
     return [...r].sort((a, b) => String(b.accepted).localeCompare(String(a.accepted)));
   }, [rows, filter]);
 
+  /**
+   * What actually reaches the DOM.
+   *
+   * A period carries ~2,000 filings and every one was rendered — roughly
+   * 16,000 nodes for a feed whose whole point is "what just landed". Laying
+   * that out froze the renderer for seconds, which is most of what made this
+   * page feel slow; the 690 KB download was never the problem.
+   *
+   * 200 is well past a screenful. The count below says what is held back, so
+   * nothing is hidden silently.
+   */
+  const FEED_ROWS = 200;
+  const shown = useMemo(() => filtered.slice(0, FEED_ROWS), [filtered]);
+
   const deadline = filingDeadline(period) as string;
   const filedCiks = new Set((rows ?? []).map((r) => r.cik));
   const outstanding = filers.filter((f) => !filedCiks.has(f.cik));
@@ -184,6 +198,27 @@ export function FilingsView({
   // Chart lanes: one per fund, so a dot's vertical position identifies the manager.
   const lanes = useMemo(() => filers.map((f, i) => ({ ...f, y: i + 1, color: fundColor(i) })), [filers]);
   const laneOf = useMemo(() => new Map(lanes.map((l) => [l.cik, l.y])), [lanes]);
+
+  /**
+   * Points actually drawn on the scatter.
+   *
+   * Four quarters x ~1,900 original filings is roughly 7,700 dots, and Recharts
+   * renders each as its own SVG element with a <Cell> beside it. That is what
+   * hung the renderer — the tab stopped responding entirely, which no amount of
+   * network tuning would have fixed.
+   *
+   * The chart answers "how is arrival time distributed against the deadline",
+   * and a uniform sample answers it identically: the shape of a distribution
+   * does not need every member of it. Sampling evenly by index rather than
+   * taking a prefix keeps all four quarters and the whole lag range
+   * represented, where slicing would have kept only the earliest.
+   */
+  const MAX_POINTS = 900;
+  const plotted = useMemo(() => {
+    if (timeline.length <= MAX_POINTS) return timeline;
+    const step = timeline.length / MAX_POINTS;
+    return Array.from({ length: MAX_POINTS }, (_, i) => timeline[Math.floor(i * step)]);
+  }, [timeline]);
 
   if (err) {
     return <div style={GRID_WIDE}><WidgetCard title="Filings" span={2}><ErrorState message={err} /></WidgetCard></div>;
@@ -247,7 +282,7 @@ export function FilingsView({
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((r) => {
+                  {shown.map((r) => {
                     const lag = lagDays(period, r.accepted);
                     return (
                       <tr key={r.accession}>
@@ -286,6 +321,13 @@ export function FilingsView({
                   })}
                 </tbody>
               </table>
+              {/* Never truncate silently: a feed that quietly stops at 200 of
+                  2,000 reads as "that is all there was". */}
+              {filtered.length > shown.length && (
+                <div style={{ padding: "8px 14px", fontSize: 11, color: t.textHint }}>
+                  Showing the {count(shown.length)} most recent of {count(filtered.length)} filings for this quarter.
+                </div>
+              )}
             </div>
           )}
         </WidgetCard>
@@ -297,6 +339,7 @@ export function FilingsView({
           title="Filing timeline"
           subtitle={
             `Days after quarter end, last 4 quarters — the line is the 45-day deadline` +
+            (plotted.length < timeline.length ? ` · ${count(plotted.length)} of ${count(timeline.length)} filings sampled` : "") +
             (excludedAmendments ? ` · ${excludedAmendments} amendment${excludedAmendments === 1 ? "" : "s"} excluded` : "")
           }
           span={2}
@@ -328,10 +371,10 @@ export function FilingsView({
                     formatter={(_v, _n, p) => [`${p.payload.lag} days`, `${p.payload.fund} · ${periodLabel(p.payload.period)}`]}
                   />
                   <Scatter
-                    data={timeline.map((p) => ({ ...p, y: laneOf.get(p.cik) ?? 0 }))}
+                    data={plotted.map((p) => ({ ...p, y: laneOf.get(p.cik) ?? 0 }))}
                     isAnimationActive={false}
                   >
-                    {timeline.map((p, i) => (
+                    {plotted.map((p, i) => (
                       // Amber past the deadline: 13F has no grace period, so a
                       // dot right of the line is a genuinely late filing.
                       <RCell key={i} fill={p.lag > 45 ? t.warnAmber : p.color} />
