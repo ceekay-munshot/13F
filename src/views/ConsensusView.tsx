@@ -168,45 +168,59 @@ export function ConsensusView({
       if (cancelled) return;
       setFailedFunds(failed);
       setFunds(inputs.filter(Boolean));
+      // PAINT NOW. Everything below this line only DECORATES the matrix with a
+      // holder-count sparkline; the matrix itself is fully determined by what
+      // was just set. Leaving `loading` true until the history finished meant
+      // the grid sat as skeletons through dozens of extra requests — with the
+      // caveat strips and KPI subtitles already rendered around it, which is
+      // what made it look hung rather than loading.
+      setLoading(false);
 
       // Holder history, best-effort: it decorates the matrix and must never
       // block or fail it.
-      const periods = (recentPeriods(period, 6) as string[]).slice().reverse();
-      const counts = new Map<string, number[]>();
-      for (const p of periods) {
-        const perIssuer = new Set<string>();
-        const tally = new Map<string, number>();
-        let covered = 0;
-        await Promise.all(
-          filers.map(async (f) => {
-            try {
-              const fp = await loadFundPeriodAll(f.cik, p, mf);
-              covered++;
-              const seen = new Set<string>();
-              for (const h of fp.holdings) {
-                if (!h.issuerId || (longsOnly && (h.type !== "" || h.unit !== "SH"))) continue;
-                if (seen.has(h.issuerId)) continue;
-                seen.add(h.issuerId);
-                tally.set(h.issuerId, (tally.get(h.issuerId) ?? 0) + 1);
-              }
-            } catch { /* missing quarter — contributes zero */ }
-          }),
-        );
+      //
+      // FOUR quarters, not six, and all of them in flight at once. Line items
+      // are retained for four quarters, so the fifth and sixth were 404s for
+      // almost every fund — dozens of requests whose only possible answer was
+      // "no data", which the coverage filter then discarded anyway. Walking the
+      // periods with a sequential `for` also serialised them, so the wait was
+      // the SUM of six round trips rather than the slowest one.
+      const periods = (recentPeriods(period, 4) as string[]).slice().reverse();
+      // Every (quarter, fund) pair in flight at once, then assembled in order.
+      const perQuarter = await Promise.all(
+        periods.map(async (p) => {
+          const tally = new Map<string, number>();
+          let covered = 0;
+          await Promise.all(
+            filers.map(async (f) => {
+              try {
+                const fp = await loadFundPeriodAll(f.cik, p, mf);
+                covered++;
+                const seen = new Set<string>();
+                for (const h of fp.holdings) {
+                  if (!h.issuerId || (longsOnly && (h.type !== "" || h.unit !== "SH"))) continue;
+                  if (seen.has(h.issuerId)) continue;
+                  seen.add(h.issuerId);
+                  tally.set(h.issuerId, (tally.get(h.issuerId) ?? 0) + 1);
+                }
+              } catch { /* did not file that quarter — contributes nothing */ }
+            }),
+          );
+          return { tally, covered };
+        }),
+      );
+      if (cancelled) return;
 
+      const counts = new Map<string, number[]>();
+      for (const { tally, covered } of perQuarter) {
         // DROP QUARTERS WE BARELY COVER, rather than plotting them as a dip.
         //
-        // Holdings are retained for 4 quarters across the whole universe, so
-        // the 5th and 6th quarters back exist for almost nobody. Counting those
-        // the same way produced a trend like 9, 1, 1, 1, 10, 11 — which reads
-        // as "every manager sold out and then piled back in" when what actually
-        // happened is that we stopped keeping their line items. A sparkline
-        // that shows a collapse which did not occur is worse than a shorter
-        // sparkline.
-        //
-        // Half the funds is the bar: below that the number is measuring our
-        // retention window, not the herd.
+        // Below half the funds the number is measuring our retention window,
+        // not the herd. Counting them produced a trend like 9, 1, 1, 1, 10, 11,
+        // which reads as "everyone sold out and piled back in" when what
+        // actually happened is that we stopped keeping their line items.
         if (covered * 2 < filers.length) continue;
-
+        const perIssuer = new Set<string>();
         for (const [id, n] of tally) {
           if (!counts.has(id)) counts.set(id, []);
           counts.get(id)!.push(n);

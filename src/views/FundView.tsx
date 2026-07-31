@@ -14,7 +14,7 @@ import { ChartSkeleton, TableSkeleton, EmptyState, ErrorState, PartialNotice } f
 import { t, ACTION_COLORS, type Action } from "../theme";
 import { usd, pct, pp, deltaPct, shares as fmtShares, count, periodLabel, dateLabel, utcStamp } from "../lib/format";
 import {
-  loadFundSummary, loadFundPeriodAll, edgarUrl,
+  loadFundSummary, loadFundPeriod, loadFundPeriodAll, edgarUrl,
   type Manifest, type FundSummary, type FundPeriod, type Holding,
 } from "../lib/data";
 
@@ -224,8 +224,30 @@ export function FundView({
         if (cancelled) return;
         setSummary(s);
         if (!s.series.some((x) => x.period === period)) return; // not filed — not an error
-        const p = await loadFundPeriodAll(cik, period, mf);
-        if (!cancelled) setFp(p);
+
+        // PAINT ON PAGE 0, THEN BACKFILL.
+        //
+        // Books are paged because they vary enormously: the median manager has
+        // a few hundred positions and Citadel has 12,857 across seven files.
+        // Awaiting all of them before the first render meant switching to a big
+        // manager sat on skeletons for the slowest of seven requests, to render
+        // a treemap that shows the top 100 and a table showing a screenful.
+        //
+        // Page 0 carries the metadata and the first screenful, so it is enough
+        // to draw everything above the fold. The rest merge in behind it, and
+        // page 0's `total` is the true position count throughout — so no number
+        // on screen is ever wrong, only briefly incomplete.
+        const first = await loadFundPeriod(cik, period, mf, 0);
+        if (cancelled) return;
+        setFp(first);
+        if (first.pages > 1) {
+          const rest = await Promise.all(
+            Array.from({ length: first.pages - 1 }, (_, i) => loadFundPeriod(cik, period, mf, i + 1)),
+          );
+          if (!cancelled) {
+            setFp({ ...first, holdings: first.holdings.concat(...rest.map((r) => r.holdings)) });
+          }
+        }
       })
       .catch((e) => !cancelled && setErr(String(e.message ?? e)))
       .finally(() => {
@@ -252,7 +274,18 @@ export function FundView({
   useEffect(() => {
     let cancelled = false;
     const others = group.filter((g) => g.cik !== cik);
-    if (!others.length) { setGroupHolders(new Map()); return; }
+    // WAIT FOR THE MANAGER'S OWN DATA FIRST.
+    //
+    // This card needs eleven OTHER funds' books, which is more network than
+    // everything else on the page combined. Firing it alongside the main load
+    // made both slower: switching funds stalled on requests for a card at the
+    // bottom of the page while the treemap and holdings table — the reason the
+    // user clicked — waited behind them in the connection queue.
+    //
+    // Gated on `fp`, the page paints first and this fills in after. Where the
+    // user came via the Consensus view these are already memoised and it is
+    // free; where they came straight here it is late instead of blocking.
+    if (!fp || !others.length) { setGroupHolders(new Map()); return; }
     (async () => {
       const tally = new Map<string, number>();
       await Promise.all(
@@ -272,7 +305,7 @@ export function FundView({
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cik, period, mf.buildId, group]);
+  }, [cik, period, mf.buildId, group, fp]);
 
   /**
    * Names this manager shares with the rest of the tracked set, biggest weight
