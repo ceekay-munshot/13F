@@ -279,6 +279,10 @@ export function FundView({
     return longsOnly ? fp.holdings.filter((h) => h.type === "" && h.unit === "SH") : fp.holdings;
   }, [fp, longsOnly]);
 
+  /** The manager's own book has arrived. Stable across the page-0 -> full-book
+   *  update, so effects that only need "is it here yet" do not run twice. */
+  const bookReady = fp != null;
+
   // Group overlap, loaded separately and best-effort: it is one card, and it
   // must never be able to delay or break the manager's own numbers. Failures
   // per fund are swallowed — a missing fund simply does not contribute.
@@ -293,10 +297,16 @@ export function FundView({
     // bottom of the page while the treemap and holdings table — the reason the
     // user clicked — waited behind them in the connection queue.
     //
-    // Gated on `fp`, the page paints first and this fills in after. Where the
-    // user came via the Consensus view these are already memoised and it is
-    // free; where they came straight here it is late instead of blocking.
-    if (!fp || !others.length) { setGroupHolders(new Map()); return; }
+    // Gated on `bookReady`, the page paints first and this fills in after.
+    // Where the user came via the Consensus view these are already memoised and
+    // it is free; where they came straight here it is late instead of blocking.
+    //
+    // The gate is a BOOLEAN, not `fp` itself. `fp` is set twice per fund — once
+    // with page 0 so the page can paint, then again with the merged book — so
+    // depending on the object identity ran this whole twelve-fund pass twice
+    // for every fund switch. Nothing here reads the manager's own holdings; it
+    // only needs to know they have arrived.
+    if (!bookReady || !others.length) { setGroupHolders(new Map()); return; }
     (async () => {
       const tally = new Map<string, number>();
       await Promise.all(
@@ -324,7 +334,7 @@ export function FundView({
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cik, period, mf.buildId, group, fp]);
+  }, [cik, period, mf.buildId, group, bookReady]);
 
   /**
    * Names this manager shares with the rest of the tracked set, biggest weight
@@ -674,7 +684,17 @@ export function FundView({
           subtitle="Long equity at each quarter end. Never labelled AUM — it excludes shorts, cash and non-US holdings."
           span={2}
           bodyMinHeight={260}
-          actions={<ViewToggle options={["Chart", "Filings"] as const} value={valueView} onChange={setValueView} />}
+          actions={
+            <ViewToggle
+              options={["Chart", "Filings"] as const}
+              value={valueView}
+              onChange={setValueView}
+              hints={{
+                Chart: "Reported value each quarter as bars. Click any bar to jump to that quarter.",
+                Filings: "The same quarters as a table, with the note explaining anything unusual about each one.",
+              }}
+            />
+          }
         >
           {loading ? (
             <ChartSkeleton bars={8} height={240} />
@@ -775,7 +795,17 @@ export function FundView({
           subtitle="Ranked by change in portfolio weight — moves can be trades or price."
           span={2}
           bodyMinHeight={240}
-          actions={<ViewToggle options={["Δ Weight", "Δ Value"] as const} value={moverView} onChange={setMoverView} />}
+          actions={
+            <ViewToggle
+              options={["Δ Weight", "Δ Value"] as const}
+              value={moverView}
+              onChange={setMoverView}
+              hints={{
+                "Δ Weight": "Rank by change in share of the portfolio — how much more, or less, of the book this name takes up.",
+                "Δ Value": "Rank by change in dollars. A price move alone can do this without the manager trading at all.",
+              }}
+            />
+          }
           caveat={
             suppressed ? (
               <CaveatStrip

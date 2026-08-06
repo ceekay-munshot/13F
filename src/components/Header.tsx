@@ -5,13 +5,28 @@
 // pill and four controls, and 9,300 searchable filers is not one of them.
 
 import { t } from "../theme";
+import { Hint } from "./Hint";
 
 export type ViewId = "consensus" | "fund" | "filings";
 
-const VIEWS: { id: ViewId; label: string }[] = [
-  { id: "consensus", label: "Consensus" },
-  { id: "fund", label: "Fund" },
-  { id: "filings", label: "Filings" },
+// The `hint` is the answer to "what am I looking at" for someone who has never
+// used this before — no 13F vocabulary, no reference to the other tabs.
+const VIEWS: { id: ViewId; label: string; hint: string }[] = [
+  {
+    id: "consensus",
+    label: "Consensus",
+    hint: "What your favourite funds own in common — which names more than one of them holds, and what they bought or sold this quarter.",
+  },
+  {
+    id: "fund",
+    label: "Fund",
+    hint: "One manager at a time: everything they own, what changed since last quarter, and which names they share with the rest of your list.",
+  },
+  {
+    id: "filings",
+    label: "Filings",
+    hint: "The raw paperwork as it arrives at the SEC — who filed, when, and a link to the original document.",
+  },
 ];
 
 export type Freshness = "fresh" | "partial" | "nosession";
@@ -62,11 +77,13 @@ function TickerPill({ ticker, funds, onClick }: { ticker: string; funds?: number
 }
 
 export function Header({
-  view, onView, context, ticker, tickerFunds, onTickerClick,
+  view, onView, onPrefetchView, context, ticker, tickerFunds, onTickerClick,
   freshness, freshnessDetail, onRefresh, refreshing,
 }: {
   view: ViewId;
   onView: (v: ViewId) => void;
+  /** Start fetching a view's code chunk while the pointer is still on its tab. */
+  onPrefetchView?: (v: ViewId) => void;
   context: string;
   ticker?: string | null;
   tickerFunds?: number | null;
@@ -107,21 +124,26 @@ export function Header({
           {VIEWS.map((v) => {
             const active = v.id === view;
             return (
-              <button
-                key={v.id}
-                className="pressable"
-                onClick={() => onView(v.id)}
-                aria-pressed={active}
-                style={{
-                  border: "none", cursor: "pointer", borderRadius: 6, padding: "4px 12px",
-                  fontSize: 12, fontWeight: 600, fontFamily: "inherit",
-                  background: active ? "#fff" : "transparent",
-                  color: active ? t.textPrimary : t.textMuted,
-                  boxShadow: active ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
-                }}
-              >
-                {v.label}
-              </button>
+              <Hint key={v.id} text={v.hint}>
+                <button
+                  className="pressable"
+                  onClick={() => onView(v.id)}
+                  // Hovering a tab is the cue to fetch its code, so the click
+                  // renders instead of waiting on a download.
+                  onPointerEnter={() => onPrefetchView?.(v.id)}
+                  onFocus={() => onPrefetchView?.(v.id)}
+                  aria-pressed={active}
+                  style={{
+                    border: "none", cursor: "pointer", borderRadius: 6, padding: "4px 12px",
+                    fontSize: 12, fontWeight: 600, fontFamily: "inherit",
+                    background: active ? "#fff" : "transparent",
+                    color: active ? t.textPrimary : t.textMuted,
+                    boxShadow: active ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
+                  }}
+                >
+                  {v.label}
+                </button>
+              </Hint>
             );
           })}
         </div>

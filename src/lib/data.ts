@@ -266,7 +266,24 @@ async function get<T>(path: string, mf: Manifest, cik?: string): Promise<T> {
       return r.json() as Promise<T>;
     });
     memo.set(url, p as Promise<unknown>);
-    p.catch(() => memo.delete(url)); // never memoize a failure
+    // KEEP "this does not exist" — it is an ANSWER, not a failure.
+    //
+    // A manager who did not file a quarter has no artifact, and the SPA host
+    // answers the request with index.html, which `get` turns into a
+    // MissingArtifactError. Evicting that alongside real failures meant every
+    // not-filed lookup was refetched on every mount, forever: measured at 47
+    // requests on each return to the Consensus tab, all of them re-asking a
+    // question whose answer cannot change until the build id does — and the
+    // build id is in the URL, so a new build gets a new key anyway.
+    //
+    // During filing season most fund-quarters are in exactly this state, so
+    // this was the common path, not an edge case.
+    //
+    // A genuine failure (5xx, a dropped connection) IS still evicted, so a
+    // refresh can retry it.
+    p.catch((e) => {
+      if (!(e instanceof MissingArtifactError)) memo.delete(url);
+    });
   }
   return p;
 }
@@ -414,6 +431,25 @@ export async function loadFundPeriodAll(cik: string, period: string, mf: Manifes
     Array.from({ length: first.pages - 1 }, (_, i) => loadFundPeriod(cik, period, mf, i + 1)),
   );
   return { ...first, holdings: first.holdings.concat(...rest.map((r) => r.holdings)) };
+}
+
+/**
+ * Warm a fund-quarter without rendering it.
+ *
+ * Everything a click on a favourite chip needs is one summary file plus page 0
+ * of the book. Starting those on HOVER — a few hundred milliseconds before the
+ * click lands — means the click resolves against the memo instead of the
+ * network, which is the difference between "it loads quickly" and "it was
+ * already there".
+ *
+ * Deliberately silent. A prefetch is a guess about what the user will do next;
+ * if the guess is wrong, or the manager never filed, nothing should reach the
+ * screen or the console. The real load repeats the same calls and handles its
+ * own errors properly.
+ */
+export function prefetchFund(cik: string, period: string, mf: Manifest): void {
+  void loadFundSummary(cik, mf).catch(() => {});
+  void loadFundPeriod(cik, period, mf, 0).catch(() => {});
 }
 
 export async function loadPeriodFilings(period: string, mf: Manifest): Promise<FilingRow[]> {

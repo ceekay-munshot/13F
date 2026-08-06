@@ -13,7 +13,7 @@ import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { useHostContext } from "./hooks/useHostContext";
 import { sdkMode, registerCaptureHandlers } from "./lib/sdk";
 import { periodLabel, dateLabel } from "./lib/format";
-import { loadManifest, loadFilers, defaultPeriod, defaultFilerCik, type Manifest, type Filer } from "./lib/data";
+import { loadManifest, loadFilers, defaultPeriod, defaultFilerCik, prefetchFund, type Manifest, type Filer } from "./lib/data";
 import { FavouritesBar } from "./components/FavouritesBar";
 import { loadFavourites, saveFavourites, resetFavourites, CLIENT_WATCHLIST, codeFor } from "./lib/favourites";
 import { filingSeason } from "../shared/calendar.mjs";
@@ -56,9 +56,28 @@ function withChunkReload<T>(load: () => Promise<T>): () => Promise<T> {
   };
 }
 
-const FundView = lazy(withChunkReload(() => import("./views/FundView").then((m) => ({ default: m.FundView }))));
-const ConsensusView = lazy(withChunkReload(() => import("./views/ConsensusView").then((m) => ({ default: m.ConsensusView }))));
-const FilingsView = lazy(withChunkReload(() => import("./views/FilingsView").then((m) => ({ default: m.FilingsView }))));
+const importFund = () => import("./views/FundView");
+const importConsensus = () => import("./views/ConsensusView");
+const importFilings = () => import("./views/FilingsView");
+
+const FundView = lazy(withChunkReload(() => importFund().then((m) => ({ default: m.FundView }))));
+const ConsensusView = lazy(withChunkReload(() => importConsensus().then((m) => ({ default: m.ConsensusView }))));
+const FilingsView = lazy(withChunkReload(() => importFilings().then((m) => ({ default: m.FilingsView }))));
+
+/**
+ * Start downloading a view's chunk when the pointer touches its tab.
+ *
+ * Code-splitting bought a fast first paint and charged for it at every tab
+ * switch: the first click on a tab waits on a network round trip for the chunk
+ * before React can even begin rendering. Hover is a few hundred milliseconds of
+ * free warning, and the browser caches the module either way, so a guess that
+ * turns out wrong costs one file the user was likely to need anyway.
+ */
+const VIEW_IMPORTS: Record<ViewId, () => Promise<unknown>> = {
+  fund: importFund,
+  consensus: importConsensus,
+  filings: importFilings,
+};
 
 const GRID_WIDE: React.CSSProperties = {
   display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
@@ -174,6 +193,7 @@ export default function Dashboard() {
       <Header
         view={view}
         onView={setView}
+        onPrefetchView={(v) => { void VIEW_IMPORTS[v]().catch(() => {}); }}
         context={mf ? `${mf.counts.filers} funds · ${period ? periodLabel(period) : "—"}` : "loading…"}
         ticker={market?.selectedTicker ?? null}
         freshness={freshness}
@@ -233,6 +253,7 @@ export default function Dashboard() {
                 filers={filers}
                 cik={cik}
                 onCik={setCik}
+                onPrefetch={(c) => prefetchFund(c, period, mf)}
                 onToggle={toggleFav}
                 onReset={() => setFavourites(resetFavourites())}
                 canReset={

@@ -17,12 +17,14 @@ import { codeFor, labelFor } from "../lib/favourites";
 import type { Filer } from "../lib/data";
 
 export function FavouritesBar({
-  favourites, filers, cik, onCik, onToggle, onReset, canReset,
+  favourites, filers, cik, onCik, onPrefetch, onToggle, onReset, canReset,
 }: {
   favourites: string[];
   filers: Filer[];
   cik: string | null;
   onCik: (cik: string) => void;
+  /** Start loading a fund the pointer is merely NEAR. See prefetchFund. */
+  onPrefetch?: (cik: string) => void;
   onToggle: (cik: string) => void;
   onReset: () => void;
   canReset: boolean;
@@ -65,6 +67,12 @@ export function FavouritesBar({
             className="pressable fav-chip"
             data-active={active || undefined}
             onClick={() => onCik(c)}
+            // Hover and keyboard-focus both start the fetch. Pointer-enter is
+            // the earliest honest signal of intent, and focus gives keyboard
+            // users the same head start rather than making the shortcut row
+            // fast only for the mouse.
+            onPointerEnter={() => onPrefetch?.(c)}
+            onFocus={() => onPrefetch?.(c)}
             title={f ? f.name : `${c} — not in the current index`}
             style={{
               display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0,

@@ -8,11 +8,12 @@ import { WidgetCard, ViewToggle, CaveatStrip } from "../components/WidgetCard";
 import { Kpi, KpiRow } from "../components/Kpi";
 import { ConsensusMatrix, MatrixLegend } from "../components/ConsensusMatrix";
 import { MatrixSkeleton, EmptyState, ErrorState, TableSkeleton } from "../components/states";
+import { Hint } from "../components/Hint";
 import { t, fundColor, ACTION_COLORS } from "../theme";
 import { usd, pct, pp, count, periodLabel } from "../lib/format";
-import { buildConsensus, sortConsensus, buildAnchor, type FundInput, type SortKey } from "../lib/consensus";
+import { buildConsensus, sortConsensus, buildAnchor, type ConsensusRow, type FundInput, type SortKey } from "../lib/consensus";
 import { TickerDrawer } from "../components/TickerDrawer";
-import { downloadCsv } from "../lib/csv";
+import { downloadCsv, type CsvColumn } from "../lib/csv";
 import { loadFundPeriodAll, MissingArtifactError, type Manifest, type Filer } from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
 
@@ -21,9 +22,17 @@ const GRID_WIDE: React.CSSProperties = {
 };
 
 const THRESHOLDS = [
-  { key: "2", label: "≥2 funds", min: 2 },
-  { key: "3", label: "≥3 funds", min: 3 },
-  { key: "all", label: "Unanimous", min: 0 }, // resolved against fund count
+  { key: "2", label: "≥2 funds", min: 2, hint: "Show a name as soon as two of your funds hold it." },
+  { key: "3", label: "≥3 funds", min: 3, hint: "Only names that at least three of your funds hold — a stricter test of agreement." },
+  { key: "all", label: "Unanimous", min: 0, hint: "Only names EVERY fund that filed this quarter holds. Often a very short list." },
+] as const;
+
+/** Plain-English hints for the move chips, keyed by filter. */
+const MOVE_CHIPS = [
+  { key: "new", label: "Has NEW", hint: "Names at least one fund bought for the first time this quarter." },
+  { key: "exit", label: "Has EXIT", hint: "Names at least one fund sold out of completely this quarter." },
+  { key: "buys", label: "Consensus buys", hint: "Names the group leaned INTO on balance — more funds added or opened than trimmed or sold." },
+  { key: "sells", label: "Cons. sells", hint: "Names the group leaned OUT of on balance — more funds trimmed or sold than added." },
 ] as const;
 
 /**
@@ -44,11 +53,14 @@ const THRESHOLDS = [
  * for that one column.
  */
 const SORTS = [
-  { key: "funds", label: "Funds", dir: "desc" },
-  { key: "weight", label: "Total weight", dir: "desc" },
-  { key: "value", label: "Value", dir: "desc" },
-  { key: "net", label: "Net move", dir: "asc" },
-] as const satisfies readonly { key: SortKey; label: string; dir: "asc" | "desc" }[];
+  { key: "funds", label: "Funds", dir: "desc", hint: "Rank by how many of your funds hold the name — most-owned first." },
+  { key: "weight", label: "Total weight", dir: "desc", hint: "Rank by conviction: each holder's portfolio weight added together. Five funds at 5% each is 25%." },
+  { key: "value", label: "Value", dir: "desc", hint: "Rank by total dollars the group holds in the name — biggest position first." },
+  { key: "net", label: "Net move", dir: "asc", hint: "Rank by direction of trading: the name the group sold hardest first, the one they bought hardest last." },
+] as const satisfies readonly { key: SortKey; label: string; dir: "asc" | "desc"; hint: string }[];
+
+const SORT_HINTS = Object.fromEntries(SORTS.map((s) => [s.label, s.hint])) as Record<string, string>;
+const THRESHOLD_HINTS = Object.fromEntries(THRESHOLDS.map((s) => [s.label, s.hint])) as Record<string, string>;
 
 const sortLabel = (key: SortKey) => SORTS.find((s) => s.key === key)?.label ?? "Funds";
 const sortDir = (key: SortKey) => SORTS.find((s) => s.key === key)?.dir ?? "desc";
@@ -92,6 +104,72 @@ function SortTh({
       </button>
     </th>
   );
+}
+
+/**
+ * Every column the screen shows, in the order the screen shows it.
+ *
+ * The export used to carry the table but not the MATRIX: one weight per fund
+ * and nothing else, while the grid itself encodes an action glyph, a change in
+ * weight, a dollar value and a share-class list in every cell, and the group
+ * column carries a holder-count trend. So a row that read "GOOGL · 4 funds ·
+ * BRK ★ NEW +2.1pp $15.6B" on screen exported as "GOOGL, 4, 6.3" — the numbers
+ * you could already see, minus the ones you would want a spreadsheet for.
+ *
+ * Per-fund columns are grouped BY FUND rather than by field, so each manager's
+ * block stays together when the sheet is read left to right.
+ *
+ * It still exports the view-model and nothing else, which is what keeps CUSIPs
+ * out by construction (see lib/csv.ts).
+ */
+function consensusColumns(
+  funds: FundInput[],
+  history: Map<string, number[]>,
+  present: number,
+): CsvColumn<ConsensusRow>[] {
+  return [
+    { header: "Ticker", cell: (r) => r.ticker ?? "" },
+    { header: "Issuer", cell: (r) => r.name },
+    { header: "Funds holding", cell: (r) => r.fundCount },
+    { header: "Funds that filed", cell: () => present },
+    { header: "Combined value (USD)", cell: (r) => Math.round(r.combinedValue) },
+    // Summed, then averaged — the export carries both so a spreadsheet does not
+    // have to re-derive one from the other and get the exit-cell handling wrong.
+    // Empty, not "0.00", when no holder reported a weight: a spreadsheet
+    // averaging this column must not be fed a zero we never measured.
+    { header: "Total weight across funds (pct points)", cell: (r) => r.sumWeight?.toFixed(2) ?? "" },
+    { header: "Average weight per holder (pct)", cell: (r) => r.avgWeight?.toFixed(2) ?? "" },
+    { header: "Net direction", cell: (r) => r.netDirection },
+    { header: "Funds that opened (NEW)", cell: (r) => r.nNew },
+    { header: "Funds that exited", cell: (r) => r.nExited },
+    { header: "Share classes", cell: (r) => r.shareClasses },
+    // The matrix sparkline and the drawer's "HOLDERS QoQ", as numbers.
+    {
+      header: "Holders by quarter (oldest to newest)",
+      cell: (r) => (history.get(r.issuerId) ?? []).join(" ") || "",
+    },
+    {
+      header: "Holders change QoQ",
+      cell: (r) => {
+        const h = history.get(r.issuerId) ?? [];
+        return h.length >= 2 ? h[h.length - 1] - h[h.length - 2] : "";
+      },
+    },
+    // One block per fund: everything that cell renders or reveals on hover.
+    ...funds.flatMap((f): CsvColumn<ConsensusRow>[] => [
+      { header: `${f.code} action`, cell: (r) => r.cells[f.cik]?.action ?? "" },
+      { header: `${f.code} weight %`, cell: (r) => r.cells[f.cik]?.weight?.toFixed(2) ?? "" },
+      { header: `${f.code} change in weight (pp)`, cell: (r) => r.cells[f.cik]?.dWeightPp?.toFixed(2) ?? "" },
+      {
+        header: `${f.code} value (USD)`,
+        cell: (r) => {
+          const v = r.cells[f.cik]?.value;
+          return v == null ? "" : Math.round(v);
+        },
+      },
+      { header: `${f.code} share classes`, cell: (r) => r.cells[f.cik]?.classes.join(" ") ?? "" },
+    ]),
+  ];
 }
 
 function FundDot({ color, code }: { color: string; code: string }) {
@@ -432,33 +510,33 @@ export function ConsensusView({
                 options={THRESHOLDS.map((x) => x.label) as unknown as readonly string[]}
                 value={THRESHOLDS.find((x) => x.key === threshold)!.label}
                 onChange={(label) => setThreshold(THRESHOLDS.find((x) => x.label === label)!.key)}
+                hints={THRESHOLD_HINTS}
               />
               <ViewToggle
                 options={SORTS.map((s) => s.label) as unknown as readonly string[]}
                 value={sortLabel(sortKey)}
                 onChange={(label) => setSortKey(SORTS.find((s) => s.label === label)!.key)}
+                hints={SORT_HINTS}
               />
               {/* §6.3 move chips. Toggling, not radio: clicking the active one
                   clears it, so there is always a way back to everything. */}
-              {([
-                ["new", "Has NEW"], ["exit", "Has EXIT"],
-                ["buys", "Consensus buys"], ["sells", "Cons. sells"],
-              ] as const).map(([key, label]) => (
-                <button
-                  key={key}
-                  className="pressable"
-                  onClick={() => setMoveFilter((v) => (v === key ? "" : key))}
-                  aria-pressed={moveFilter === key}
-                  style={{
-                    fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
-                    padding: "4px 9px", borderRadius: 7,
-                    border: `1px solid ${moveFilter === key ? t.primaryBorder : t.border}`,
-                    background: moveFilter === key ? t.primaryLight : "#fff",
-                    color: moveFilter === key ? t.primaryText : t.textMuted,
-                  }}
-                >
-                  {label}
-                </button>
+              {MOVE_CHIPS.map(({ key, label, hint }) => (
+                <Hint key={key} text={`${hint} Click again to clear.`}>
+                  <button
+                    className="pressable"
+                    onClick={() => setMoveFilter((v) => (v === key ? "" : key))}
+                    aria-pressed={moveFilter === key}
+                    style={{
+                      fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
+                      padding: "4px 9px", borderRadius: 7,
+                      border: `1px solid ${moveFilter === key ? t.primaryBorder : t.border}`,
+                      background: moveFilter === key ? t.primaryLight : "#fff",
+                      color: moveFilter === key ? t.primaryText : t.textMuted,
+                    }}
+                  >
+                    {label}
+                  </button>
+                </Hint>
               ))}
               <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <span className="sr-only">Search consensus names</span>
@@ -475,33 +553,14 @@ export function ConsensusView({
               <button
                 className="pressable"
                 onClick={() =>
+                  // Exports exactly what is on screen: `rows` is the sorted,
+                  // searched, chip-filtered set, so the file matches the list
+                  // the user is looking at rather than some fuller truth they
+                  // did not ask for.
                   downloadCsv(
                     `13f-consensus-${period}.csv`,
                     rows,
-                    // Export mirrors the view-model, so it inherits the CUSIP
-                    // exclusion and the suppressed-delta rules automatically.
-                    [
-                      { header: "Ticker", cell: (r) => r.ticker ?? "" },
-                      { header: "Issuer", cell: (r) => r.name },
-                      { header: "Funds holding", cell: (r) => r.fundCount },
-                      { header: "Combined value (USD)", cell: (r) => Math.round(r.combinedValue) },
-                      // Summed, then averaged — the export carries both so a
-                      // spreadsheet does not have to re-derive one from the other
-                      // and get the exit-cell handling wrong.
-                      // Empty, not "0.00", when no holder reported a weight —
-                      // a spreadsheet averaging this column must not be fed a
-                      // zero we never measured.
-                      { header: "Total weight across funds (pct points)", cell: (r) => r.sumWeight?.toFixed(2) ?? "" },
-                      { header: "Average weight per holder (pct)", cell: (r) => r.avgWeight?.toFixed(2) ?? "" },
-                      { header: "Net direction", cell: (r) => r.netDirection },
-                      { header: "New", cell: (r) => r.nNew },
-                      { header: "Exited", cell: (r) => r.nExited },
-                      { header: "Share classes", cell: (r) => r.shareClasses },
-                      ...(funds ?? []).map((f) => ({
-                        header: `${f.code} weight %`,
-                        cell: (r: typeof rows[number]) => r.cells[f.cik]?.weight ?? "",
-                      })),
-                    ],
+                    consensusColumns(funds ?? [], history, present.length),
                   )
                 }
                 style={{

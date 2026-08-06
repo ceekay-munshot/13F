@@ -266,7 +266,18 @@ export function FilingsView({
           subtitle="Newest first, by the timestamp the SEC accepted the submission"
           span={2}
           bodyMinHeight={280}
-          actions={<ViewToggle options={["All", "13F-HR", "Amendments"] as const} value={filter} onChange={setFilter} />}
+          actions={
+            <ViewToggle
+              options={["All", "13F-HR", "Amendments"] as const}
+              value={filter}
+              onChange={setFilter}
+              hints={{
+                All: "Every filing, including amendments and notices that report no holdings.",
+                "13F-HR": "Original holdings reports only — the first time a manager reports a quarter.",
+                Amendments: "Corrections and additions a manager filed after their original report.",
+              }}
+            />
+          }
         >
           {loading ? (
             <TableSkeleton rows={8} cols={6} />

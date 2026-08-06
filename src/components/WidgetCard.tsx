@@ -1,6 +1,7 @@
 // src/components/WidgetCard.tsx
 import type { ReactNode } from "react";
 import { t } from "../theme";
+import { Hint } from "./Hint";
 
 export type Category = "markets" | "crypto" | "analytics" | "tools" | "india" | "heatmaps" | "sector";
 
@@ -119,21 +120,30 @@ export function WidgetCard({
   );
 }
 
-/** Chart | Table style toggle for a card header. */
+/**
+ * Chart | Table style toggle for a card header.
+ *
+ * `hints` maps an option's label to a plain-English sentence shown on hover and
+ * on focus. Every toggle in this product is necessarily terse — "Unanimous",
+ * "Net move", "Δ Weight" — because it has to fit in a card header, and terse
+ * labels are exactly the ones a reader has to guess at. Passing the hints here
+ * rather than at each call site means one toggle component explains itself
+ * everywhere it is used.
+ */
 export function ViewToggle<T extends string>({
-  options, value, onChange,
+  options, value, onChange, hints,
 }: {
   options: readonly T[];
   value: T;
   onChange: (v: T) => void;
+  hints?: Partial<Record<T, string>>;
 }) {
   return (
     <div style={{ display: "inline-flex", background: "#f3f4f6", borderRadius: 8, padding: 2, gap: 2 }}>
       {options.map((opt) => {
         const active = opt === value;
-        return (
+        const button = (
           <button
-            key={opt}
             className="pressable"
             onClick={() => onChange(opt)}
             aria-pressed={active}
@@ -149,6 +159,8 @@ export function ViewToggle<T extends string>({
             {opt}
           </button>
         );
+        const hint = hints?.[opt];
+        return hint ? <Hint key={opt} text={hint}>{button}</Hint> : <span key={opt} style={{ display: "inline-flex" }}>{button}</span>;
       })}
     </div>
   );

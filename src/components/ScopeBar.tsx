@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../theme";
+import { Hint } from "./Hint";
 import { periodLabel, usd } from "../lib/format";
 import type { Filer } from "../lib/data";
 
@@ -336,13 +337,17 @@ export function ScopeBar({
           universally means long equity, and an option row's value is notional
           rather than exposure — for a manager like Citadel including it would
           more than quadruple the apparent book. */}
-      <Chip
-        active={longsOnly}
-        onClick={() => onLongsOnly(!longsOnly)}
-        title="Option values are notional, not exposure. Long equity only is the honest default."
+      <Hint
+        text={
+          longsOnly
+            ? "Counting shares only, which is the honest default. Click to also include options."
+            : "Options are included. Their value is the notional size of the bet, not money invested, so totals can look far larger than the real book. Click to go back to shares only."
+        }
       >
-        {longsOnly ? "Longs only ✓" : "+ Options"}
-      </Chip>
+        <Chip active={longsOnly} onClick={() => onLongsOnly(!longsOnly)}>
+          {longsOnly ? "Longs only ✓" : "+ Options"}
+        </Chip>
+      </Hint>
 
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>{right}</div>
     </div>

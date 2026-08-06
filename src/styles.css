@@ -249,3 +249,20 @@
   .fav-chip:active:not([data-active]),
   .fav-star:active { transform: none; }
 }
+
+/* ---------------------------------------------------------------------------
+ * Hint bubbles — the plain-English explanation of a control.
+ *
+ * A short rise-and-fade so the bubble reads as belonging to the thing under the
+ * pointer rather than appearing from nowhere. 90ms, well inside the 300ms UI
+ * budget: this fires on every hover, and anything slower feels like lag rather
+ * than polish.
+ * ------------------------------------------------------------------------- */
+.hint-bubble { animation: hintIn 90ms var(--ease-out) both; }
+@keyframes hintIn { from { opacity: 0; transform: translateX(-50%) translateY(-3px); } }
+
+/* Respect a system-level request for less motion: still appears, just without
+ * the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .hint-bubble { animation: none; }
+}
