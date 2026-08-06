@@ -66,10 +66,17 @@ export interface ConsensusRow {
    * group's money".
    *
    * A fund that EXITED contributes nothing: it has no weight to contribute.
+   *
+   * NULL, not zero, when no holder reported a weight at all. Weight is a share
+   * of the fund's LONG EQUITY book, so a manager with no long equity — one
+   * filing pure options, say — has `weight_pct: null` on every row by
+   * construction (scripts/_sec-parse.mjs). Folding that into the sum as zero
+   * would publish "0.0%" as a measurement when the honest answer is that there
+   * is nothing to measure against.
    */
-  sumWeight: number;
-  /** sumWeight ÷ holders — "how big is this for a typical holder". */
-  avgWeight: number;
+  sumWeight: number | null;
+  /** sumWeight ÷ holders THAT REPORTED ONE — "how big is this for a typical holder". */
+  avgWeight: number | null;
   /** Σ +1 per add/new, −1 per trim/exit. */
   netDirection: number;
   nNew: number;
@@ -143,7 +150,16 @@ export function buildConsensus(
     issuerId: string;
     ticker: string | null;
     name: string;
-    byFund: Map<string, { value: number; weight: number; dWeightPp: number | null; actions: (CellAction | null)[]; classes: Set<string> }>;
+    byFund: Map<string, {
+      value: number;
+      weight: number;
+      /** At least one row carried a real weight. Distinguishes "0%" from "not
+          reported" — see the sumWeight note on ConsensusRow. */
+      hasWeight: boolean;
+      dWeightPp: number | null;
+      actions: (CellAction | null)[];
+      classes: Set<string>;
+    }>;
   };
   const acc = new Map<string, Acc>();
 
@@ -170,11 +186,14 @@ export function buildConsensus(
       const a = touch(h.issuerId, h.ticker, h.name);
       let slot = a.byFund.get(f.cik);
       if (!slot) {
-        slot = { value: 0, weight: 0, dWeightPp: null, actions: [], classes: new Set() };
+        slot = { value: 0, weight: 0, hasWeight: false, dWeightPp: null, actions: [], classes: new Set() };
         a.byFund.set(f.cik, slot);
       }
       slot.value += h.value;
-      slot.weight += h.weight ?? 0;
+      if (h.weight != null) {
+        slot.weight += h.weight;
+        slot.hasWeight = true;
+      }
       if (h.dWeightPp != null) slot.dWeightPp = (slot.dWeightPp ?? 0) + h.dWeightPp;
       slot.actions.push(h.action);
       if (h.ticker) slot.classes.add(h.ticker);
@@ -188,7 +207,7 @@ export function buildConsensus(
       const a = touch(e.issuerId, e.ticker ?? null, e.name);
       let slot = a.byFund.get(f.cik);
       if (!slot) {
-        slot = { value: 0, weight: 0, dWeightPp: null, actions: [], classes: new Set() };
+        slot = { value: 0, weight: 0, hasWeight: false, dWeightPp: null, actions: [], classes: new Set() };
         a.byFund.set(f.cik, slot);
       }
       slot.actions.push("EXITED");
@@ -202,6 +221,8 @@ export function buildConsensus(
     const cells: Record<string, Cell> = {};
     let combined = 0;
     let sumWeight = 0;
+    /** Holders that actually reported a weight — the honest denominator. */
+    let weighted = 0;
     let net = 0;
     let nNew = 0;
     let nExited = 0;
@@ -210,7 +231,11 @@ export function buildConsensus(
 
     for (const [cik, slot] of a.byFund) {
       const action = dominantAction(slot.actions);
-      const weight = slot.value > 0 ? slot.weight : null;
+      // Three states, not two: a real weight, zero, and NOT REPORTED. The last
+      // one used to collapse into the second — a fund with no long-equity
+      // denominator publishes null on every row, and rendering that as "0.0%"
+      // states a measurement where none exists.
+      const weight = slot.value > 0 && slot.hasWeight ? slot.weight : null;
       cells[cik] = {
         cik,
         weight,
@@ -221,9 +246,13 @@ export function buildConsensus(
       };
       combined += slot.value;
       // Sum the SAME number the cell renders, so the column total always
-      // reconciles against the row it sits on. A null cell (an exit, or a
-      // position reported with no weight) contributes zero rather than NaN.
-      sumWeight += weight ?? 0;
+      // reconciles against the row it sits on — and count how many cells
+      // contributed, so an unreported weight neither adds a phantom zero to the
+      // total nor dilutes the average as though it were one.
+      if (weight != null) {
+        sumWeight += weight;
+        weighted++;
+      }
       if (action) net += DIRECTION[action];
       if (action === "NEW") nNew++;
       if (action === "EXITED") nExited++;
@@ -240,8 +269,10 @@ export function buildConsensus(
       cells,
       fundCount: held,
       combinedValue: combined,
-      sumWeight,
-      avgWeight: held > 0 ? sumWeight / held : 0,
+      // Nobody reported a weight -> the answer is "unknown", which `pct`
+      // already renders as an em-dash, not "0.0%".
+      sumWeight: weighted > 0 ? sumWeight : null,
+      avgWeight: weighted > 0 ? sumWeight / weighted : null,
       netDirection: net,
       nNew,
       nExited,
@@ -262,8 +293,11 @@ export function sortConsensus(rows: ConsensusRow[], key: SortKey): ConsensusRow[
     // "Which names is the group most COMMITTED to" — a different question from
     // "which are biggest", and the one dollar value cannot answer. A $40B index
     // sleeve can be 0.4% of the book it sits in; a $900M position can be 9%.
+    //
+    // An unreported weight sorts BELOW a reported zero: -1 rather than 0, so a
+    // row we cannot measure never outranks one we measured at nothing.
     case "weight":
-      return out.sort((a, b) => b.sumWeight - a.sumWeight || b.fundCount - a.fundCount);
+      return out.sort((a, b) => (b.sumWeight ?? -1) - (a.sumWeight ?? -1) || b.fundCount - a.fundCount);
     // Surfaces names the whole group moved the same way — the highest-signal
     // ordering in the product, and the one a per-fund view cannot show.
     case "net":

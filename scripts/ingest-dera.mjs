@@ -584,6 +584,8 @@ await runJob(async () => {
         const exits = changes.filter((c) => c.action === "EXITED").map((c) => ({
           ticker: SECURITIES[c.cusip]?.ticker ?? null, name: c.name_of_issuer,
           issuerId: SECURITIES[c.cusip]?.issuerId ?? issuerIdFor(c.cusip), type: c.put_call,
+          // SH or PRN — see the note in shared/fold.mjs's exit loop.
+          unit: c.ssh_prnamt_type ?? "SH",
           valuePrior: c.value_prior, weightPrior: c.weight_prior,
         })).sort((a, b) => (b.valuePrior ?? 0) - (a.valuePrior ?? 0));
 

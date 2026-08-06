@@ -110,6 +110,13 @@ export interface Exit {
   name: string;
   issuerId: string;
   type: string;
+  /**
+   * SH or PRN. Optional because artifacts written before this field existed do
+   * not carry it — and the safe reading of "unknown" is SH, since wrongly
+   * hiding an equity exit is a far worse error than wrongly showing a bond.
+   * Exact for every artifact the ingest has rewritten since.
+   */
+  unit?: string;
   valuePrior: number;
   weightPrior: number | null;
 }

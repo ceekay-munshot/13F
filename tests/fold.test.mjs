@@ -480,3 +480,41 @@ describe("confidential omission suppresses inferred exits", () => {
     expect(computeChanges(current, prior, PRIOR_STATE.OK, {}).changes.some((c) => c.action === "EXITED")).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// An exit record has to carry enough to tell a share from a bond. put_call is
+// empty for BOTH exited common stock and an exited convertible note, so a view
+// filtered to long equity kept the note — 1.3% of the corpus is PRN, so this is
+// a real population rather than a hypothetical.
+// ---------------------------------------------------------------------------
+describe("exits carry the reporting unit", () => {
+  const row = (cusip, unit) => ({
+    cusip, put_call: "", ssh_prnamt: 100, ssh_prnamt_type: unit,
+    value_usd: 1000, weight_pct: 25, name_of_issuer: `ISSUER ${cusip}`,
+  });
+  const prior = {
+    period_end: "2026-03-31", accession: "0000000000-26-000001",
+    holdings: [row("EQ", "SH"), row("BOND", "PRN"), row("KEEP", "SH")],
+    value_long_usd: 3000,
+  };
+  const current = { period_end: "2026-06-30", holdings: [row("KEEP", "SH")], value_long_usd: 1000 };
+
+  it("distinguishes an exited bond from an exited share", () => {
+    const exits = computeChanges(current, prior, PRIOR_STATE.OK).changes.filter((c) => c.action === "EXITED");
+    expect(exits.map((e) => e.cusip).sort()).toEqual(["BOND", "EQ"]);
+    expect(exits.find((e) => e.cusip === "EQ").ssh_prnamt_type).toBe("SH");
+    expect(exits.find((e) => e.cusip === "BOND").ssh_prnamt_type).toBe("PRN");
+    // Both look identical on put_call alone — which is exactly why the unit
+    // has to travel with the record.
+    expect(exits.every((e) => e.put_call === "")).toBe(true);
+  });
+
+  it("emits null rather than guessing when the prior row has no unit", () => {
+    const noUnit = {
+      ...prior,
+      holdings: [{ ...row("EQ", "SH"), ssh_prnamt_type: undefined }, row("KEEP", "SH")],
+    };
+    const exits = computeChanges(current, noUnit, PRIOR_STATE.OK).changes.filter((c) => c.action === "EXITED");
+    expect(exits[0].ssh_prnamt_type).toBeNull();
+  });
+});

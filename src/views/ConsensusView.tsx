@@ -34,14 +34,24 @@ const THRESHOLDS = [
  * lead. One list, re-sorted, rather than two lists that would then have to be
  * kept consistent with each other.
  */
+/**
+ * `dir` is NOT decoration — it is what the caret and `aria-sort` announce.
+ *
+ * Three of these rank high-to-low, but "Net move" deliberately does not: its
+ * job is to surface the name the group sold hardest, so sortConsensus puts the
+ * most negative netDirection first. A shared header that always claimed
+ * "descending" told a screen reader the exact opposite of the order on screen
+ * for that one column.
+ */
 const SORTS = [
-  { key: "funds", label: "Funds" },
-  { key: "weight", label: "Total weight" },
-  { key: "value", label: "Value" },
-  { key: "net", label: "Net move" },
-] as const satisfies readonly { key: SortKey; label: string }[];
+  { key: "funds", label: "Funds", dir: "desc" },
+  { key: "weight", label: "Total weight", dir: "desc" },
+  { key: "value", label: "Value", dir: "desc" },
+  { key: "net", label: "Net move", dir: "asc" },
+] as const satisfies readonly { key: SortKey; label: string; dir: "asc" | "desc" }[];
 
 const sortLabel = (key: SortKey) => SORTS.find((s) => s.key === key)?.label ?? "Funds";
+const sortDir = (key: SortKey) => SORTS.find((s) => s.key === key)?.dir ?? "desc";
 
 /**
  * A column header that sorts the list it heads.
@@ -61,8 +71,9 @@ function SortTh({
   hint?: string;
 }) {
   const on = active === key;
+  const asc = sortDir(key) === "asc";
   return (
-    <th aria-sort={on ? "descending" : "none"} title={hint}>
+    <th aria-sort={on ? (asc ? "ascending" : "descending") : "none"} title={hint}>
       <button
         className="pressable"
         onClick={() => onSort(key)}
@@ -74,9 +85,10 @@ function SortTh({
         }}
       >
         {label}
-        {/* The caret only appears on the active column. A permanent set of
-            up/down arrows on every header is chrome that says nothing. */}
-        <span aria-hidden="true" style={{ fontSize: 8, opacity: on ? 1 : 0 }}>▼</span>
+        {/* The caret only appears on the active column, and points the way the
+            column is actually ordered. A permanent set of up/down arrows on
+            every header is chrome that says nothing. */}
+        <span aria-hidden="true" style={{ fontSize: 8, opacity: on ? 1 : 0 }}>{asc ? "▲" : "▼"}</span>
       </button>
     </th>
   );
@@ -476,8 +488,11 @@ export function ConsensusView({
                       // Summed, then averaged — the export carries both so a
                       // spreadsheet does not have to re-derive one from the other
                       // and get the exit-cell handling wrong.
-                      { header: "Total weight across funds (pct points)", cell: (r) => r.sumWeight.toFixed(2) },
-                      { header: "Average weight per holder (pct)", cell: (r) => r.avgWeight.toFixed(2) },
+                      // Empty, not "0.00", when no holder reported a weight —
+                      // a spreadsheet averaging this column must not be fed a
+                      // zero we never measured.
+                      { header: "Total weight across funds (pct points)", cell: (r) => r.sumWeight?.toFixed(2) ?? "" },
+                      { header: "Average weight per holder (pct)", cell: (r) => r.avgWeight?.toFixed(2) ?? "" },
                       { header: "Net direction", cell: (r) => r.netDirection },
                       { header: "New", cell: (r) => r.nNew },
                       { header: "Exited", cell: (r) => r.nExited },
