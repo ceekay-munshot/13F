@@ -160,6 +160,15 @@ export function TickerDrawer({
                   <div style={{ fontSize: 10, fontWeight: 600, color: t.textHint, letterSpacing: "0.05em" }}>COMBINED</div>
                   <div style={{ fontSize: 18, fontWeight: 700, color: t.textPrimary }}>{usd(row.combinedValue)}</div>
                 </div>
+                {/* The same "total weight" the overlap list ranks by, so a name
+                    opened from that list shows the number it was ranked on. */}
+                <div title="Each holder's own portfolio weight, added up — not a share of the group's money.">
+                  <div style={{ fontSize: 10, fontWeight: 600, color: t.textHint, letterSpacing: "0.05em" }}>TOTAL WEIGHT</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: t.textPrimary }}>
+                    {pct(row.sumWeight)}
+                    <span style={{ fontSize: 12, color: t.textMuted, fontWeight: 500 }}> · {pct(row.avgWeight)} avg</span>
+                  </div>
+                </div>
                 {qoqHolders != null && (
                   <div>
                     <div style={{ fontSize: 10, fontWeight: 600, color: t.textHint, letterSpacing: "0.05em" }}>HOLDERS QoQ</div>
