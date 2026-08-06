@@ -163,12 +163,37 @@ describe("buildConsensus — total weight across the funds", () => {
     expect(row.avgWeight).toBeCloseTo(4);
   });
 
-  it("leaves a name nobody holds any more at zero rather than NaN", () => {
+  it("reports a name nobody holds any more as unknown, not as zero", () => {
+    // Nobody holds it, so there is no weight to report. Null renders as an
+    // em-dash; zero would be a measurement, and a false one.
     const exit: Exit = { ticker: "Z", name: "Z CORP", issuerId: "gone", type: "", valuePrior: 500, weightPrior: 3 };
     const row = buildConsensus([fund("A", [], [exit])], { minFunds: 1, includeExitOnly: true })[0];
     expect(row.fundCount).toBe(0);
-    expect(row.sumWeight).toBe(0);
-    expect(row.avgWeight).toBe(0);
+    expect(row.sumWeight).toBeNull();
+    expect(row.avgWeight).toBeNull();
+  });
+
+  it("does not add a phantom zero for a fund that reported no weight", () => {
+    // Weight is a share of the fund's LONG EQUITY book, so a manager with no
+    // long equity publishes null on every row (scripts/_sec-parse.mjs). Folding
+    // that in as 0 understated the total and dragged the average down by
+    // counting a fund that contributed nothing measurable.
+    const real = fund("A", [h({ issuerId: "x1", value: 100, weight: 8 })]);
+    const noDenominator = fund("B", [h({ issuerId: "x1", value: 4000, weight: null, type: "Call" })]);
+    const row = buildConsensus([real, noDenominator], { minFunds: 2, longsOnly: false })[0];
+    expect(row.fundCount).toBe(2);          // both hold it
+    expect(row.cells.B.weight).toBeNull();  // but B's weight is unknown, not 0%
+    expect(row.sumWeight).toBeCloseTo(8);   // not 8 + 0
+    expect(row.avgWeight).toBeCloseTo(8);   // averaged over the one that reported
+  });
+
+  it("keeps a genuine zero weight distinct from an unreported one", () => {
+    const a = fund("A", [h({ issuerId: "x1", value: 100, weight: 0 })]);
+    const b = fund("B", [h({ issuerId: "x1", value: 100, weight: 5 })]);
+    const row = buildConsensus([a, b], { minFunds: 2 })[0];
+    expect(row.cells.A.weight).toBe(0);
+    expect(row.sumWeight).toBeCloseTo(5);
+    expect(row.avgWeight).toBeCloseTo(2.5); // 5 ÷ 2 — A reported, it just reported zero
   });
 
   it("excludes option notional from the weight sum by default", () => {
@@ -207,6 +232,18 @@ describe("sortConsensus", () => {
     const rows = buildConsensus([mk("A"), mk("B")], { minFunds: 2 });
     expect(sortConsensus(rows, "value")[0].issuerId).toBe("idx");
     expect(sortConsensus(rows, "weight")[0].issuerId).toBe("conv");
+  });
+
+  it("sinks an unmeasurable weight below a measured zero", () => {
+    // A row we could not measure must never outrank one we measured at nothing.
+    const mk = (cik: string, w: number | null, type = "") =>
+      fund(cik, [h({ issuerId: w == null ? "unknown" : "zero", value: 100, weight: w, type })]);
+    const rows = buildConsensus(
+      [mk("A", 0), mk("B", 0), mk("C", null, "Call"), mk("D", null, "Call")],
+      { minFunds: 2, longsOnly: false },
+    );
+    const order = sortConsensus(rows, "weight").map((r) => r.issuerId);
+    expect(order).toEqual(["zero", "unknown"]);
   });
 
   it("net-move sort surfaces the most-sold name first", () => {

@@ -398,6 +398,14 @@ export function computeChanges(current, prior, priorState, opts = {}) {
     changes.push({
       cusip: p.cusip,
       put_call: p.put_call,
+      // Carry the UNIT, not just the put/call flag.
+      //
+      // An exited convertible note has put_call "" exactly like an exited
+      // common-stock position, so on the exit record alone the two are
+      // indistinguishable — and a long-equity-only view that filters on
+      // put_call keeps the note. 1.3% of the corpus is PRN, so this is a real
+      // population, not a hypothetical.
+      ssh_prnamt_type: p.ssh_prnamt_type ?? null,
       name_of_issuer: p.name_of_issuer,
       action: "EXITED",
       shares_now: 0,

@@ -401,7 +401,13 @@ export function FundView({
    */
   const exits = useMemo(() => {
     const all = fp?.exits ?? [];
-    return longsOnly ? all.filter((e) => e.type === "") : all;
+    // Both halves of the predicate, matching `holdings` exactly. An exited
+    // convertible note carries put_call "" just like exited common stock, so
+    // filtering on type alone would keep the note — the unit is the only thing
+    // that separates them. Artifacts predating the `unit` field read as SH:
+    // wrongly showing a bond is a much smaller error than wrongly hiding a
+    // stock, and it self-corrects as the ingest rewrites each artifact.
+    return longsOnly ? all.filter((e) => e.type === "" && (e.unit ?? "SH") === "SH") : all;
   }, [fp, longsOnly]);
 
   /**

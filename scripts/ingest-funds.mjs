@@ -391,6 +391,9 @@ await runJob(async () => {
           name: c.name_of_issuer,
           issuerId: SECURITIES[c.cusip]?.issuerId ?? issuerIdFor(c.cusip),
           type: c.put_call,
+          // SH or PRN. Without it a client filtering to long equity cannot tell
+          // an exited share position from an exited bond.
+          unit: c.ssh_prnamt_type ?? "SH",
           valuePrior: c.value_prior, weightPrior: c.weight_prior,
         }))
         .sort((a, b) => (b.valuePrior ?? 0) - (a.valuePrior ?? 0));
