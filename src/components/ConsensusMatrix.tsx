@@ -113,7 +113,10 @@ export function ConsensusMatrix({
               key={f.cik}
               onClick={() => onFund?.(f.cik)}
               onMouseEnter={() => setHoverCol(f.cik)}
-              title={`${f.name}${f.missing ? " — no filing this quarter" : ""}`}
+              // A dimmed column has two possible causes and the tooltip is the
+              // only place that can tell them apart: the manager did not file,
+              // or we could not fetch what they did file.
+              title={`${f.name}${f.failed ? " — could not be loaded" : f.missing ? " — no filing this quarter" : ""}`}
               style={{
                 width: CELL_W, flexShrink: 0, border: "none", background: "transparent",
                 cursor: onFund ? "pointer" : "default", padding: "7px 0 5px",

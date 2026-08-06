@@ -20,8 +20,19 @@ export interface FundInput {
   exits: Exit[];
   /** True when this fund's QoQ deltas were withheld for that quarter. */
   suppressed: boolean;
-  /** True when the fund has no filing for the period at all. */
+  /** True when this fund contributes no holdings to the period, for any reason. */
   missing: boolean;
+  /**
+   * `missing` because the LOAD FAILED, not because the manager did not file.
+   *
+   * These are two completely different statements — "they have not filed yet",
+   * which is ordinary and expected for six weeks after every quarter, versus
+   * "we could not fetch their book, so every figure on this page is computed
+   * over fewer funds than the columns imply". They shared one flag, so the UI
+   * reported network failures to the user as non-filings: confidently wrong,
+   * and wrong in the direction that hides a problem.
+   */
+  failed?: boolean;
 }
 
 export type CellAction = "NEW" | "ADDED" | "HELD" | "TRIMMED" | "EXITED";
@@ -43,6 +54,22 @@ export interface ConsensusRow {
   cells: Record<string, Cell>;
   fundCount: number;
   combinedValue: number;
+  /**
+   * Σ of this name's portfolio weight across every fund that still holds it.
+   *
+   * Deliberately NOT an average and NOT a weight of some combined book. Each
+   * fund's weight is a percentage of ITS OWN long equity, so the sum is not
+   * itself a percentage of anything — it is a conviction score. Eight funds at
+   * 5% each (40) is a stronger group statement than two funds at 12% (24), and
+   * that ordering is exactly what the client asked to be able to see. The unit
+   * is spelled out wherever it renders so it cannot be read as "40% of the
+   * group's money".
+   *
+   * A fund that EXITED contributes nothing: it has no weight to contribute.
+   */
+  sumWeight: number;
+  /** sumWeight ÷ holders — "how big is this for a typical holder". */
+  avgWeight: number;
   /** Σ +1 per add/new, −1 per trim/exit. */
   netDirection: number;
   nNew: number;
@@ -174,6 +201,7 @@ export function buildConsensus(
   for (const a of acc.values()) {
     const cells: Record<string, Cell> = {};
     let combined = 0;
+    let sumWeight = 0;
     let net = 0;
     let nNew = 0;
     let nExited = 0;
@@ -182,15 +210,20 @@ export function buildConsensus(
 
     for (const [cik, slot] of a.byFund) {
       const action = dominantAction(slot.actions);
+      const weight = slot.value > 0 ? slot.weight : null;
       cells[cik] = {
         cik,
-        weight: slot.value > 0 ? slot.weight : null,
+        weight,
         value: slot.value,
         action,
         dWeightPp: slot.dWeightPp,
         classes: [...slot.classes],
       };
       combined += slot.value;
+      // Sum the SAME number the cell renders, so the column total always
+      // reconciles against the row it sits on. A null cell (an exit, or a
+      // position reported with no weight) contributes zero rather than NaN.
+      sumWeight += weight ?? 0;
       if (action) net += DIRECTION[action];
       if (action === "NEW") nNew++;
       if (action === "EXITED") nExited++;
@@ -207,6 +240,8 @@ export function buildConsensus(
       cells,
       fundCount: held,
       combinedValue: combined,
+      sumWeight,
+      avgWeight: held > 0 ? sumWeight / held : 0,
       netDirection: net,
       nNew,
       nExited,
@@ -217,13 +252,18 @@ export function buildConsensus(
   return rows;
 }
 
-export type SortKey = "funds" | "value" | "net" | "ticker";
+export type SortKey = "funds" | "value" | "weight" | "net" | "ticker";
 
 export function sortConsensus(rows: ConsensusRow[], key: SortKey): ConsensusRow[] {
   const out = [...rows];
   switch (key) {
     case "value":
       return out.sort((a, b) => b.combinedValue - a.combinedValue);
+    // "Which names is the group most COMMITTED to" — a different question from
+    // "which are biggest", and the one dollar value cannot answer. A $40B index
+    // sleeve can be 0.4% of the book it sits in; a $900M position can be 9%.
+    case "weight":
+      return out.sort((a, b) => b.sumWeight - a.sumWeight || b.fundCount - a.fundCount);
     // Surfaces names the whole group moved the same way — the highest-signal
     // ordering in the product, and the one a per-fund view cannot show.
     case "net":

@@ -350,6 +350,75 @@ export function FundView({
   const meta = fp?.meta;
   const suppressed = Boolean(meta?.deltasSuppressed) && !showRaw;
 
+  /**
+   * Names opened this quarter — the other half of the anchor.
+   *
+   * Read off the SAME `holdings` array the rest of the page uses, so the
+   * long-only toggle governs it and an option sleeve does not quietly appear in
+   * a list of new stock positions.
+   *
+   * Grouped by issuer for the same reason the consensus view is: a manager who
+   * already owned GOOGL and opened a small GOOG sleeve did not newly buy
+   * Alphabet, and listing it here would say they did. Only issuers where EVERY
+   * reported class is NEW survive — matching `dominantAction` in lib/consensus.
+   */
+  const entries = useMemo(() => {
+    if (!holdings.length) return [];
+    const byIssuer = new Map<
+      string,
+      { issuerId: string; ticker: string | null; name: string; type: string; value: number; weight: number; allNew: boolean }
+    >();
+    for (const h of holdings) {
+      const prev = byIssuer.get(h.issuerId);
+      if (prev) {
+        prev.value += h.value;
+        prev.weight += h.weight ?? 0;
+        prev.allNew &&= h.action === "NEW";
+        if (h.name.length < prev.name.length) prev.name = h.name;
+      } else {
+        byIssuer.set(h.issuerId, {
+          issuerId: h.issuerId,
+          ticker: h.ticker,
+          name: h.name,
+          type: h.type,
+          value: h.value,
+          weight: h.weight ?? 0,
+          allNew: h.action === "NEW",
+        });
+      }
+    }
+    return [...byIssuer.values()].filter((x) => x.allNew).sort((a, b) => b.value - a.value);
+  }, [holdings]);
+
+  /**
+   * Exits, on the SAME scope as the entries beside them.
+   *
+   * `fp.exits` used to render unfiltered while every other figure on the page
+   * honoured the long-only toggle. On its own that was a quiet inconsistency;
+   * sitting next to a new-names list that does honour it, it would read as a
+   * discrepancy in the DATA rather than in the filter — "why is this option in
+   * one column and not the other".
+   */
+  const exits = useMemo(() => {
+    const all = fp?.exits ?? [];
+    return longsOnly ? all.filter((e) => e.type === "") : all;
+  }, [fp, longsOnly]);
+
+  /**
+   * A position absent from the prior filing is INFERRED to be new — that is the
+   * only evidence 13F offers (shared/fold.mjs, `if (!p) action = "NEW"`). If the
+   * prior filing withheld positions under a confidential treatment request, the
+   * inference does not hold: the manager may have owned the name all along and
+   * simply not reported it. The exits card already refuses to guess in the
+   * mirror-image case; this is the same refusal, pointed at the other quarter.
+   */
+  const priorConfidential = useMemo(
+    () =>
+      Boolean(meta?.priorPeriod) &&
+      Boolean(summary?.series.find((s) => s.period === meta!.priorPeriod)?.confidentialOmitted),
+    [meta, summary],
+  );
+
   const movers = useMemo(() => {
     const key = moverView === "Δ Weight" ? "dWeightPp" : "dValue";
     const withDelta = holdings.filter((h) => h[key as keyof Holding] != null);
@@ -877,6 +946,74 @@ export function FundView({
           )}
         </WidgetCard>
 
+        {/* INSIGHT — the anchor, both halves, side by side.
+
+            These two cards are each half-width and adjacent on purpose: "what
+            did they buy into and what did they get out of" is one question asked
+            twice, and the client asked for the entries to sit next to the exits
+            rather than being reachable only as a count in the Activity card. */}
+        <WidgetCard
+          refreshing={refreshing}
+          title="New names this quarter"
+          subtitle="Positions opened since the prior filing — the other half of the anchor."
+          bodyMinHeight={200}
+          caveat={
+            priorConfidential ? (
+              <CaveatStrip>
+                The prior filing withheld positions pending confidential treatment, so a name here may
+                have been held all along rather than newly bought.
+              </CaveatStrip>
+            ) : undefined
+          }
+        >
+          {loading ? (
+            <TableSkeleton rows={5} cols={2} />
+          ) : !entries.length ? (
+            /* The same three-way distinction the exits card makes, for the same
+               reason. With no comparable prior quarter the ingest emits no
+               actions at all, so an empty list here means "we cannot tell",
+               never "they opened nothing". */
+            <EmptyState
+              icon={meta?.priorState === "PRIOR_OK" ? "○" : "◐"}
+              message={meta?.priorState === "PRIOR_OK" ? "No new positions" : "Changes not comparable"}
+              hint={meta?.priorState === "PRIOR_OK" ? undefined : "The prior quarter is missing or was a 13F notice, so nothing can be called new."}
+            />
+          ) : (
+            <div style={{ maxHeight: 260, overflow: "auto" }}>
+              <table className="data-table">
+                <thead><tr><th>Security</th><th>Value now</th><th>Weight</th></tr></thead>
+                <tbody>
+                  {entries.map((e) => (
+                    <tr key={e.issuerId}>
+                      <td style={{ maxWidth: 210, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ fontWeight: 700 }}>{e.ticker ?? "—"}</span>
+                        <span style={{ color: t.textHint, marginLeft: 6 }}>{e.name}</span>
+                        {e.type && <span style={{ color: t.warnAmber, fontSize: 10, marginLeft: 5 }}>{e.type.toUpperCase()}</span>}
+                      </td>
+                      <td>{usd(e.value)}</td>
+                      <td>{pct(e.weight)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {/* RECONCILE WITH THE COUNT ON THE SAME SCREEN.
+                  Activity counts LINE ITEMS; this counts NAMES. A manager who
+                  already owned GOOGL and opened a GOOG sleeve adds one new line
+                  and no new name — the correct answer, and one that reads as a
+                  bug if the two numbers sit a card apart with nothing joining
+                  them. Shown only when they actually differ. */}
+              {meta && meta.n_new !== entries.length && (
+                <div style={{ padding: "8px 14px", fontSize: 11, color: t.textHint, lineHeight: 1.5 }}>
+                  Activity counts {count(meta.n_new)} new line item{meta.n_new === 1 ? "" : "s"}; grouped by
+                  issuer{longsOnly ? " and limited to long equity" : ""} that is {count(entries.length)}
+                  {" "}new name{entries.length === 1 ? "" : "s"}. A new share class of a company already
+                  held is not a new name.
+                </div>
+              )}
+            </div>
+          )}
+        </WidgetCard>
+
         {/* INSIGHT — exits. A table, not a chart: the payload is names, and
             names are text. A dumbbell chart would hide the answer behind a hover. */}
         <WidgetCard
@@ -887,7 +1024,7 @@ export function FundView({
         >
           {loading ? (
             <TableSkeleton rows={5} cols={2} />
-          ) : !fp?.exits?.length ? (
+          ) : !exits.length ? (
             /* Three genuinely different reasons for an empty list, and saying
                "No positions exited" for all of them is a lie in two of them.
                The confidential case matters most: positions were withheld, so
@@ -910,10 +1047,14 @@ export function FundView({
               <table className="data-table">
                 <thead><tr><th>Security</th><th>Value held</th><th>Weight</th></tr></thead>
                 <tbody>
-                  {fp.exits.map((e, i) => (
+                  {exits.map((e, i) => (
                     <tr key={`${e.issuerId}-${i}`}>
+                      {/* Ticker first, name after — matching the new-names table
+                          beside it, so the eye can run down both columns and
+                          compare them without re-learning the layout. */}
                       <td style={{ maxWidth: 210, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {e.name}
+                        <span style={{ fontWeight: 700 }}>{e.ticker ?? "—"}</span>
+                        <span style={{ color: t.textHint, marginLeft: 6 }}>{e.name}</span>
                         {e.type && <span style={{ color: t.warnAmber, fontSize: 10, marginLeft: 5 }}>{e.type.toUpperCase()}</span>}
                       </td>
                       <td>{usd(e.valuePrior)}</td>

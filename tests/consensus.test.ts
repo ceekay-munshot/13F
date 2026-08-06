@@ -136,6 +136,52 @@ describe("buildConsensus — grouping is per ISSUER, not per share class", () =>
   });
 });
 
+describe("buildConsensus — total weight across the funds", () => {
+  it("sums each holder's own portfolio weight, share classes included", () => {
+    // The client's second ranking: "list by total weights across the funds".
+    // Fund A holds 6% of GOOGL and 1% of GOOG — 7% of Alphabet — and fund B
+    // holds 3%, so the group's total commitment is 10 weight-points.
+    const a = fund("A", [
+      h({ issuerId: ALPHABET, ticker: "GOOGL", value: 1000, weight: 6, action: "ADDED" }),
+      h({ issuerId: ALPHABET, ticker: "GOOG", value: 200, weight: 1, action: "NEW" }),
+    ]);
+    const b = fund("B", [h({ issuerId: ALPHABET, ticker: "GOOG", value: 500, weight: 3, action: "HELD" })]);
+
+    const row = buildConsensus([a, b], { minFunds: 2 })[0];
+    expect(row.sumWeight).toBeCloseTo(10);
+    expect(row.avgWeight).toBeCloseTo(5);
+  });
+
+  it("a fund that exited contributes no weight and does not dilute the average", () => {
+    // An exit cell has a null weight, and summing null as zero while still
+    // counting the fund as a holder would understate every average on the page.
+    const a = fund("A", [h({ issuerId: "x1", value: 100, weight: 4 })]);
+    const b = fund("B", [], [{ ticker: "X", name: "X", issuerId: "x1", type: "", valuePrior: 900, weightPrior: 8 }]);
+    const row = buildConsensus([a, b], { minFunds: 1 })[0];
+    expect(row.fundCount).toBe(1);
+    expect(row.sumWeight).toBeCloseTo(4);
+    expect(row.avgWeight).toBeCloseTo(4);
+  });
+
+  it("leaves a name nobody holds any more at zero rather than NaN", () => {
+    const exit: Exit = { ticker: "Z", name: "Z CORP", issuerId: "gone", type: "", valuePrior: 500, weightPrior: 3 };
+    const row = buildConsensus([fund("A", [], [exit])], { minFunds: 1, includeExitOnly: true })[0];
+    expect(row.fundCount).toBe(0);
+    expect(row.sumWeight).toBe(0);
+    expect(row.avgWeight).toBe(0);
+  });
+
+  it("excludes option notional from the weight sum by default", () => {
+    const a = fund("A", [
+      h({ issuerId: "x1", value: 100, weight: 2, type: "" }),
+      h({ issuerId: "x1", value: 9000, weight: 30, type: "Put" }),
+    ]);
+    const b = fund("B", [h({ issuerId: "x1", value: 100, weight: 2, type: "" })]);
+    expect(buildConsensus([a, b], { minFunds: 2 })[0].sumWeight).toBeCloseTo(4);
+    expect(buildConsensus([a, b], { minFunds: 2, longsOnly: false })[0].sumWeight).toBeCloseTo(34);
+  });
+});
+
 describe("sortConsensus", () => {
   const rows = buildConsensus(
     [
@@ -147,6 +193,20 @@ describe("sortConsensus", () => {
 
   it("sorts by combined value", () => {
     expect(sortConsensus(rows, "value")[0].issuerId).toBe("big");
+  });
+
+  it("total-weight sort is not the same ordering as combined value", () => {
+    // The whole point of offering both. 'idx' is ten times the dollars and a
+    // rounding error in each book; 'conv' is small money and a real position.
+    // Ranking by value alone would bury the name the group actually believes in.
+    const mk = (cik: string) =>
+      fund(cik, [
+        h({ issuerId: "idx", value: 10_000, weight: 0.4 }),
+        h({ issuerId: "conv", value: 900, weight: 9 }),
+      ]);
+    const rows = buildConsensus([mk("A"), mk("B")], { minFunds: 2 });
+    expect(sortConsensus(rows, "value")[0].issuerId).toBe("idx");
+    expect(sortConsensus(rows, "weight")[0].issuerId).toBe("conv");
   });
 
   it("net-move sort surfaces the most-sold name first", () => {

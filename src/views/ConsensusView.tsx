@@ -7,9 +7,9 @@ import { useEffect, useMemo, useState } from "react";
 import { WidgetCard, ViewToggle, CaveatStrip } from "../components/WidgetCard";
 import { Kpi, KpiRow } from "../components/Kpi";
 import { ConsensusMatrix, MatrixLegend } from "../components/ConsensusMatrix";
-import { MatrixSkeleton, EmptyState, ErrorState, PartialNotice, TableSkeleton } from "../components/states";
+import { MatrixSkeleton, EmptyState, ErrorState, TableSkeleton } from "../components/states";
 import { t, fundColor, ACTION_COLORS } from "../theme";
-import { usd, pp, count, periodLabel, dateLabel } from "../lib/format";
+import { usd, pct, pp, count, periodLabel } from "../lib/format";
 import { buildConsensus, sortConsensus, buildAnchor, type FundInput, type SortKey } from "../lib/consensus";
 import { TickerDrawer } from "../components/TickerDrawer";
 import { downloadCsv } from "../lib/csv";
@@ -25,6 +25,62 @@ const THRESHOLDS = [
   { key: "3", label: "≥3 funds", min: 3 },
   { key: "all", label: "Unanimous", min: 0 }, // resolved against fund count
 ] as const;
+
+/**
+ * The orderings the overlap list can be read in.
+ *
+ * "Funds" and "Total weight" are the client's two stated questions — how many
+ * of my funds own this, and how much of their books does it add up to — so they
+ * lead. One list, re-sorted, rather than two lists that would then have to be
+ * kept consistent with each other.
+ */
+const SORTS = [
+  { key: "funds", label: "Funds" },
+  { key: "weight", label: "Total weight" },
+  { key: "value", label: "Value" },
+  { key: "net", label: "Net move" },
+] as const satisfies readonly { key: SortKey; label: string }[];
+
+const sortLabel = (key: SortKey) => SORTS.find((s) => s.key === key)?.label ?? "Funds";
+
+/**
+ * A column header that sorts the list it heads.
+ *
+ * Clicking the thing you want to sort by is the whole interaction — no menu, no
+ * second control to find. It drives the SAME sort state as the toggle in the
+ * matrix header above, so the two can never disagree about what order the page
+ * is in.
+ */
+function SortTh({
+  label, sortKey: key, active, onSort, hint,
+}: {
+  label: string;
+  sortKey: SortKey;
+  active: SortKey;
+  onSort: (k: SortKey) => void;
+  hint?: string;
+}) {
+  const on = active === key;
+  return (
+    <th aria-sort={on ? "descending" : "none"} title={hint}>
+      <button
+        className="pressable"
+        onClick={() => onSort(key)}
+        style={{
+          border: "none", background: "transparent", padding: 0, cursor: "pointer",
+          font: "inherit", color: on ? t.primaryText : "inherit",
+          fontWeight: on ? 700 : undefined,
+          display: "inline-flex", alignItems: "center", gap: 3,
+        }}
+      >
+        {label}
+        {/* The caret only appears on the active column. A permanent set of
+            up/down arrows on every header is chrome that says nothing. */}
+        <span aria-hidden="true" style={{ fontSize: 8, opacity: on ? 1 : 0 }}>▼</span>
+      </button>
+    </th>
+  );
+}
 
 function FundDot({ color, code }: { color: string; code: string }) {
   return (
@@ -154,14 +210,16 @@ export function ConsensusView({
             // "Couldn't load this widget" card while eleven funds had loaded
             // perfectly well.
             //
-            // Two different absences, kept distinct: `missing` means the
-            // manager did not file this quarter, which is ordinary and gets a
-            // dimmed column; a genuine failure is counted and named, so the
-            // matrix can say which funds are absent rather than pretending
-            // they hold nothing.
-            const missing = e instanceof MissingArtifactError;
-            if (!missing) failed.push(f.name);
-            inputs[i] = { ...blank, missing: true };
+            // Two different absences, kept distinct — and they need TWO flags,
+            // not one. `missing` means the column has no holdings and must be
+            // dimmed; `failed` means the reason was a fetch error rather than a
+            // non-filing. They used to be the same boolean, so a fund we simply
+            // could not download was reported to the user, in the caveat strip
+            // and in the KPI, as one that "has not filed for Q1 2026" — a
+            // sentence about the manager that was actually about our network.
+            const notFiled = e instanceof MissingArtifactError;
+            if (!notFiled) failed.push(f.name);
+            inputs[i] = { ...blank, missing: true, failed: !notFiled };
           }
         }),
       );
@@ -299,7 +357,10 @@ export function ConsensusView({
     return <div style={GRID_WIDE}><WidgetCard title="Consensus" span={2}><ErrorState message={err} /></WidgetCard></div>;
   }
 
-  const missing = (funds ?? []).filter((f) => f.missing);
+  // "Has not filed" is a claim about the MANAGER. A fund we failed to fetch is
+  // absent for a reason of our own, so it belongs in the failure sentence and
+  // nowhere else — otherwise one fund produces two contradictory statements.
+  const notFiled = (funds ?? []).filter((f) => f.missing && !f.failed);
   const suppressed = (funds ?? []).filter((f) => f.suppressed);
 
   return (
@@ -308,7 +369,13 @@ export function ConsensusView({
         <Kpi
           label="Funds filed"
           value={loading ? "…" : `${present.length} of ${funds?.length ?? 0}`}
-          scope={missing.length ? `${missing.length} not yet filed` : "All tracked funds"}
+          scope={
+            failedFunds.length
+              ? `${failedFunds.length} could not be loaded${notFiled.length ? `, ${notFiled.length} not yet filed` : ""}`
+              : notFiled.length
+                ? `${notFiled.length} not yet filed`
+                : "All tracked funds"
+          }
         />
         <Kpi
           label="Consensus names"
@@ -355,9 +422,9 @@ export function ConsensusView({
                 onChange={(label) => setThreshold(THRESHOLDS.find((x) => x.label === label)!.key)}
               />
               <ViewToggle
-                options={["Funds", "Value", "Net move"] as const}
-                value={sortKey === "funds" ? "Funds" : sortKey === "value" ? "Value" : "Net move"}
-                onChange={(v) => setSortKey(v === "Funds" ? "funds" : v === "Value" ? "value" : "net")}
+                options={SORTS.map((s) => s.label) as unknown as readonly string[]}
+                value={sortLabel(sortKey)}
+                onChange={(label) => setSortKey(SORTS.find((s) => s.label === label)!.key)}
               />
               {/* §6.3 move chips. Toggling, not radio: clicking the active one
                   clears it, so there is always a way back to everything. */}
@@ -406,6 +473,11 @@ export function ConsensusView({
                       { header: "Issuer", cell: (r) => r.name },
                       { header: "Funds holding", cell: (r) => r.fundCount },
                       { header: "Combined value (USD)", cell: (r) => Math.round(r.combinedValue) },
+                      // Summed, then averaged — the export carries both so a
+                      // spreadsheet does not have to re-derive one from the other
+                      // and get the exit-cell handling wrong.
+                      { header: "Total weight across funds (pct points)", cell: (r) => r.sumWeight.toFixed(2) },
+                      { header: "Average weight per holder (pct)", cell: (r) => r.avgWeight.toFixed(2) },
                       { header: "Net direction", cell: (r) => r.netDirection },
                       { header: "New", cell: (r) => r.nNew },
                       { header: "Exited", cell: (r) => r.nExited },
@@ -428,9 +500,18 @@ export function ConsensusView({
             </div>
           }
           caveat={
-            missing.length || suppressed.length ? (
+            // THREE DIFFERENT ABSENCES, AND THEY ARE NOT THE SAME SENTENCE.
+            //
+            // A fund that has not FILED is ordinary. A fund whose quarter was a
+            // structural event is filed but not comparable. A fund that FAILED
+            // TO LOAD means every figure on this page is computed over fewer
+            // funds than the column headers imply — the only one of the three
+            // that makes the numbers themselves suspect, and the one that used
+            // to live at the bottom of the page in the provenance card.
+            notFiled.length || suppressed.length || failedFunds.length ? (
               <CaveatStrip>
-                {missing.length > 0 && `${missing.map((f) => f.name).join(", ")} ${missing.length === 1 ? "has" : "have"} not filed for ${periodLabel(period)}. `}
+                {failedFunds.length > 0 && `${failedFunds.join(", ")} could not be loaded — every figure here is computed over the ${present.length} funds that did. Refresh to try again. `}
+                {notFiled.length > 0 && `${notFiled.map((f) => f.name).join(", ")} ${notFiled.length === 1 ? "has" : "have"} not filed for ${periodLabel(period)}. `}
                 {suppressed.length > 0 && `${suppressed.map((f) => f.name).join(", ")} filed a structural change, so ${suppressed.length === 1 ? "its" : "their"} moves are excluded from group totals.`}
               </CaveatStrip>
             ) : undefined
@@ -524,70 +605,31 @@ export function ConsensusView({
           )}
         </WidgetCard>
 
-        {/* SOURCE */}
-        <WidgetCard title="Sources &amp; provenance" subtitle="What this view is built from" span={2} refreshing={refreshing}>
-          <div style={{ padding: "12px 16px" }}>
-            {/* A fund that did not FILE and a fund that failed to LOAD are
-                different facts and must not share one sentence. The first is
-                ordinary and expected; the second means the numbers on screen
-                are computed over fewer funds than the user thinks. */}
-            {failedFunds.length > 0 && (
-              <PartialNotice>
-                {failedFunds.length} of {funds?.length ?? 0} funds could not be loaded
-                ({failedFunds.join(", ")}). Every figure on this page is computed over the
-                {" "}{present.length} that did load. Refresh to try again.
-              </PartialNotice>
-            )}
-            {missing.length > 0 && (
-              <PartialNotice>
-                Showing {present.length} of {funds?.length ?? 0} funds. 13F is due 45 days after each
-                quarter ends and most managers file close to the deadline, so a just-closed quarter is
-                always incomplete.
-              </PartialNotice>
-            )}
-            <div style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.65 }}>
-              <p style={{ margin: "0 0 8px" }}>
-                Overlap is computed per <strong>issuer</strong>, not per share class — GOOG and GOOGL
-                are one company, and comparing them separately would report zero overlap on Alphabet.
-                Class counts appear in each cell's tooltip.
-              </p>
-              <p style={{ margin: 0 }}>
-                Positions are as of {dateLabel(period)}. 13F covers long US-listed equity and options
-                only — no shorts, cash, bonds or non-US listings. Ticker and issuer name only; CUSIPs
-                are licensed by CGS/ABA and are neither displayed nor exported.
-              </p>
-            </div>
-            <div
-              style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                borderTop: `1px solid ${t.border}`, paddingTop: 10, marginTop: 12, fontSize: 11, color: t.textHint,
-              }}
-            >
-              <span>Data © SEC EDGAR (public domain) · build {mf.buildId}</span>
-              <a
-                href="https://www.sec.gov/edgar"
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: t.primaryText, fontWeight: 600, textDecoration: "none" }}
-              >
-                sec.gov/edgar ↗
-              </a>
-            </div>
-          </div>
-        </WidgetCard>
+        {/* The "Sources & provenance" card that used to sit here was removed at
+            the client's request — it was a standing block of explanation on a
+            page they read every day. Nothing it carried was lost: the
+            issuer-level grouping is stated in the matrix cell tooltips and the
+            drawer, and the two facts that CHANGE — funds that failed to load and
+            funds that have not filed — moved into the matrix caveat strip above,
+            where they appear only when they are true. */}
 
-        {/* COMBINED HOLDINGS — §6.4. The matrix answers "who agrees on what" in
-            a grid; this answers "what does the group own, in order" as a list.
-            Same filtered set, so the search box and chips above govern both. */}
+        {/* OVERLAPPING HOLDINGS — §6.4. The matrix answers "who agrees on what"
+            in a grid; this answers the same question as a ranked list, which is
+            what you want when the question is "give me the top ten".
+
+            Every row here is BY DEFINITION an overlap: `rows` comes from
+            buildConsensus at the current threshold, which is ≥2 funds unless the
+            user raises it. So the list needs no filter of its own — the
+            threshold chips, search box and move chips above govern it. */}
         <WidgetCard
           refreshing={refreshing}
-          title="Combined holdings"
-          subtitle="Every name the group holds, aggregated across funds — searchable above"
+          title="Overlapping holdings"
+          subtitle={`Names held by ${minFunds}+ of the favourite funds · click a column heading to re-rank`}
           span={2}
           bodyMinHeight={220}
           actions={
             <span style={{ fontSize: 11, color: t.textHint }}>
-              {count(rows.length)} of {count(allMatching.length)} names
+              {count(rows.length)} of {count(allMatching.length)} names · by {sortLabel(sortKey).toLowerCase()}
             </span>
           }
         >
@@ -600,8 +642,36 @@ export function ConsensusView({
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Security</th><th>Funds</th><th>Combined value</th>
-                    <th>Net move</th><th>New</th><th>Exited</th>
+                    <th>Security</th>
+                    <SortTh
+                      label="Funds"
+                      sortKey="funds"
+                      active={sortKey}
+                      onSort={setSortKey}
+                      hint="How many of the favourite funds hold this name. Share classes count once."
+                    />
+                    <SortTh
+                      label="Total weight"
+                      sortKey="weight"
+                      active={sortKey}
+                      onSort={setSortKey}
+                      hint="Each holder's portfolio weight, added up. Not a percentage of the group — a conviction score."
+                    />
+                    <SortTh
+                      label="Combined value"
+                      sortKey="value"
+                      active={sortKey}
+                      onSort={setSortKey}
+                      hint="Total dollars the group holds in this name."
+                    />
+                    <SortTh
+                      label="Net move"
+                      sortKey="net"
+                      active={sortKey}
+                      onSort={setSortKey}
+                      hint="+1 per fund that added or opened, −1 per fund that trimmed or exited."
+                    />
+                    <th>New</th><th>Exited</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -622,6 +692,12 @@ export function ConsensusView({
                         </button>
                       </td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.fundCount}</td>
+                      <td
+                        style={{ fontVariantNumeric: "tabular-nums" }}
+                        title={`${pct(r.avgWeight)} average per holder`}
+                      >
+                        {pct(r.sumWeight)}
+                      </td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{usd(r.combinedValue)}</td>
                       <td
                         style={{
@@ -637,11 +713,18 @@ export function ConsensusView({
                   ))}
                 </tbody>
               </table>
-              {rows.length > 400 && (
-                <div style={{ padding: "8px 14px", fontSize: 11, color: t.textHint }}>
-                  Showing the first 400 of {count(rows.length)}. Narrow with the search box above, or export the full set.
-                </div>
-              )}
+              {/* Say what the column MEANS, once, under the column — not in a
+                  glossary. "Total weight" is the one number here a reader can
+                  confidently misread, because it looks like a share of the
+                  group's money and is not one. */}
+              <div style={{ padding: "8px 14px", fontSize: 11, color: t.textHint, lineHeight: 1.5 }}>
+                Total weight adds each holder's own portfolio weight together — five funds at 5% each
+                is 25%. It ranks conviction across the group; it is not a share of the group's money.
+                Hover a figure for the average per holder.
+                {rows.length > 400 && (
+                  <> Showing the first 400 of {count(rows.length)} — narrow with the search box above, or export the full set.</>
+                )}
+              </div>
             </div>
           )}
         </WidgetCard>
