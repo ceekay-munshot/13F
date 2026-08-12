@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>13F Fund Tracker</title>
 
+    <!-- The SDK below is a render-blocking classic script on a third-party
+         origin, so its DNS lookup and TLS handshake sit on the critical path of
+         every single load before a byte of it is fetched. Warming the
+         connection while the parser is still in <head> takes that setup cost
+         off the front of the load without changing the script's semantics.
+
+         (The script itself is 9 KB but is served with no Cache-Control, so
+         every load revalidates it. Fixing that is a change on the bucket, not
+         here.) -->
+    <link rel="preconnect" href="https://munshot.s3.ap-south-1.amazonaws.com" crossorigin />
+
     <!-- REQUIRED: classic script, in <head>, before the app module.
          Defines window.MunshotDashboardSDK. Do NOT add type="module",
          async, or defer — load order matters, because src/lib/sdk.ts

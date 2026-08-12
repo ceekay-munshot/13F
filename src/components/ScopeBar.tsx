@@ -85,7 +85,20 @@ export function FundPicker({
   const selected = filers.find((f) => f.cik === value);
   const needle = q.trim();
 
+  /**
+   * NOTHING IS COMPUTED UNTIL THE PICKER IS OPENED.
+   *
+   * The search ran, and the popover's whole result list was built into the DOM,
+   * on every render whether or not it was open — 9,268 managers at roughly six
+   * nodes each is ~55,000 elements, constructed synchronously, before the first
+   * screen could paint. Measured on the production build: four seconds between
+   * the filer index arriving and the Consensus view even being requested, all
+   * of it spent building a list behind a closed popover.
+   *
+   * A closed picker now costs one button.
+   */
   const results = useMemo(() => {
+    if (!open) return [];
     const n = needle.toLowerCase();
     if (!n) return filers;
     // Rank prefix matches above substring matches: typing "co" should offer
@@ -98,7 +111,18 @@ export function FundPicker({
       else if (name.includes(n) || (f.code ?? "").toLowerCase().includes(n)) contains.push(f);
     }
     return [...starts, ...contains];
-  }, [filers, needle]);
+  }, [open, filers, needle]);
+
+  /**
+   * And even open, only a readable slice is rendered.
+   *
+   * The list is a 380px scroller; past the first hundred rows the user is
+   * scrolling, not reading, and the search box is the faster way to the other
+   * nine thousand. Keyboard navigation and Enter both operate on THIS array, so
+   * the cursor can never point at a row that is not on screen.
+   */
+  const MAX_ROWS = 100;
+  const visible = useMemo(() => results.slice(0, MAX_ROWS), [results]);
 
   useEffect(() => setCursor(0), [needle]);
 
@@ -122,11 +146,11 @@ export function FundPicker({
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") { setOpen(false); return; }
-    if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, results.length - 1)); }
+    if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, visible.length - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); }
     else if (e.key === "Enter") {
       e.preventDefault();
-      const pick = results[cursor];
+      const pick = visible[cursor];
       if (pick) { onChange(pick.cik); setOpen(false); setQ(""); }
     }
   }
@@ -200,17 +224,20 @@ export function FundPicker({
             fontSize: 10.5, color: t.textHint, background: "#fafafa", borderBottom: `1px solid ${t.border}`,
           }}
         >
-          <span>{results.length} of {filers.length}{needle ? ` matching “${needle}”` : ""}</span>
+          <span>
+            {results.length} of {filers.length}{needle ? ` matching “${needle}”` : ""}
+            {results.length > MAX_ROWS && ` · showing first ${MAX_ROWS}`}
+          </span>
           <span>↑↓ navigate · ↵ select · esc close</span>
         </div>
 
         <div ref={listRef} style={{ maxHeight: 380, overflowY: "auto" }}>
-          {results.length === 0 ? (
+          {visible.length === 0 ? (
             <div style={{ padding: "22px 14px", fontSize: 13, color: t.textHint, textAlign: "center" }}>
-              No manager matches “{needle}”.
+              {open ? `No manager matches “${needle}”.` : ""}
             </div>
           ) : (
-            results.map((f, i) => {
+            visible.map((f, i) => {
               const active = i === cursor;
               const isSel = f.cik === value;
               return (

@@ -79,6 +79,16 @@ const VIEW_IMPORTS: Record<ViewId, () => Promise<unknown>> = {
   filings: importFilings,
 };
 
+// The opening view's chunk, started NOW rather than after the manifest.
+//
+// `lazy` only begins fetching when the component first renders, and the shell
+// does not render a view until the manifest has resolved — so the chunk was the
+// third link in a chain (manifest, then filer index, then chunk, then data)
+// when it depends on none of them. Requested at module scope it overlaps the
+// manifest entirely and is parsed and ready by the time there is a period to
+// render. Costs nothing extra: this is the default view, it is always needed.
+void importConsensus().catch(() => { /* the lazy boundary retries and handles it */ });
+
 const GRID_WIDE: React.CSSProperties = {
   display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
 };
@@ -111,20 +121,42 @@ export default function Dashboard() {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const season = useMemo(() => filingSeason(today), [today]);
 
+  // PAINT ON THE MANIFEST. THE 9,268-FILER INDEX IS NOT A PREREQUISITE.
+  //
+  // This used to be `loadManifest().then(async m => { const f = await
+  // loadFilers(m); ... })` — one small file, then a 1.7 MB index, and only then
+  // the first setState. So the whole shell, the view chunk and every artifact
+  // behind it queued behind a file whose only jobs are the search picker and a
+  // display name.
+  //
+  // The manifest alone is enough to choose the quarter and start work, and the
+  // watchlist already carries the cik, code and label of every favourite (see
+  // lib/favourites.ts), which is what the Consensus view actually compares. So
+  // the index now lands in its own time and simply improves what is already on
+  // screen: real filed names in place of the watchlist labels, and a populated
+  // fund search.
   useEffect(() => {
     let cancelled = false;
     loadManifest()
-      .then(async (m) => {
-        if (cancelled) return;
-        const f = await loadFilers(m);
+      .then((m) => {
         if (cancelled) return;
         setMf(m);
-        setFilers(f);
         // Open on the newest period that actually has data, not the newest that
         // exists. A just-closed quarter is nearly empty for six weeks.
         const p0 = defaultPeriod(m);
         setPeriod((p) => p ?? p0);
-        setCik((c) => c ?? defaultFilerCik(f, p0));
+
+        // The index, in parallel with everything the views are already doing.
+        loadFilers(m)
+          .then((f) => {
+            if (cancelled) return;
+            setFilers(f);
+            // Only NOW can a default fund be chosen properly — it depends on
+            // which managers actually have holdings for the quarter. Until then
+            // the Fund view has no cik, which is a state it already handles.
+            setCik((c) => c ?? defaultFilerCik(f, p0));
+          })
+          .catch(() => { /* the picker stays empty; every view still works */ });
       })
       .catch((e) => !cancelled && setErr(String(e.message ?? e)));
     return () => { cancelled = true; };
@@ -166,10 +198,28 @@ export default function Dashboard() {
   const CONSENSUS_MAX = 16;
   const consensusFunds = useMemo(() => {
     const byCik = new Map(filers.map((f) => [f.cik, f]));
-    // The user's own set, in THEIR order — resolved against the index so a CIK
-    // that has stopped filing simply drops out rather than rendering an empty
-    // column.
-    const chosen = favourites.map((c) => byCik.get(c)).filter(Boolean) as Filer[];
+    // The user's own set, in THEIR order.
+    //
+    // Resolved against the index WHERE WE HAVE IT, and against the watchlist
+    // where we do not — which is the state for the first moment of every load,
+    // now that the 1.7 MB index no longer gates the first paint. A watchlist
+    // entry already carries the cik and a display label, and the cik is the only
+    // thing needed to fetch a book, so the matrix can be built and drawn before
+    // the index arrives and simply picks up the filed names when it does.
+    //
+    // A CIK in neither place is dropped rather than rendering an empty column.
+    const chosen = favourites
+      .map((c): Filer | null => {
+        const known = byCik.get(c);
+        if (known) return known;
+        const seed = CLIENT_WATCHLIST.find((w) => w.cik === c);
+        if (!seed) return null;
+        return {
+          cik: seed.cik, name: seed.label, code: seed.code, state: null,
+          periods: 0, latestPeriod: null, latestValueUsd: null, watch: true,
+        };
+      })
+      .filter(Boolean) as Filer[];
     if (chosen.length >= 2) {
       return chosen.slice(0, CONSENSUS_MAX).map((f) => ({ ...f, code: codeFor(f.cik, f.name) }));
     }
@@ -274,7 +324,20 @@ export default function Dashboard() {
                 </div>
               }
             >
-            {view === "fund" && cik ? (
+            {/* A FALL-THROUGH HERE RENDERS THE WRONG VIEW.
+                `view === "fund" && cik` failing used to land on the Filings
+                branch — the Fund tab showing the filings feed. It was
+                unreachable while the shell waited for the filer index before
+                rendering anything; now that the shell paints on the manifest
+                alone, the default manager is chosen a moment later, and that
+                moment is real. Say "picking a manager" instead. */}
+            {view === "fund" && !cik ? (
+              <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+                <WidgetCard title="Fund" span={2} bodyMinHeight={260}>
+                  <TableSkeleton rows={7} cols={6} />
+                </WidgetCard>
+              </div>
+            ) : view === "fund" && cik ? (
               <FundView
                 cik={cik}
                 period={period}
