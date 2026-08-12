@@ -36,7 +36,43 @@
 // (Pages → Settings → Functions → R2 bindings), and have the ingest workflow
 // upload with scripts/publish-r2.mjs.
 
-export async function onRequestGet({ params, env, request, next }) {
+// ---------------------------------------------------------------------------
+// EDGE CACHE
+//
+// Every request here was a Worker invocation plus an R2 origin GET, in every
+// PoP, for every visitor — for files that are `immutable` and already keyed by
+// ?b={buildId}. The measurement recorded in src/lib/data.ts is 740 ms for the
+// manifest against 8 ms for each artifact behind it; that 90x gap is the
+// un-cached origin fetch, not the payload, since the manifest is the smallest
+// file in the tree.
+//
+// Responses produced by a Function are NOT put in the CDN cache automatically —
+// `caches.default` has to be asked. So ask, with three exclusions that are
+// correctness rather than tuning:
+//
+//   1. NEVER a 404. "No artifact" is the ANSWER to "did this manager file?",
+//      and pinning that for a year would freeze a manager as non-filing across
+//      a re-ingest that added them.
+//   2. NEVER the static fallback. It is deliberately a degraded older build,
+//      served only when R2 has lost the manifest; caching it would outlive the
+//      emergency it exists for.
+//   3. Only what R2 itself served, at the TTL its own Cache-Control declares —
+//      a year for artifacts, sixty seconds for the manifest. Nothing here
+//      invents a freshness policy; it honours the one already published.
+//
+// Every cache interaction is wrapped so that a miss, a throw, or a runtime with
+// no Cache API lands on exactly the behaviour this file had before. The cache
+// can only make it faster; it cannot make it wrong.
+// ---------------------------------------------------------------------------
+const edgeCache = () => {
+  try {
+    return caches?.default ?? null;
+  } catch {
+    return null;
+  }
+};
+
+export async function onRequestGet({ params, env, request, next, waitUntil }) {
   // Binding absent (e.g. a preview deploy without the R2 binding). Since this
   // Function outranks the static tree, returning an error here would 501 every
   // artifact on a deploy that has perfectly good files sitting in it — so hand
@@ -52,6 +88,16 @@ export async function onRequestGet({ params, env, request, next }) {
   const key = Array.isArray(params.path) ? params.path.join("/") : String(params.path ?? "");
   if (!key || key.includes("..")) {
     return new Response("bad path", { status: 400 });
+  }
+
+  // Served from the edge if it is there. A hit skips the R2 round trip entirely
+  // and never reaches the code below.
+  const cache = edgeCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(request);
+      if (hit) return hit;
+    } catch { /* treat any cache failure as a miss */ }
   }
 
   const object = await env.F13F_R2.get(key);
@@ -100,9 +146,24 @@ export async function onRequestGet({ params, env, request, next }) {
   }
 
   // Honour conditional requests so a returning visitor revalidates cheaply.
+  // Not cached: a 304 carries no body, and storing one would poison the entry
+  // for every visitor who did not send that etag.
   if (request.headers.get("if-none-match") === object.httpEtag) {
     return new Response(null, { status: 304, headers });
   }
 
-  return new Response(object.body, { headers });
+  const response = new Response(object.body, { headers });
+
+  // Populate the edge for the next visitor, at the TTL this response already
+  // declares. `clone()` before the body is streamed to the client, because a
+  // body can only be read once — and off the response path via waitUntil, so a
+  // slow cache write never delays the bytes the user is waiting for.
+  if (cache) {
+    try {
+      const store = cache.put(request, response.clone()).catch(() => {});
+      if (typeof waitUntil === "function") waitUntil(store);
+    } catch { /* the response is already on its way; caching is best-effort */ }
+  }
+
+  return response;
 }

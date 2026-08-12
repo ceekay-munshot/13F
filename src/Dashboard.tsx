@@ -231,6 +231,23 @@ export default function Dashboard() {
     const pool = watch.length >= 2 ? watch : filers.filter((f) => f.hasHoldings !== false);
     return pool.slice(0, CONSENSUS_MAX).map((f) => ({ ...f, code: codeFor(f.cik, f.name) }));
   }, [filers, favourites]);
+
+  /**
+   * "Nothing to compare" and "not enough information yet" are different screens.
+   *
+   * Both fall out of consensusFunds as an empty array, and before the boot split
+   * only the first was reachable — the shell did not render at all until the
+   * filer index had landed. Now it does, and a user whose favourites are all
+   * NON-watchlist funds seeds nothing from CLIENT_WATCHLIST, drops to the
+   * fallback, and gets `[]` from an index that is merely still in flight.
+   * ConsensusView would resolve Promise.all([]) instantly and tell them there is
+   * no overlap, which is a claim about their funds rather than about our loading.
+   *
+   * Strictly gated on the index being absent: someone who has genuinely emptied
+   * their favourites must still get the real empty state, not a skeleton that
+   * never resolves.
+   */
+  const consensusPending = filers.length === 0 && consensusFunds.length < 2;
   const freshness: Freshness = !session.token && sdkMode === "live" ? "nosession" : "fresh";
 
   return (
@@ -289,6 +306,7 @@ export default function Dashboard() {
               onPeriod={setPeriod}
               longsOnly={longsOnly}
               onLongsOnly={setLongsOnly}
+              universeCount={mf.counts.filers}
             />
 
             {/* FUND VIEW ONLY.
@@ -331,9 +349,9 @@ export default function Dashboard() {
                 rendering anything; now that the shell paints on the manifest
                 alone, the default manager is chosen a moment later, and that
                 moment is real. Say "picking a manager" instead. */}
-            {view === "fund" && !cik ? (
+            {(view === "fund" && !cik) || (view === "consensus" && consensusPending) ? (
               <div style={{ ...GRID_WIDE, marginTop: 22 }}>
-                <WidgetCard title="Fund" span={2} bodyMinHeight={260}>
+                <WidgetCard title={view === "fund" ? "Fund" : "Consensus"} span={2} bodyMinHeight={260}>
                   <TableSkeleton rows={7} cols={6} />
                 </WidgetCard>
               </div>

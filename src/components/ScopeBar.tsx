@@ -69,11 +69,17 @@ function Highlight({ text, needle }: { text: string; needle: string }) {
  * feel instant.
  */
 export function FundPicker({
-  filers, value, onChange,
+  filers, value, onChange, universeCount,
 }: {
   filers: Filer[];
   value: string | null;
   onChange: (cik: string) => void;
+  /** How many filers exist per the manifest. The index itself arrives after
+      first paint, so `filers.length` is 0 for the first moment of every load —
+      and "0 funds" on the control the user is looking at is a wrong number, not
+      a loading state. The manifest count is the same build's answer and is what
+      the header already displays. */
+  universeCount?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -177,7 +183,9 @@ export function FundPicker({
         <span style={{ flex: 1, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {selected?.name ?? "Search funds…"}
         </span>
-        <span style={{ fontSize: 10.5, color: t.textHint, flexShrink: 0 }}>{filers.length} funds</span>
+        <span style={{ fontSize: 10.5, color: t.textHint, flexShrink: 0 }}>
+          {(filers.length || universeCount) ?? 0} funds
+        </span>
       </button>
 
       <div
@@ -288,7 +296,7 @@ export function FundPicker({
 }
 
 export function ScopeBar({
-  filers, cik, onCik, periods, period, onPeriod, longsOnly, onLongsOnly, right,
+  filers, cik, onCik, periods, period, onPeriod, longsOnly, onLongsOnly, right, universeCount,
 }: {
   filers: Filer[];
   cik: string | null;
@@ -299,6 +307,8 @@ export function ScopeBar({
   longsOnly: boolean;
   onLongsOnly: (v: boolean) => void;
   right?: React.ReactNode;
+  /** Manifest filer count, used while the index is still in flight. */
+  universeCount?: number;
 }) {
   const idx = periods.indexOf(period);
   const canNewer = idx > 0;
@@ -311,7 +321,7 @@ export function ScopeBar({
         minHeight: 36, marginBottom: 4,
       }}
     >
-      <FundPicker filers={filers} value={cik} onChange={onCik} />
+      <FundPicker filers={filers} value={cik} onChange={onCik} universeCount={universeCount} />
 
       {/* The quarter stepper IS the lag disclosure. "Q2 2026 · as filed" on the
           control the user is already looking at does the work a banner would,
