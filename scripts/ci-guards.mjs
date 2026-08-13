@@ -265,6 +265,53 @@ function fail(guard, file, msg) {
 }
 
 // ---------------------------------------------------------------------------
+// GUARD — the same-day job may never write a shared index.
+//
+// On 2026-07-31 it wrote manifest.json and meta/filers.json with its own
+// twelve-fund versions and the live dashboard went from 9,396 funds to 8. It
+// publishes again now, through scripts/publish-day.mjs, which enforces an
+// allowlist at runtime. This is the compile-time half of the same rule: nothing
+// may point the whole-tree publisher at that job, because that publisher also
+// PRUNES, and pruning a watchlist build would delete the universe.
+// ---------------------------------------------------------------------------
+function guardSameDayPublish() {
+  const guard = "same-day-publish-is-additive";
+  checks.push(guard);
+  const f = join(ROOT, ".github/workflows/ingest.yml");
+  if (!existsSync(f)) return;
+  const text = readFileSync(f, "utf8");
+
+  text.split(/\r?\n/).forEach((line, i) => {
+    const code = line.replace(/^\s*#.*$/, "");
+    if (/publish-r2\.mjs/.test(code)) {
+      fail(
+        guard,
+        f,
+        `line ${i + 1}: the same-day job must not call publish-r2.mjs — it prunes, and this job only ever sees a subset of funds. Use publish-day.mjs.\n      ${line.trim()}`,
+      );
+    }
+    if (/--prune/.test(code)) {
+      fail(guard, f, `line ${i + 1}: --prune in the same-day job would delete every fund it did not ingest.\n      ${line.trim()}`);
+    }
+  });
+
+  // The allowlist itself must stay an allowlist. A denylist would let the next
+  // shared index in by omission, which is exactly how this happened.
+  const mm = join(ROOT, "shared/manifest-merge.mjs");
+  if (existsSync(mm)) {
+    const src = readFileSync(mm, "utf8");
+    if (!/return false;\s*\/\/ meta\/\*/.test(src) && !/isPublishableDayKey/.test(src)) {
+      fail(guard, mm, "isPublishableDayKey is missing — the same-day publisher has no allowlist.");
+    }
+    for (const shared of ["meta/filers.json", "meta/series.json", "period/"]) {
+      if (new RegExp(`startsWith\\("${shared.replace("/", "\\/")}`).test(src)) {
+        fail(guard, mm, `the allowlist appears to permit ${shared}, which is a shared index.`);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GUARD 6 — R2 has exactly ONE writer.
 //
 // manifest.json and meta/filers.json are shared: they describe the whole
@@ -303,6 +350,8 @@ function fail(guard, file, msg) {
 }
 
 // ---------------------------------------------------------------------------
+
+guardSameDayPublish();
 
 if (failures.length) {
   console.error(`\nci-guards: ${failures.length} violation(s)\n`);

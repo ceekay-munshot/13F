@@ -15,26 +15,35 @@ name: Ingest 13F filings
 # Never :00 or :30 — those minutes are the most contended on the whole platform.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# THE SCHEDULE IS OFF. Manual dispatch only, until this job can publish safely.
+# SAME-DAY 13F INGEST. Runs on a schedule again, and now publishes to R2.
 #
-# It ingests the SEED WATCHLIST (a dozen managers). ingest-universe.yml ingests
-# all 9,396 filers, and R2 — which is what the site actually reads — is built
-# from that. But both jobs write the SAME shared indexes: manifest.json and
-# meta/filers.json. So every scheduled run of this job committed a manifest
-# describing twelve funds over one describing the universe.
+# It was switched off on 2026-07-31 after taking the live dashboard from 9,396
+# funds down to 8: it wrote manifest.json and meta/filers.json — the shared
+# indexes describing the whole universe — with this job's twelve-fund versions.
 #
-# That was survivable while the committed tree was dead weight. It is not
-# anymore: functions/data/[[path]].js now falls back to the deployed
-# manifest.json when R2 has none, so the committed copy is the safety net for a
-# total outage, and a twelve-fund safety net is barely a net at all.
+# Three things changed so it can run safely:
 #
-# What this job is FOR is real — day-of freshness for tracked managers during
-# filing season, ahead of the ~3-week DERA lag. Restoring it needs one change:
-# write and publish only its own fund/* keys, never the shared indexes. Until
-# then a scheduled run costs churn and risks the fallback, so it does not run
-# on its own. Dispatch it by hand when you want a watchlist refresh.
+#   1. IT NO LONGER WRITES SHARED INDEXES. scripts/publish-day.mjs uploads
+#      fund/{cik}/** and nothing else, enforced by an allowlist
+#      (shared/manifest-merge.mjs) rather than by remembering.
+#   2. IT MERGES THE MANIFEST INSTEAD OF REPLACING IT. The live copy is the
+#      base, the run may only add, and the result is verified against the live
+#      copy before it is allowed to leave. Nothing shrinks.
+#   3. IT FOLLOWS THE FILINGS, NOT A LIST. Discovery reads EDGAR's daily index
+#      — one request covering every filer — so any manager who publishes gets
+#      picked up, not just a hard-coded dozen.
+#
+# It also no longer COMMITS anything. It now discovers hundreds of funds on a
+# deadline day, and the artifact tree belongs in R2 for exactly the reason
+# scripts/publish-r2.mjs exists: git keeps every version forever.
+#
+# Every three hours, because 13F filings arrive throughout the day and "same
+# day" is the whole point. Off-minute deliberately — :00 is the most contended
+# minute on the platform.
 # ---------------------------------------------------------------------------
 on:
+  schedule:
+    - cron: '17 */3 * * *'
   workflow_dispatch:
     inputs:
       periods:
@@ -113,14 +122,47 @@ jobs:
         run: |
           echo "::warning::CUSIP->ticker refresh failed — holdings will show issuer names without tickers. Values and deltas are unaffected."
 
-      - name: Ingest filings and build artifacts
+      # WHO FILED? Follow the filings, not a list.
+      #
+      # EDGAR's daily index is one file per day covering every filer, so this is
+      # a couple of requests rather than a crawl. A manual dispatch that names
+      # funds explicitly skips discovery and uses exactly those.
+      - name: Discover today's 13F filers
+        id: discover
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '5'
         run: |
+          if [ -n "${{ github.event.inputs.funds }}" ]; then
+            echo "ciks=${{ github.event.inputs.funds }}" >> "$GITHUB_OUTPUT"
+            echo "Using the funds given on dispatch."
+            exit 0
+          fi
+          CIKS="$(node scripts/discover-13f-filers.mjs --days=2)"
+          echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
+
+      # Nothing filed is a legitimate outcome on a quiet day — stop cleanly
+      # rather than running an ingest over an empty list and publishing a
+      # manifest for no reason.
+      - name: Nothing new
+        if: steps.discover.outputs.ciks == ''
+        run: |
+          echo "No 13F filings in the window. Nothing to publish."
+          echo 'No 13F filings in the window.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Ingest filings and build artifacts
+        if: steps.discover.outputs.ciks != ''
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '5'
+        # Two quarters, not eight: a delta needs the filed quarter and the one
+        # before it, and this runs every three hours over hundreds of funds.
+        # The fund's longer history is preserved by merging its summary rather
+        # than by re-fetching it — see shared/manifest-merge.mjs.
+        run: |
           node scripts/ingest-funds.mjs \
-            --periods=${{ github.event.inputs.periods || '8' }} \
-            ${{ github.event.inputs.funds && format('--funds={0}', github.event.inputs.funds) || '' }} \
+            --periods=${{ github.event.inputs.periods || '2' }} \
+            --funds='${{ steps.discover.outputs.ciks }}' \
             --out=public/data | tee /tmp/ingest.log
 
       - name: Summary
@@ -132,75 +174,34 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------------------------------------------------------------------
-      # Publish.
+      # PUBLISH TO R2 — ADDITIVELY.
       #
-      # The artifact tree IS the database, so committing it is the deploy:
-      # Cloudflare Pages rebuilds on push and serves the files straight off the
-      # edge. No server, no upload credentials, and the data is versioned and
-      # auditable in git for free.
+      # This is the step that was removed on 2026-07-31 after it took the site
+      # from 9,396 funds to 8. It is back in a form that cannot repeat that:
+      # publish-day.mjs uploads only fund/{cik}/** for the CIKs this run
+      # actually ingested, MERGES manifest.json into the live copy rather than
+      # replacing it, and verifies the merge against the live copy before
+      # writing. If the live manifest cannot be read, or the merge would lose a
+      # period or a filer, it exits non-zero having written NOTHING.
       #
-      # This works because the seed tree is ~6 MB. It does NOT scale to the full
-      # universe — see the R2 step below, which takes over once the tree is large
-      # enough that git history would become the problem.
+      # NOT COMMITTED TO GIT. This job now discovers hundreds of funds on a
+      # deadline day, and git keeps every version forever — the exact problem
+      # R2 exists to solve. The committed tree stays as the universe job left
+      # it, which is what the manifest fallback in functions/data/[[path]].js
+      # is supposed to serve.
       # ---------------------------------------------------------------------
-      - name: Commit artifacts
+      - name: Publish to R2
+        if: steps.discover.outputs.ciks != ''
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # NOT data/securities.json — it is a CUSIP-keyed map and this repo is
-          # public. It is rebuilt from the SEC each run, so there is nothing to
-          # persist. See .gitignore.
-          git add public/data public/_headers
-          if git diff --cached --quiet; then
-            echo "No artifact change; nothing to commit."
-            exit 0
-          fi
-          # Deliberately NO [skip ci]: Cloudflare Pages reads it as a build-skip
-          # directive, and this is precisely the build that publishes the data.
-          git commit -m "data: refresh 13F artifacts ($(date -u +%Y-%m-%d))"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          node scripts/publish-day.mjs \
+            --dir=public/data \
+            --ciks='${{ steps.discover.outputs.ciks }}' | tee -a /tmp/ingest.log
 
-      # ---------------------------------------------------------------------
-      # THERE IS NO R2 PUBLISH HERE, AND THAT IS DELIBERATE.
-      #
-      # A step used to live here, and on 2026-07-31 it took the live dashboard
-      # from 9,396 funds down to 8. What it did wrong, in order of what actually
-      # bit:
-      #
-      #   1. It overwrote manifest.json and meta/filers.json — the shared
-      #      indexes describing the whole 9,396-filer universe — with this job's
-      #      SEED-WATCHLIST versions. Both jobs write the same two keys, and
-      #      this one only ever knows about a dozen managers. OBSERVED, twice,
-      #      in runs 30592851223 and 30604563470.
-      #   2. `--content-encoding gzip` on artifacts that have been PLAIN JSON
-      #      since 37b23b3. R2 persists contentEncoding as object metadata and
-      #      functions/data/[[path]].js replays it via writeHttpMetadata, so
-      #      every artifact would arrive claiming a gzip wrapper it does not
-      #      have — the exact mistake that broke every widget on this site once
-      #      before. It did NOT surface this time (responses carried no
-      #      content-encoding), but nothing in the pipeline was preventing it;
-      #      `npm run guard` now does.
-      #   3. Wrote to `muns-13f` by default, which is not the bucket (`13f`).
-      #   4. Cached every object `immutable` for a year with no build-id key.
-      #
-      # For the record, because the wrong version of this note was committed in
-      # b045114: the step's `if: ${{ env.R2_ACCOUNT_ID != '' }}` guard DID
-      # evaluate true and the step DID run. A step's own `env:` block IS in
-      # scope for its own `if:`. It was never dormant, and treating it as
-      # harmless-because-dead was wrong.
-      #
-      # R2 has ONE writer: scripts/publish-r2.mjs, driven by
-      # ingest-universe.yml. It is signature-tested, resumable, refuses to run
-      # without a manifest, and publishes the manifest before it prunes. Adding
-      # a second writer that produces a narrower universe is not a freshness
-      # win, it is a race to clobber. Re-enabling in-season freshness means
-      # teaching this job to publish only its own fund/* keys and never the
-      # shared indexes — see the note on the schedule above.
-      # ---------------------------------------------------------------------
-
-      # One rolling issue per failure mode, so a transient blip does not bury the
-      # alert that matters.
       - name: Open or update failure issue
         if: failure()
         uses: actions/github-script@v7
