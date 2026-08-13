@@ -43,7 +43,7 @@ name: Ingest 13F filings
 # ---------------------------------------------------------------------------
 on:
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 */4 * * *'
   workflow_dispatch:
     inputs:
       periods:
@@ -117,7 +117,10 @@ jobs:
         continue-on-error: true
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
-          SEC_RATE_LIMIT_RPS: '5'
+          # 3, not 5. The SEC's stated ceiling is 10 across all its hosts; this
+          # runs on a shared machine that many other projects also point at sec.gov,
+          # so the polite budget is smaller than the published one.
+          SEC_RATE_LIMIT_RPS: '3'
         # The map only grows, and the fails-to-deliver files publish on a lag, so
         # a short window each day is enough to stay current without re-reading a
         # year of archives every run.
@@ -133,11 +136,28 @@ jobs:
       # EDGAR's daily index is one file per day covering every filer, so this is
       # a couple of requests rather than a crawl. A manual dispatch that names
       # funds explicitly skips discovery and uses exactly those.
+      # The last good list of filers, kept between runs.
+      #
+      # The SEC refuses a request now and then — not a ban, just a busy shared
+      # machine being turned away. When that happens the run should carry on
+      # with the list it had yesterday, which is very nearly right, instead of
+      # collapsing to the thirteen hard-coded favourites.
+      - name: Restore the last known filer list
+        uses: actions/cache@v4
+        with:
+          path: .cache/last-filers.txt
+          key: 13f-filers-${{ github.run_id }}
+          restore-keys: |
+            13f-filers-
+
       - name: Discover today's 13F filers
         id: discover
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
-          SEC_RATE_LIMIT_RPS: '5'
+          # 3, not 5. The SEC's stated ceiling is 10 across all its hosts; this
+          # runs on a shared machine that many other projects also point at sec.gov,
+          # so the polite budget is smaller than the published one.
+          SEC_RATE_LIMIT_RPS: '3'
         run: |
           if [ -n "${{ github.event.inputs.funds }}" ]; then
             echo "ciks=${{ github.event.inputs.funds }}" >> "$GITHUB_OUTPUT"
@@ -151,16 +171,25 @@ jobs:
           # must not become "publish nothing today". Fall back to the curated
           # watchlist, which needs no discovery because the CIKs are known, and
           # shout about the degradation so it is not mistaken for a quiet day.
+          mkdir -p .cache
           if CIKS="$(node scripts/discover-13f-filers.mjs --days=2)"; then
             echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
+            # Keep it for the next run, in case the SEC refuses that one.
+            printf '%s' "$CIKS" > .cache/last-filers.txt
           else
-            echo "::warning::Discovery failed (likely an SEC IP block). Falling back to the watchlist — funds outside it will NOT get same-day data this run."
-            echo "ciks=$(node -e "import('./src/lib/favourites.ts').catch(()=>{});" 2>/dev/null || true)" > /dev/null
-            CIKS="$(node -e "
-              const s=require('fs').readFileSync('src/lib/favourites.ts','utf8');
-              const m=[...s.matchAll(/cik:\s*\"(\d{10})\"/g)].map(x=>x[1]);
-              process.stdout.write([...new Set(m)].join(','));
-            ")"
+            # Yesterday's list first — it is very nearly today's. Only if we
+            # have never had one do we drop to the hard-coded favourites.
+            if [ -s .cache/last-filers.txt ]; then
+              CIKS="$(cat .cache/last-filers.txt)"
+              echo "::warning::The SEC refused us this run. Reusing the last known filer list ($(echo "$CIKS" | tr ',' '\n' | wc -l) funds) rather than shrinking to the favourites."
+            else
+              CIKS="$(node -e "
+                const s=require('fs').readFileSync('src/lib/favourites.ts','utf8');
+                const m=[...s.matchAll(/cik:\s*\"(\d{10})\"/g)].map(x=>x[1]);
+                process.stdout.write([...new Set(m)].join(','));
+              ")"
+              echo "::warning::The SEC refused us and there is no previous list yet. Falling back to the favourites — funds outside them will NOT get same-day data this run."
+            fi
             echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
             echo "degraded=true" >> "$GITHUB_OUTPUT"
           fi
@@ -178,7 +207,10 @@ jobs:
         if: steps.discover.outputs.ciks != ''
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
-          SEC_RATE_LIMIT_RPS: '5'
+          # 3, not 5. The SEC's stated ceiling is 10 across all its hosts; this
+          # runs on a shared machine that many other projects also point at sec.gov,
+          # so the polite budget is smaller than the published one.
+          SEC_RATE_LIMIT_RPS: '3'
         # Two quarters, not eight: a delta needs the filed quarter and the one
         # before it, and this runs every three hours over hundreds of funds.
         # The fund's longer history is preserved by merging its summary rather

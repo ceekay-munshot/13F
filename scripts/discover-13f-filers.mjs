@@ -66,6 +66,18 @@ async function fetchDay(sec, d) {
     rps: Number(process.env.SEC_RATE_LIMIT_RPS || 5),
   });
 
+  // Ask the doorman before walking in.
+  //
+  // One HEAD request against a static file answers "will this machine be served
+  // right now?" without transferring a body. If we are being refused, we find
+  // out in one polite request instead of being turned away mid-crawl, which is
+  // what gets an address flagged harder.
+  const probe = await sec.preflight();
+  if (!probe.ok) {
+    console.error(`::error::the SEC is refusing this machine right now (${probe.reason ?? "preflight failed"}). Not crawling.`);
+    process.exit(1);
+  }
+
   const ciks = new Set();
   let daysWithIndex = 0;
   const now = new Date();
