@@ -144,8 +144,26 @@ jobs:
             echo "Using the funds given on dispatch."
             exit 0
           fi
-          CIKS="$(node scripts/discover-13f-filers.mjs --days=2)"
-          echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
+          # DISCOVERY IS BEST-EFFORT; THE WATCHLIST IS THE FLOOR.
+          #
+          # A 403 from the SEC is an IP-level block and is not retryable, so the
+          # discovery step is allowed to fail — but "we could not ask who filed"
+          # must not become "publish nothing today". Fall back to the curated
+          # watchlist, which needs no discovery because the CIKs are known, and
+          # shout about the degradation so it is not mistaken for a quiet day.
+          if CIKS="$(node scripts/discover-13f-filers.mjs --days=2)"; then
+            echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Discovery failed (likely an SEC IP block). Falling back to the watchlist — funds outside it will NOT get same-day data this run."
+            echo "ciks=$(node -e "import('./src/lib/favourites.ts').catch(()=>{});" 2>/dev/null || true)" > /dev/null
+            CIKS="$(node -e "
+              const s=require('fs').readFileSync('src/lib/favourites.ts','utf8');
+              const m=[...s.matchAll(/cik:\s*\"(\d{10})\"/g)].map(x=>x[1]);
+              process.stdout.write([...new Set(m)].join(','));
+            ")"
+            echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
+            echo "degraded=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # Nothing filed is a legitimate outcome on a quiet day — stop cleanly
       # rather than running an ingest over an empty list and publishing a
