@@ -28,3 +28,16 @@ they send to the SEC (the US financial regulator) every three months.
   live automatically a few minutes later.
 - Funds report four times a year, and a lot of them file on the same deadline
   day, so "is today's data in?" is the question that matters most.
+
+## Booked in
+
+- **Saturday 15 Aug 2026** — make the same-day ingest fetch only NEW filings
+  (key on the filing's accession number, keep a cursor between runs). Scheduled
+  to run on its own; the owner should not have to ask. This is the real cure for
+  the SEC intermittently refusing us — everything shipped on 13 Aug is
+  protection around the problem, not the fix for it.
+
+## Standing promises
+
+- If something is deferred, SCHEDULE IT. The owner should never have to carry a
+  reminder for work that was agreed.
