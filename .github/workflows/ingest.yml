@@ -47,10 +47,16 @@ on:
   workflow_dispatch:
     inputs:
       periods:
-        description: 'Quarters of history to ingest'
-        default: '8'
+        # TWO, not eight. A delta needs the filed quarter and the one before it,
+        # and this now runs over every fund that filed — hundreds on a deadline
+        # day. Eight was the default when this job ingested a dozen; leaving it
+        # there meant a hand-dispatched run did four times the work of the
+        # scheduled one and ran into the timeout. Longer history is preserved by
+        # merging each fund's summary, not by re-fetching it.
+        description: 'Quarters of history to ingest (2 is enough for deltas)'
+        default: '2'
       funds:
-        description: 'Comma-separated CIKs (blank = the seed watchlist)'
+        description: 'Comma-separated CIKs (blank = whoever filed, from EDGAR daily index)'
         default: ''
       force:
         description: 'Rebuild artifacts even if nothing changed'
