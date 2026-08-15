@@ -466,23 +466,30 @@ export async function loadPeriodFilings(period: string, mf: Manifest): Promise<F
  * newest period that actually has enough data to be worth looking at, and the
  * quarter stepper lets the user move to the sparse newest one deliberately.
  */
-export function defaultPeriod(mf: Manifest, quorum = 0.6): string {
+export function defaultPeriod(mf: Manifest): string {
   if (!mf.periods.length) return mf.coverage.to;
 
-  // Require a QUORUM, not merely one filing.
+  // THE NEWEST QUARTER ANYONE HAS FILED FOR. That is the whole rule.
   //
-  // A quarter that closed weeks ago typically has a handful of early filers and
-  // nothing else — during the 2026-Q2 window exactly one of eight tracked funds
-  // had filed. Opening there gives a technically-correct but useless screen: no
-  // overlap is computable from one fund, and the cross-fund view reads as
-  // broken rather than as early. Landing on the newest quarter where most funds
-  // have reported is the honest default, and the quarter stepper still lets the
-  // user walk forward into the sparse one deliberately.
-  const peak = Math.max(...mf.periods.map((p) => p.funds));
-  const threshold = Math.max(1, Math.floor(peak * quorum));
-  const eligible = mf.periods.filter((p) => p.funds >= threshold);
-  const pool = eligible.length ? eligible : mf.periods;
-  return pool.reduce((best, p) => (p.period > best.period ? p : best), pool[0]).period;
+  // It used to demand a QUORUM — 60% of the busiest quarter's filer count —
+  // which sounds prudent and measures the wrong population. This dashboard
+  // compares thirteen managers; the threshold was computed against 10,753
+  // universe filers. On 15 August, twelve of the fourteen tracked funds had
+  // filed for Q2 2026 and the dashboard still opened on Q1, because 13 is 0.1%
+  // of 10,753. The quarter the user came to look at was one click away and not
+  // the one they landed on.
+  //
+  // Opening on an EMPTY quarter is the thing the quorum was guarding against,
+  // and that cannot happen here: a period only appears in the manifest at all
+  // once something has been filed for it. Between a quarter ending and its
+  // deadline six weeks later, the new quarter simply is not in the list, so the
+  // newest entry is still the last complete one. The guard was doing a job that
+  // the data shape already does.
+  //
+  // Coverage is stated rather than hidden — the KPI row reads "12 of 14 · 2 not
+  // yet filed" — so an early quarter is legible as early instead of looking
+  // broken.
+  return mf.periods.reduce((best, p) => (p.period > best.period ? p : best), mf.periods[0]).period;
 }
 
 /**

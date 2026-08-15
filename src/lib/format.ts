@@ -117,3 +117,24 @@ export function shortCode(name: string): string {
   const base = (words[0] ?? cleaned ?? "???").toUpperCase();
   return base.slice(0, 3).padEnd(3, "·");
 }
+
+/**
+ * How to word a filing deadline, given how far away it is.
+ *
+ * "Q2 2026 due 14 Aug 2026" was shown on 15 August — a date in the past,
+ * labelled as though it were still coming. Technically the deadline for the
+ * quarter now collecting; practically it reads as a stale dashboard, which is
+ * the one impression this product cannot afford.
+ *
+ * A deadline that has passed is not a deadline, it is a fact about the past, so
+ * it gets the past tense. The exact day is kept in every case — "closed 5 days
+ * ago" is worse than a date you can check against a calendar.
+ */
+export function deadlinePhrase(period: string, deadline: string, daysToDeadline: number): string {
+  const q = periodLabel(period);
+  const d = dateLabel(deadline);
+  if (daysToDeadline > 1) return `${q} due ${d}`;
+  if (daysToDeadline === 1) return `${q} due tomorrow, ${d}`;
+  if (daysToDeadline === 0) return `${q} due today`;
+  return `${q} closed ${d}`;
+}

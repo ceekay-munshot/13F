@@ -12,7 +12,7 @@ import { ErrorState, SdkMissingState, StandaloneBanner, TableSkeleton } from "./
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { useHostContext } from "./hooks/useHostContext";
 import { sdkMode, registerCaptureHandlers } from "./lib/sdk";
-import { periodLabel, dateLabel } from "./lib/format";
+import { periodLabel, deadlinePhrase } from "./lib/format";
 import { loadManifest, loadFilers, defaultPeriod, defaultFilerCik, prefetchFund, type Manifest, type Filer } from "./lib/data";
 import { FavouritesBar } from "./components/FavouritesBar";
 import { loadFavourites, saveFavourites, resetFavourites, CLIENT_WATCHLIST, codeFor } from "./lib/favourites";
@@ -118,7 +118,22 @@ export default function Dashboard() {
   const toggleFav = (c: string) =>
     setFavs(favourites.includes(c) ? favourites.filter((x) => x !== c) : [...favourites, c]);
 
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  // A CLOCK THAT MOVES. This was useMemo(..., []) — evaluated once at mount and
+  // never again, so a tab left open overnight kept yesterday's date forever and
+  // the refresh button could not change it however many times it was pressed.
+  // The deadline pill still read "due 14 Aug" on the 15th.
+  //
+  // Re-read when the tab is shown again (the common case: a laptop reopened the
+  // next morning) and hourly as a backstop, which is enough to catch a midnight
+  // rollover without polling for its own sake.
+  const [today, setToday] = useState(() => new Date().toISOString().slice(0, 10));
+  useEffect(() => {
+    const sync = () => setToday(new Date().toISOString().slice(0, 10));
+    const onVisible = () => { if (document.visibilityState === "visible") sync(); };
+    document.addEventListener("visibilitychange", onVisible);
+    const id = setInterval(sync, 3_600_000);
+    return () => { document.removeEventListener("visibilitychange", onVisible); clearInterval(id); };
+  }, []);
   const season = useMemo(() => filingSeason(today), [today]);
 
   // PAINT ON THE MANIFEST. THE 9,268-FILER INDEX IS NOT A PREREQUISITE.
@@ -267,9 +282,13 @@ export default function Dashboard() {
         freshnessDetail={
           freshness === "nosession"
             ? "No session"
-            : `${periodLabel(season.period)} due ${dateLabel(season.deadline)}`
+            : deadlinePhrase(season.period, season.deadline, season.daysToDeadline)
         }
         onRefresh={() => {
+          // Refresh means "re-read the world", and the date is part of the
+          // world. Reloading only the manifest is why pressing it never moved
+          // the deadline pill.
+          setToday(new Date().toISOString().slice(0, 10));
           setRefreshing(true);
           loadManifest(true)
             .then(setMf)

@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 import { defaultFilerCik, defaultPeriod, type Filer, type Manifest } from "../src/lib/data";
+import { deadlinePhrase } from "../src/lib/format";
 
 const filer = (over: Partial<Filer> & { cik: string }): Filer => ({
   name: `FUND ${over.cik}`,
@@ -95,8 +96,42 @@ describe("defaultPeriod and defaultFilerCik agree", () => {
     ],
   } as unknown as Manifest;
 
-  it("opens on the newest quarter with a quorum, not the newest that exists", () => {
-    expect(defaultPeriod(mf)).toBe("2026-03-31");
+  it("opens on the NEWEST quarter, even when only a few funds have filed", () => {
+    // This asserted the opposite until 2026-08-15, when twelve of fourteen
+    // tracked funds had filed for Q2 2026 and the dashboard still opened on Q1.
+    // The old rule demanded 60% of the busiest quarter's filer count — a
+    // threshold computed against 10,753 UNIVERSE filers, for a dashboard that
+    // compares thirteen managers. 13 is 0.1% of 10,753, so the quarter the user
+    // came to look at could never win.
+    expect(defaultPeriod(mf)).toBe("2026-06-30");
+  });
+
+  it("cannot open on an empty quarter, because an empty quarter is not listed", () => {
+    // What the quorum was really guarding against. A period only enters the
+    // manifest once something has been filed for it, so between a quarter
+    // ending and its deadline six weeks later the newest entry is still the
+    // last complete one. The data shape does the job the threshold was doing.
+    const beforeAnyoneFiles = {
+      coverage: { from: "2008-03-31", to: "2026-03-31", holdingsFrom: "2025-06-30" },
+      periods: [
+        { period: "2025-12-31", label: "Q4 2025", deadline: "2026-02-17", filings: 8600, funds: 8500 },
+        { period: "2026-03-31", label: "Q1 2026", deadline: "2026-05-15", filings: 8598, funds: 8472 },
+      ],
+    } as unknown as Manifest;
+    expect(defaultPeriod(beforeAnyoneFiles)).toBe("2026-03-31");
+  });
+
+  it("opens on a quarter with a single filing rather than skipping it", () => {
+    const oneFiler = {
+      coverage: { from: "2008-03-31", to: "2026-06-30", holdingsFrom: "2025-06-30" },
+      periods: [
+        { period: "2026-03-31", label: "Q1 2026", deadline: "2026-05-15", filings: 8598, funds: 8472 },
+        { period: "2026-06-30", label: "Q2 2026", deadline: "2026-08-14", filings: 1, funds: 1 },
+      ],
+    } as unknown as Manifest;
+    // Thin, and labelled as thin by the KPI row — but it is the quarter the
+    // user is here for, and one click away is one click too many.
+    expect(defaultPeriod(oneFiler)).toBe("2026-06-30");
   });
 
   it("the opening fund has data for the opening quarter", () => {
@@ -105,7 +140,7 @@ describe("defaultPeriod and defaultFilerCik agree", () => {
     const period = defaultPeriod(mf);
     const filers = [
       filer({ cik: "0000102909", latestPeriod: "2024-12-31", latestValueUsd: 5e12 }),
-      filer({ cik: "0001067983", latestPeriod: "2026-03-31", latestValueUsd: 3e11, watch: true }),
+      filer({ cik: "0001067983", latestPeriod: "2026-06-30", latestValueUsd: 3e11, watch: true }),
     ];
     const cik = defaultFilerCik(filers, period);
     const chosen = filers.find((f) => f.cik === cik)!;
@@ -168,5 +203,40 @@ describe("series ordering is normalised, not trusted", () => {
   it("is stable for a single-quarter fund", () => {
     expect(asc([{ period: "2026-03-31" }]).at(-1)!.period).toBe("2026-03-31");
     expect(asc([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deadlinePhrase
+//
+// "Q2 2026 due 14 Aug 2026", shown on 15 August. A date in the past, labelled
+// as though it were still coming — which reads as a stale dashboard, the one
+// impression this product cannot afford.
+// ---------------------------------------------------------------------------
+describe("deadlinePhrase", () => {
+  const Q = "2026-06-30";
+  const D = "2026-08-14";
+
+  it("says 'due' while the deadline is still ahead", () => {
+    expect(deadlinePhrase(Q, D, 12)).toBe("Q2 2026 due 14 Aug 2026");
+  });
+
+  it("says tomorrow and today rather than making you count", () => {
+    expect(deadlinePhrase(Q, D, 1)).toBe("Q2 2026 due tomorrow, 14 Aug 2026");
+    expect(deadlinePhrase(Q, D, 0)).toBe("Q2 2026 due today");
+  });
+
+  it("switches to the PAST TENSE once the deadline has gone", () => {
+    // THE bug. A deadline that has passed is not a deadline.
+    expect(deadlinePhrase(Q, D, -1)).toBe("Q2 2026 closed 14 Aug 2026");
+    expect(deadlinePhrase(Q, D, -40)).toBe("Q2 2026 closed 14 Aug 2026");
+  });
+
+  it("never drops the date", () => {
+    // "closed 5 days ago" is worse than a date you can check on a calendar.
+    for (const d of [30, 1, 0, -1, -90]) {
+      const out = deadlinePhrase(Q, D, d);
+      if (d !== 0) expect(out).toContain("14 Aug 2026");
+    }
   });
 });
