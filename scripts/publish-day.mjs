@@ -105,6 +105,31 @@ function walk(dir, base = dir, out = []) {
   return out;
 }
 
+/**
+ * GET a key and read its body, retrying the WHOLE thing.
+ *
+ * sendSigned retries the request, but the body is streamed and read afterwards,
+ * so a mid-stream failure lands outside its retry entirely. Node's fetch
+ * surfaces that as a bare `terminated`, which is what aborted a publish after
+ * 125 of 132 uploads: the request had succeeded, the read had not.
+ *
+ * Returns null for 404 — "not published yet" is an answer, not a failure.
+ */
+async function readJson(key, attempts = 3) {
+  let last;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await sendSigned("GET", key, null, new Set([404]));
+      if (res.status === 404) return null;
+      return JSON.parse(await res.text());
+    } catch (err) {
+      last = err;
+      if (i < attempts) await new Promise((r) => setTimeout(r, i * 400));
+    }
+  }
+  throw last;
+}
+
 (async () => {
   if (!existsSync(DIR)) fail(`${DIR} does not exist — nothing was built.`);
 
@@ -201,6 +226,7 @@ function walk(dir, base = dir, out = []) {
   let done = 0;
   let mergedSummaries = 0;
   let mergedFeeds = 0;
+  const skippedFeeds = [];
   const queue = [...uploads];
   await Promise.all(
     Array.from({ length: Math.min(8, queue.length) }, async () => {
@@ -214,15 +240,14 @@ function walk(dir, base = dir, out = []) {
         // published and union the two. Same rule as the manifest, one level
         // down: nothing this job writes may shrink.
         if (k.endsWith("/summary.json")) {
-          const res = await sendSigned("GET", k, null, new Set([404]));
-          if (res.status !== 404) {
-            try {
-              const liveSummary = JSON.parse(await res.text());
+          try {
+            const liveSummary = await readJson(k);
+            if (liveSummary) {
               body = Buffer.from(JSON.stringify(mergeSummary(liveSummary, JSON.parse(body.toString("utf8")))));
               mergedSummaries++;
-            } catch (err) {
-              fail(`could not merge ${k} (${err.message}). Refusing to truncate a fund's history.`);
             }
+          } catch (err) {
+            fail(`could not merge ${k} (${err.message}). Refusing to truncate a fund's history.`);
           }
         }
 
@@ -231,15 +256,21 @@ function walk(dir, base = dir, out = []) {
         // carry everyone else's through untouched. Replacing it would be the
         // 9,000-funds-to-8 failure again, one file over.
         if (/^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(k)) {
-          const res = await sendSigned("GET", k, null, new Set([404]));
-          if (res.status !== 404) {
-            try {
-              const liveFeed = JSON.parse(await res.text());
-              body = Buffer.from(JSON.stringify(mergePeriodFilings(liveFeed, JSON.parse(body.toString("utf8")), CIKS)));
-              mergedFeeds++;
-            } catch (err) {
-              fail(`could not merge ${k} (${err.message}). Refusing to shorten a quarter's filing feed.`);
-            }
+          try {
+            const liveFeed = await readJson(k);
+            body = liveFeed
+              ? Buffer.from(JSON.stringify(mergePeriodFilings(liveFeed, JSON.parse(body.toString("utf8")), CIKS)))
+              : body; // nothing published for this quarter yet — ours IS the feed
+            mergedFeeds++;
+          } catch (err) {
+            // SKIP THE FILE, NOT THE RUN. This is one auxiliary index; the fund
+            // holdings and the manifest are the reason the job exists. Aborting
+            // here cost a whole publish after 125 of 132 uploads had succeeded.
+            // Leaving the feed as published is exactly the status quo — stale,
+            // never wrong — while everything else still lands.
+            console.log(`::warning::could not merge ${k} (${err.message}); leaving the published feed alone.`);
+            skippedFeeds.push(k);
+            continue;
           }
         }
 
@@ -250,6 +281,7 @@ function walk(dir, base = dir, out = []) {
   );
   if (mergedSummaries) console.log(`  ${mergedSummaries} fund summar${mergedSummaries === 1 ? "y" : "ies"} merged with published history`);
   if (mergedFeeds) console.log(`  ${mergedFeeds} quarter filing feed(s) merged with published rows`);
+  if (skippedFeeds.length) console.log(`  ${skippedFeeds.length} feed(s) left untouched: ${skippedFeeds.join(", ")}`);
 
   await sendSigned("PUT", "manifest.json", Buffer.from(JSON.stringify(merged, null, 2)));
   console.log(`\npublished ${uploads.length} artifact(s) + merged manifest.`);
