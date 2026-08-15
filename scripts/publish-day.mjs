@@ -245,6 +245,7 @@ async function readJson(key, attempts = 3) {
   let mergedSummaries = 0;
   let mergedFeeds = 0;
   const skippedFeeds = [];
+  const repairedFeeds = [];
   const queue = [...uploads];
   await Promise.all(
     Array.from({ length: Math.min(8, queue.length) }, async () => {
@@ -281,14 +282,34 @@ async function readJson(key, attempts = 3) {
               : body; // nothing published for this quarter yet — ours IS the feed
             mergedFeeds++;
           } catch (err) {
-            // SKIP THE FILE, NOT THE RUN. This is one auxiliary index; the fund
-            // holdings and the manifest are the reason the job exists. Aborting
-            // here cost a whole publish after 125 of 132 uploads had succeeded.
-            // Leaving the feed as published is exactly the status quo — stale,
-            // never wrong — while everything else still lands.
-            console.log(`::warning::could not merge ${k} (${err.message}); leaving the published feed alone.`);
-            skippedFeeds.push(k);
-            continue;
+            // The live feed could not be READ. That is not the same as knowing
+            // a write would truncate it — and the manifest already records how
+            // many filings each quarter has, so the question can be answered
+            // without the file.
+            //
+            // If this run holds at least as many rows as the published manifest
+            // claims for the quarter, writing ours cannot lose a filing. That
+            // is the in-season case exactly: the manifest says 13, the feed
+            // object is unreadable, and ours has 13. Skipping there leaves the
+            // Filings view reporting one filing out of thirteen — stale in the
+            // one place staleness is most visible.
+            const period = k.split("/")[1];
+            const liveCount = (live?.periods ?? []).find((x) => x.period === period)?.filings ?? Infinity;
+            const mineCount = JSON.parse(body.toString("utf8")).data?.length ?? 0;
+            if (mineCount >= liveCount) {
+              console.log(
+                `::warning::could not read ${k} (${err.message}); publishing this run's ${mineCount} rows, ` +
+                  `which is not fewer than the ${liveCount} the manifest records.`,
+              );
+              repairedFeeds.push(k);
+            } else {
+              console.log(
+                `::warning::could not merge ${k} (${err.message}); this run holds ${mineCount} rows against ` +
+                  `${liveCount} published, so the feed is left alone rather than shortened.`,
+              );
+              skippedFeeds.push(k);
+              continue;
+            }
           }
         }
 
@@ -299,6 +320,7 @@ async function readJson(key, attempts = 3) {
   );
   if (mergedSummaries) console.log(`  ${mergedSummaries} fund summar${mergedSummaries === 1 ? "y" : "ies"} merged with published history`);
   if (mergedFeeds) console.log(`  ${mergedFeeds} quarter filing feed(s) merged with published rows`);
+  if (repairedFeeds.length) console.log(`  ${repairedFeeds.length} feed(s) rewritten whole (unreadable, but no rows lost): ${repairedFeeds.join(", ")}`);
   if (skippedFeeds.length) console.log(`  ${skippedFeeds.length} feed(s) left untouched: ${skippedFeeds.join(", ")}`);
 
   await sendSigned("PUT", "manifest.json", Buffer.from(JSON.stringify(merged, null, 2)));
