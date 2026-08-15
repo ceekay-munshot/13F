@@ -5,7 +5,7 @@
 // from 9,268 funds to twelve. Every test here is a rehearsal of that failure.
 
 import { describe, it, expect } from "vitest";
-import { mergeManifest, mergeSummary, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
+import { mergeManifest, mergeSummary, mergePeriodFilings, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
 
 /** Shaped like the real published manifest (checked against the live one). */
 const live = () => ({
@@ -171,17 +171,117 @@ describe("isPublishableDayKey — an allowlist, so a future shared index is excl
     expect(isPublishableDayKey("manifest.json")).toBe(true);
   });
 
-  it("blocks every shared index", () => {
-    // meta/filers.json is the one that was clobbered. period/* is the Filings
-    // feed, which a 13-fund run would equally truncate.
+  it("blocks every shared index it cannot merge", () => {
+    // meta/filers.json is the one that was clobbered.
     expect(isPublishableDayKey("meta/filers.json")).toBe(false);
     expect(isPublishableDayKey("meta/series.json")).toBe(false);
     expect(isPublishableDayKey("meta/periods.json")).toBe(false);
-    expect(isPublishableDayKey("period/2026-06-30/filings.json")).toBe(false);
+  });
+
+  it("allows the quarter filing feed, which is merged rather than replaced", () => {
+    // This was blocked outright, and that was right while nothing could merge
+    // it: a 13-fund run writing the file wholesale truncates a 10,000-row feed.
+    // It is allowed now because mergePeriodFilings exists and is exercised
+    // below — the file is rebuilt from the published rows plus this run's, and
+    // it throws rather than drop a row belonging to anyone else.
+    //
+    // The reason it must be writable at all: during filing season the feed is
+    // the single most-stale thing on the site. The universe data set does not
+    // publish the current quarter's window until roughly a month after the
+    // deadline, so the Filings view showed 1 filing while 12 tracked managers
+    // had already filed.
+    expect(isPublishableDayKey("period/2026-06-30/filings.json")).toBe(true);
+  });
+
+  it("still blocks the OTHER files under period/", () => {
+    // Only the filings feed has a merge. A leaderboard or sector rollup would
+    // be replaced wholesale and is therefore still refused.
+    expect(isPublishableDayKey("period/2026-06-30/leaderboard.json")).toBe(false);
+    expect(isPublishableDayKey("period/2026-06-30/sectors.json")).toBe(false);
+    expect(isPublishableDayKey("period/2026-06-30/anything-else.json")).toBe(false);
   });
 
   it("blocks anything it has not been taught about", () => {
     expect(isPublishableDayKey("meta/some-future-index.json")).toBe(false);
     expect(isPublishableDayKey("securities.json")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mergePeriodFilings
+//
+// The quarter's filings feed is written by BOTH jobs: the universe run puts
+// every manager's rows in it, a same-day run knows about a dozen. This merge is
+// what lets the second one keep the feed current without repeating the failure
+// that took the site from 9,396 funds to 8.
+// ---------------------------------------------------------------------------
+describe("mergePeriodFilings", () => {
+  const row = (cik, accession, accepted, over = {}) => ({
+    cik, accession, accepted, fund: `FUND ${cik}`, form: "13F-HR", filed: accepted.slice(0, 10), ...over,
+  });
+  const env = (rows) => ({ kind: "period-filings", period: "2026-06-30", data: rows });
+  const OURS = ["0001067983", "0001279936"];
+
+  it("adds this run's filings to what is already published", () => {
+    const live = env([row("0009999999", "a-1", "2026-08-10T12:00:00Z")]);
+    const incoming = env([row("0001067983", "b-1", "2026-08-14T12:00:00Z")]);
+    const out = mergePeriodFilings(live, incoming, OURS);
+    expect(out.data).toHaveLength(2);
+    expect(out.data.map((r) => r.accession).sort()).toEqual(["a-1", "b-1"]);
+  });
+
+  it("NEVER drops a filing belonging to a manager it does not speak for", () => {
+    // The whole point. A same-day run holds 13 funds; the feed holds thousands.
+    const foreign = Array.from({ length: 500 }, (_, i) =>
+      row(`00000${String(i).padStart(5, "0")}`, `f-${i}`, "2026-08-10T12:00:00Z"));
+    const live = env(foreign);
+    const incoming = env([row("0001067983", "b-1", "2026-08-14T12:00:00Z")]);
+    const out = mergePeriodFilings(live, incoming, OURS);
+    expect(out.data).toHaveLength(501);
+    expect(out.data.filter((r) => !OURS.includes(r.cik))).toHaveLength(500);
+  });
+
+  it("replaces its own row in place on a re-run rather than duplicating it", () => {
+    // The job runs every few hours against the same quarter, so this is the
+    // common path, not an edge case.
+    const live = env([row("0001067983", "b-1", "2026-08-14T12:00:00Z", { positions: 29 })]);
+    const incoming = env([row("0001067983", "b-1", "2026-08-14T12:00:00Z", { positions: 41 })]);
+    const out = mergePeriodFilings(live, incoming, OURS);
+    expect(out.data).toHaveLength(1);
+    expect(out.data[0].positions).toBe(41);
+  });
+
+  it("keeps an amendment ALONGSIDE the original — both were really filed", () => {
+    const live = env([row("0001067983", "orig", "2026-08-14T12:00:00Z")]);
+    const incoming = env([row("0001067983", "amend", "2026-08-20T12:00:00Z", { amendment: "RESTATEMENT" })]);
+    const out = mergePeriodFilings(live, incoming, OURS);
+    expect(out.data).toHaveLength(2);
+  });
+
+  it("sorts newest first, which is what the feed claims to be", () => {
+    const live = env([row("0009999999", "old", "2026-08-01T12:00:00Z")]);
+    const incoming = env([row("0001067983", "new", "2026-08-14T12:00:00Z")]);
+    expect(mergePeriodFilings(live, incoming, OURS).data.map((r) => r.accession)).toEqual(["new", "old"]);
+  });
+
+  it("refuses an empty incoming feed instead of publishing it", () => {
+    const live = env([row("0009999999", "a-1", "2026-08-10T12:00:00Z")]);
+    expect(() => mergePeriodFilings(live, env([]), OURS)).toThrow(/no rows/);
+  });
+
+  it("works when the quarter has never been published before", () => {
+    // Q2 2026 during filing season: the universe data set has no window for it
+    // yet, so the same-day run is the only source there is.
+    const out = mergePeriodFilings({ data: [] }, env([row("0001067983", "b-1", "2026-08-14T12:00:00Z")]), OURS);
+    expect(out.data).toHaveLength(1);
+  });
+
+  it("ignores incoming rows for CIKs it was not asked about", () => {
+    // A run only speaks for what it was told to fetch; anything else in its
+    // tree is stale by construction and must not overwrite the published row.
+    const live = env([row("0009999999", "a-1", "2026-08-10T12:00:00Z", { positions: 10 })]);
+    const incoming = env([row("0009999999", "a-1", "2026-08-10T12:00:00Z", { positions: 999 })]);
+    const out = mergePeriodFilings(live, incoming, OURS);
+    expect(out.data[0].positions).toBe(10);
   });
 });

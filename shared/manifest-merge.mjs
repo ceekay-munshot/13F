@@ -178,6 +178,51 @@ export function mergeSummary(live, incoming) {
 }
 
 /**
+ * Merge a same-day run's filings into the published feed for one quarter.
+ *
+ * THE FEED IS SHARED, SO IT MUST BE MERGED AND NOT REPLACED — the same rule the
+ * manifest and the fund summaries already follow, for the same reason. The
+ * universe run writes ~10,000 rows per quarter; a same-day run knows about a
+ * dozen managers. Publishing its version wholesale is how the site lost 9,000
+ * funds once already.
+ *
+ * Rows are keyed by ACCESSION, which is the filing's identity: a re-run replaces
+ * its own rows in place rather than appending duplicates, and an amendment
+ * arrives as its own accession alongside the original, which is correct — both
+ * were really filed.
+ *
+ * The incoming run only speaks for the CIKs it was asked about, so rows for
+ * every other manager are carried through untouched. Anything that would drop
+ * one of those throws: a shorter feed is not a fresher feed.
+ */
+export function mergePeriodFilings(live, incoming, ciks) {
+  const liveRows = Array.isArray(live?.data) ? live.data : [];
+  const inRows = Array.isArray(incoming?.data) ? incoming.data : [];
+  if (!inRows.length) throw new Error("incoming feed has no rows — refusing to publish it");
+
+  const owned = new Set(ciks);
+  // Everything this run does NOT speak for, exactly as published.
+  const foreign = liveRows.filter((r) => !owned.has(r.cik));
+
+  // Its own rows, keyed by accession so a re-run supersedes rather than repeats.
+  const mine = new Map();
+  for (const r of liveRows) if (owned.has(r.cik)) mine.set(r.accession, r);
+  for (const r of inRows) if (owned.has(r.cik)) mine.set(r.accession, r);
+
+  const rows = [...foreign, ...mine.values()].sort((a, b) =>
+    String(b.accepted ?? b.filed ?? "").localeCompare(String(a.accepted ?? a.filed ?? "")),
+  );
+
+  const foreignBefore = liveRows.filter((r) => !owned.has(r.cik)).length;
+  const foreignAfter = rows.filter((r) => !owned.has(r.cik)).length;
+  if (foreignAfter < foreignBefore) {
+    throw new Error(`merge would drop ${foreignBefore - foreignAfter} filings belonging to other managers`);
+  }
+
+  return { ...incoming, data: rows };
+}
+
+/**
  * Keys a same-day run is allowed to write.
  *
  * An allowlist, not a denylist. The failure that took the site down was writing
@@ -188,5 +233,10 @@ export function mergeSummary(live, incoming) {
 export function isPublishableDayKey(key) {
   if (key === "manifest.json") return true;      // merged, never replaced
   if (key.startsWith("fund/")) return true;      // this run's own funds
-  return false;                                   // meta/*, period/*, anything new
+  // The quarter's filings feed — MERGED row-by-row, never replaced, and only
+  // for the CIKs this run speaks for. Without it the Filings view still reports
+  // the universe run's count, which during filing season is the one number on
+  // the site guaranteed to be stale: 1 filing shown against 12 already landed.
+  if (/^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(key)) return true;
+  return false;                                   // meta/*, leaderboards, anything new
 }

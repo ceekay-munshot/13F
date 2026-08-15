@@ -303,9 +303,36 @@ function guardSameDayPublish() {
     if (!/return false;\s*\/\/ meta\/\*/.test(src) && !/isPublishableDayKey/.test(src)) {
       fail(guard, mm, "isPublishableDayKey is missing — the same-day publisher has no allowlist.");
     }
-    for (const shared of ["meta/filers.json", "meta/series.json", "period/"]) {
+    for (const shared of ["meta/filers.json", "meta/series.json", "meta/"]) {
       if (new RegExp(`startsWith\\("${shared.replace("/", "\\/")}`).test(src)) {
         fail(guard, mm, `the allowlist appears to permit ${shared}, which is a shared index.`);
+      }
+    }
+
+    // ----------------------------------------------------------------------
+    // A SHARED KEY MAY ONLY BE ALLOWED IF SOMETHING MERGES IT.
+    //
+    // The period filings feed is shared — the universe run writes every
+    // manager's rows into it — so permitting it is safe only while the
+    // publisher rebuilds it from the published rows instead of overwriting.
+    // This guard used to block period/ outright; that was correct when nothing
+    // could merge it. Now the rule is conditional, so CHECK THE CONDITION
+    // rather than trusting that whoever relaxed the allowlist also wrote the
+    // merge. Otherwise the guard passes on a technicality and the site loses
+    // ten thousand rows the next time someone widens a regex.
+    // ----------------------------------------------------------------------
+    const allowsPeriod = /period\\\//.test(src) && /return true/.test(src);
+    if (allowsPeriod) {
+      if (!/export function mergePeriodFilings/.test(src)) {
+        fail(guard, mm, "the allowlist permits a period/ key but there is no mergePeriodFilings to rebuild it.");
+      }
+      const pub = join(ROOT, "scripts/publish-day.mjs");
+      if (existsSync(pub) && !/mergePeriodFilings\(/.test(readFileSync(pub, "utf8"))) {
+        fail(
+          guard,
+          pub,
+          "period/ is allowed but publish-day.mjs never calls mergePeriodFilings — it would overwrite the shared feed.",
+        );
       }
     }
   }

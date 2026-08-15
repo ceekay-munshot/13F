@@ -30,7 +30,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
-import { mergeManifest, mergeSummary, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
+import { mergeManifest, mergeSummary, mergePeriodFilings, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
 import { signRequest } from "./_sigv4.mjs";
 
 const args = Object.fromEntries(
@@ -111,8 +111,17 @@ function walk(dir, base = dir, out = []) {
   // --- what this run is allowed to upload ----------------------------------
   const all = walk(DIR);
   const wanted = new Set(CIKS.map((c) => `fund/${c}/`));
+  const isFeed = (k) => /^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(k);
+  // Two shapes, and the distinction matters. A fund/ key is OWNED by this run
+  // and overwritten outright; a period feed is SHARED and merged row-by-row
+  // below. Both must clear isPublishableDayKey first — that allowlist is the
+  // thing standing between this job and another shared index nobody remembered
+  // was shared.
   const uploads = all.filter(
-    (k) => isPublishableDayKey(k) && k !== "manifest.json" && [...wanted].some((w) => k.startsWith(w)),
+    (k) =>
+      isPublishableDayKey(k) &&
+      k !== "manifest.json" &&
+      ([...wanted].some((w) => k.startsWith(w)) || isFeed(k)),
   );
   const skipped = all.filter((k) => !uploads.includes(k) && k !== "manifest.json");
 
@@ -191,6 +200,7 @@ function walk(dir, base = dir, out = []) {
   // would advertise artifacts that 404. Last, always.
   let done = 0;
   let mergedSummaries = 0;
+  let mergedFeeds = 0;
   const queue = [...uploads];
   await Promise.all(
     Array.from({ length: Math.min(8, queue.length) }, async () => {
@@ -216,12 +226,30 @@ function walk(dir, base = dir, out = []) {
           }
         }
 
+        // The quarter's filings feed is SHARED — the universe run writes every
+        // manager's rows into it. Merge this run's rows in by accession and
+        // carry everyone else's through untouched. Replacing it would be the
+        // 9,000-funds-to-8 failure again, one file over.
+        if (/^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(k)) {
+          const res = await sendSigned("GET", k, null, new Set([404]));
+          if (res.status !== 404) {
+            try {
+              const liveFeed = JSON.parse(await res.text());
+              body = Buffer.from(JSON.stringify(mergePeriodFilings(liveFeed, JSON.parse(body.toString("utf8")), CIKS)));
+              mergedFeeds++;
+            } catch (err) {
+              fail(`could not merge ${k} (${err.message}). Refusing to shorten a quarter's filing feed.`);
+            }
+          }
+        }
+
         await sendSigned("PUT", k, body);
         if (++done % 25 === 0 || done === uploads.length) console.log(`  uploaded ${done}/${uploads.length}`);
       }
     }),
   );
   if (mergedSummaries) console.log(`  ${mergedSummaries} fund summar${mergedSummaries === 1 ? "y" : "ies"} merged with published history`);
+  if (mergedFeeds) console.log(`  ${mergedFeeds} quarter filing feed(s) merged with published rows`);
 
   await sendSigned("PUT", "manifest.json", Buffer.from(JSON.stringify(merged, null, 2)));
   console.log(`\npublished ${uploads.length} artifact(s) + merged manifest.`);
