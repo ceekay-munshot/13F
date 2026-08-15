@@ -136,7 +136,25 @@ async function readJson(key, attempts = 3) {
   // --- what this run is allowed to upload ----------------------------------
   const all = walk(DIR);
   const wanted = new Set(CIKS.map((c) => `fund/${c}/`));
-  const isFeed = (k) => /^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(k);
+  // ONLY the quarters this run actually re-ingested.
+  //
+  // walk(DIR) sees the whole checked-out tree, which carries a filings feed for
+  // every quarter back to 2008 — 74 of them. Uploading all of them merged 73
+  // files nobody asked about, pushed this run's rows into quarters it had not
+  // refreshed, and put enough load on the connection that the read for the one
+  // quarter that mattered was terminated mid-stream. Fewer, newer, correct.
+  const localManifest = (() => {
+    try {
+      return JSON.parse(readFileSync(join(DIR, "manifest.json"), "utf8"));
+    } catch {
+      return null;
+    }
+  })();
+  const freshPeriods = new Set((localManifest?.periods ?? []).map((x) => x.period));
+  const isFeed = (k) => {
+    const m = /^period\/(\d{4}-\d{2}-\d{2})\/filings\.json$/.exec(k);
+    return Boolean(m) && freshPeriods.has(m[1]);
+  };
   // Two shapes, and the distinction matters. A fund/ key is OWNED by this run
   // and overwritten outright; a period feed is SHARED and merged row-by-row
   // below. Both must clear isPublishableDayKey first — that allowlist is the
