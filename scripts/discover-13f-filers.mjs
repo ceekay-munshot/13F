@@ -137,6 +137,18 @@ const STATE_IN = str(args.state);
 const STATE_OUT = str(args["out-state"]);
 const OUT_CIKS = str(args.out);
 const OUT_PLAN = str(args["out-plan"]);
+/**
+ * The plan, split in two so the client's funds can be PUBLISHED first as well as
+ * fetched first.
+ *
+ * Fetching them first is only half the promise. The publish happens once, after
+ * the whole run, so a watchlist fund fetched in the first thirty seconds still
+ * waited forty minutes behind ten thousand strangers before anyone could see it —
+ * which is exactly the wait the prioritising was meant to remove. The workflow
+ * now does two passes: this short list, published immediately, then the rest.
+ */
+const OUT_PRIORITY = str(args["out-priority"]);
+const OUT_REST = str(args["out-rest"]);
 
 /**
  * The forms that count are decided in `_sec-parse.mjs` — 13F-HR, 13F-HR/A,
@@ -450,6 +462,11 @@ writeFile(OUT_PLAN, JSON.stringify(plan, null, 2));
 // expected.
 if (!COMMIT) {
   writeFile(OUT_CIKS, plan.ciks.join(","));
+  // Two passes: the client's funds, then everybody else. Disjoint, so the second
+  // pass never re-fetches what the first already published.
+  const prio = new Set(plan.prioritised);
+  writeFile(OUT_PRIORITY, plan.prioritised.join(","));
+  writeFile(OUT_REST, plan.ciks.filter((c) => !prio.has(c)).join(","));
   // No process.exit: let stdout drain on its own. Exiting straight after a write
   // truncates a piped list, which would silently shorten the very thing this
   // script exists to produce.

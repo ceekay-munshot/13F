@@ -176,8 +176,13 @@ jobs:
               --state=.cache/day-cursor.json \
               --out-state=.cache/day-cursor.next.json \
               --out=.cache/ciks.txt \
+              --out-priority=.cache/priority.txt \
+              --out-rest=.cache/rest.txt \
               --out-plan=.cache/plan.json > /dev/null
           fi
+          # A hand-dispatched fund list is one pass, not two.
+          [ -f .cache/priority.txt ] || : > .cache/priority.txt
+          [ -f .cache/rest.txt ] || cp .cache/ciks.txt .cache/rest.txt
           # appendFileSync, not a write stream: every step below is gated on these
           # values, and a stream that had not flushed when node exited would leave
           # the conditions empty — which reads as "nothing to do" and skips the
@@ -190,6 +195,8 @@ jobs:
               `selected=${p.filersSelected ?? 0}`,
               `pending=${p.filersPending ?? 0}`,
               `known=${p.filersKnown ?? 0}`,
+              `priority=${(p.prioritised ?? []).length}`,
+              `rest=${Math.max(0, (p.filersSelected ?? 0) - (p.prioritised ?? []).length)}`,
               "",
             ].join("\n"));
           '
@@ -206,8 +213,71 @@ jobs:
           echo "Every filer EDGAR has published in the window is already on the dashboard."
           echo 'Up to date — every filer EDGAR has published in the window is already on the dashboard.' >> "$GITHUB_STEP_SUMMARY"
 
+      # ---------------------------------------------------------------------
+      # PASS ONE — THE CLIENT'S OWN FUNDS, PUBLISHED IMMEDIATELY.
+      #
+      # Fetching them first was only half the promise. The publish happens once,
+      # at the END of a run, and during a backfill a run is forty minutes long —
+      # so a watchlist fund fetched in the first thirty seconds still sat unseen
+      # behind ten thousand strangers, which is exactly the wait prioritising was
+      # supposed to remove. Somebody asked for Cantillon "right now" and the
+      # honest answer was "in about an hour".
+      #
+      # Fourteen funds is roughly a minute of fetching and thirty seconds of
+      # publishing. Two passes cost about two minutes of runner time and turn
+      # "within the hour" into "within three minutes".
+      #
+      # It skips itself cleanly once they are all ingested — which is the steady
+      # state, since a filer leaves the pending list for good once published.
+      # ---------------------------------------------------------------------
+      - name: Ingest the client's funds
+        id: prio_ingest
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.priority != '0'
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '3'
+        run: |
+          node scripts/ingest-funds.mjs \
+            --periods=${{ github.event.inputs.periods || '2' }} \
+            --funds-file=.cache/priority.txt \
+            --budget-seconds=600 \
+            --out-completed=.cache/completed-priority.txt \
+            --out=.build/priority | tee /tmp/ingest.log
+
+      - name: Advance the cursor for the client's funds
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.priority != '0' && steps.plan.outputs.dispatch != 'true'
+        run: |
+          node scripts/discover-13f-filers.mjs --commit \
+            --state=.cache/day-cursor.next.json \
+            --completed=.cache/completed-priority.txt \
+            --out-state=.cache/day-cursor.next.json \
+            --out-plan=.cache/plan.json
+
+      - name: Publish the client's funds
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.priority != '0'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: |
+          if [ ! -s .cache/completed-priority.txt ]; then
+            echo "::warning::none of the client's funds completed this pass; nothing to publish yet."
+            exit 0
+          fi
+          ARGS="--dir=.build/priority --ciks-file=.cache/completed-priority.txt --plan=.cache/plan.json"
+          if [ "${{ steps.plan.outputs.dispatch }}" != "true" ]; then
+            ARGS="$ARGS --state=.cache/day-cursor.next.json"
+          fi
+          # shellcheck disable=SC2086
+          node scripts/publish-day.mjs $ARGS | tee -a /tmp/ingest.log
+
+      # ---------------------------------------------------------------------
+      # PASS TWO — everybody else. `rest.txt` excludes whatever pass one took, so
+      # nothing is fetched or published twice.
+      # ---------------------------------------------------------------------
       - name: Ingest filings and build artifacts
-        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.rest != '0'
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '3'
@@ -230,8 +300,8 @@ jobs:
         run: |
           node scripts/ingest-funds.mjs \
             --periods=${{ github.event.inputs.periods || '2' }} \
-            --funds-file=.cache/ciks.txt \
-            --budget-seconds=2400 \
+            --funds-file=.cache/rest.txt \
+            --budget-seconds=2100 \
             --out-completed=.cache/completed.txt \
             --out=.build/data | tee /tmp/ingest.log
 
@@ -241,9 +311,11 @@ jobs:
       - name: Assert the run actually did something
         if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
         run: |
-          COMPLETED=$(tr ',' '\n' < .cache/completed.txt 2>/dev/null | grep -c . || true)
-          echo "completed $COMPLETED of ${{ steps.plan.outputs.selected }} planned"
-          if [ "${COMPLETED:-0}" -eq 0 ]; then
+          count() { tr ',' '\n' < "$1" 2>/dev/null | grep -c . || true; }
+          A=$(count .cache/completed-priority.txt)
+          B=$(count .cache/completed.txt)
+          echo "completed $((A + B)) of ${{ steps.plan.outputs.selected }} planned (${A} client funds, ${B} others)"
+          if [ "$((A + B))" -eq 0 ]; then
             echo "::error::${{ steps.plan.outputs.selected }} filers were queued and none were ingested."
             exit 1
           fi
@@ -255,7 +327,7 @@ jobs:
       # are now on the dashboard, which is the number the publish step stamps into
       # the manifest and the Filings view reads.
       - name: Advance the cursor
-        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0' && steps.plan.outputs.dispatch != 'true'
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.rest != '0' && steps.plan.outputs.dispatch != 'true'
         run: |
           node scripts/discover-13f-filers.mjs --commit \
             --state=.cache/day-cursor.next.json \
@@ -264,7 +336,7 @@ jobs:
             --out-plan=.cache/plan.json
 
       - name: Publish to R2
-        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.rest != '0'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

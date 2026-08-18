@@ -102,6 +102,8 @@ const MAX_ATTEMPTS = 5;
 
 /** Where a dry run reads published artifacts from — the directory holding the manifest. */
 const DRY_BASE = (process.env.LIVE_MANIFEST_URL || "").replace(/\/manifest\.json.*$/, "");
+/** path -> cache key, filled from the live manifest once a dry run has read it. */
+let DRY_BUILD = {};
 
 async function sendSigned(method, key, body, okStatuses = new Set()) {
   let lastErr;
@@ -167,7 +169,17 @@ async function readJson(key, attempts = 3) {
       // the step most worth rehearsing, and reading it through the CDN exercises
       // exactly the bytes a real run would merge into.
       if (DRY) {
-        const r = await fetch(`${DRY_BASE}/${key}`, { headers: { "cache-control": "no-cache" } });
+        // WITH THE CACHE KEY THE MANIFEST HANDS OUT, not the bare path.
+        //
+        // Artifacts are served `immutable` for a year, so the un-keyed URL is
+        // pinned to whatever was first cached there — for the Q2 feed that was a
+        // 13-row copy from before the backfill started. A rehearsal reading it
+        // reported the merge as producing 14 rows where the live object had 547,
+        // which looks exactly like the data loss this whole file exists to
+        // prevent. Real runs read R2 directly and were never affected; only the
+        // rehearsal lied, and a rehearsal that lies is worse than none.
+        const key2 = DRY_BUILD[key] ? `${key}?b=${DRY_BUILD[key]}` : key;
+        const r = await fetch(`${DRY_BASE}/${key2}`, { headers: { "cache-control": "no-cache" } });
         if (r.status === 404) return null;
         if (!r.ok) throw new Error(`GET ${key} -> ${r.status}`);
         return await r.json();
@@ -290,6 +302,11 @@ async function readJson(key, attempts = 3) {
     const r = await fetch(process.env.LIVE_MANIFEST_URL);
     if (!r.ok) fail(`could not read the live manifest for a dry run (${r.status})`);
     live = await r.json();
+    DRY_BUILD = Object.fromEntries(
+      Object.entries(live.shared ?? {}).concat(
+        CIKS.map((c) => [`fund/${c}/summary.json`, live.funds?.[c]]).filter(([, b]) => b),
+      ),
+    );
   } else if (DRY) {
     fail("a dry run needs LIVE_MANIFEST_URL so it has a real base to merge into.");
   } else {
