@@ -33,13 +33,27 @@ name: Ingest 13F filings
 # before anything leaves. If the live manifest cannot be read, or the merge
 # would lose a period or a filer, it exits non-zero having written NOTHING.
 #
-# Every three hours, off-minute — :00 is the most contended minute on the
+# Every TWO hours, off-minute — :00 is the most contended minute on the
 # platform, and GitHub is explicit that scheduled runs are best-effort, so the
 # job is idempotent and extra runs are free.
+#
+# WHY TWO AND NOT THREE. A run takes ~40 minutes and GitHub fires the slot
+# 25-55 minutes late, so at a three-hour cadence the runner sat idle for most of
+# every window while a ten-thousand-manager backlog waited. Two hours removes
+# the idle gap without changing anything that matters for safety: the SEC is
+# still hit at 3 req/s single-flight, runs still never overlap (the concurrency
+# group queues them, cancel-in-progress: false), and each run draws a fresh
+# runner IP — so this is fewer idle minutes, not a heavier touch on sec.gov.
+#
+# In steady state, once the season is fully ingested, the extra slots are cheap
+# no-ops: discovery reads the day's index, finds nothing pending, and the run
+# exits in about a minute. Harmless, and during filing season it is strictly
+# better for same-day freshness. If it is ever preferred back at three hours,
+# it is a one-line change with no other consequence.
 # ---------------------------------------------------------------------------
 on:
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
       periods:
