@@ -659,6 +659,11 @@ await runJob(async () => {
       holdings: writer.written.filter((w) => w.path.startsWith("fund/")).length,
     },
     notes: problems,
+    // Fund-quarters actually examined, so the watchdog can grade a RATE. A
+    // handful of filings that do not reconcile against their own cover page is
+    // the ordinary state of the world at universe scale — the question is what
+    // share of the run they are, not how many there are.
+    notesOf: completed.length * reported.length,
   });
   writeFileSync(`${OUT}/manifest.json`, JSON.stringify(mf, null, 2));
 

@@ -169,7 +169,7 @@ export function decodeHoldings(enc) {
  * (forever cache). A restated fund-quarter gets a new buildId on that one path
  * and every other file stays in cache.
  */
-export function manifest({ buildId, periods, funds, coverage, counts, notes = [] }) {
+export function manifest({ buildId, periods, funds, coverage, counts, notes = [], notesOf = 0 }) {
   return {
     v: ARTIFACT_VERSION,
     buildId,
@@ -178,7 +178,17 @@ export function manifest({ buildId, periods, funds, coverage, counts, notes = []
     periods,    // [{ period, deadline, filings, funds, buildId }]
     funds,      // { [cik]: buildId } — only entries that differ from the root build
     counts,     // { filers, filings, holdings }
-    notes,
+    notes,      // the list, capped for size by the merge
+    // The COUNT and its DENOMINATOR, so a reader can tell a rate from a number.
+    //
+    // `notes` alone cannot answer "is this a lot?". Sixty-one unreconciled
+    // filings is an incident in a thirteen-fund run and unremarkable in a
+    // five-hundred-fund one, and the staleness watchdog graded the raw length —
+    // so the moment the ingest started covering the real universe it began
+    // alerting every single day about the world being ordinarily messy, which is
+    // how an alert gets ignored.
+    notesTotal: notes.length,
+    notesOf,    // fund-quarters examined to produce them
   };
 }
 

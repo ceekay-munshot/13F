@@ -129,7 +129,13 @@ if (mf) {
       const priorRow = periods.find((p) => p.period === priorPeriod(closed));
       const baseline = priorRow?.funds ?? peakFunds;
       const TOLERANCE = 0.85;
-      if (baseline > 0 && row.funds < baseline * TOLERANCE) {
+      // DEFER TO THE SEC-DERIVED CHECK WHEN THERE IS ONE. Comparing this quarter
+      // to the last one is a proxy for "how much have we got"; `known` answers it
+      // directly. Both firing means the same shortfall is reported twice in the
+      // same alert, in two different numbers, which reads as two problems.
+      if (row.known) {
+        notes.push(`${periodLabel(closed)} filer count graded against the SEC below rather than against the prior quarter.`);
+      } else if (baseline > 0 && row.funds < baseline * TOLERANCE) {
         fail(
           `${periodLabel(closed)} was due ${closedDue} (${daysPast}d ago) and has **${row.funds}** filers ` +
           `against ${baseline} the prior quarter — a drop of ${(100 - (row.funds / baseline) * 100).toFixed(0)}%. ` +
@@ -200,12 +206,32 @@ if (mf) {
   //    world — those are quarantined and excluded from the fold, which is the
   //    system working. Alerting on every one of them would teach everybody to
   //    ignore the alert, and this is the only watchdog there is.
-  const NOTE_ALARM = 25;
-  if (Array.isArray(mf.notes) && mf.notes.length) {
-    if (mf.notes.length >= NOTE_ALARM) {
-      fail(`The last ingest recorded **${mf.notes.length}** problems, which is more than routine:\n\n${mf.notes.slice(0, 20).map((n) => `- \`${n}\``).join("\n")}`);
+  //    A RATE, and graded against the size of the run that produced it. The first
+  //    version of this threshold was an absolute 25, which the very first
+  //    universe-scale run tripped: 61 filings that do not sum to their own cover
+  //    page, out of ~1,300 fund-quarters — 4.7%, and every one of them correctly
+  //    quarantined and kept out of the fold. That is the world being messy, not
+  //    the pipeline being broken, and it would have fired every day for ever.
+  const NOTE_ALARM_RATE = 0.15;
+  const noteCount = Number(mf.notesTotal) || (Array.isArray(mf.notes) ? mf.notes.length : 0);
+  const noteOf = Number(mf.notesOf) || 0;
+  if (noteCount) {
+    const rate = noteOf > 0 ? noteCount / noteOf : null;
+    const shown = mf.notes?.slice(0, 15).map((n) => `- \`${n}\``).join("\n") ?? "";
+    if (rate != null && rate >= NOTE_ALARM_RATE) {
+      fail(
+        `The last ingest could not reconcile **${noteCount} of ${noteOf}** filings it read ` +
+        `(${(rate * 100).toFixed(0)}%), which is well above the usual few per cent:\n\n${shown}`,
+      );
+    } else if (rate == null && noteCount >= 200) {
+      // No denominator published (an older build). Fall back to a number, but a
+      // high one, so it flags a real incident rather than an ordinary day.
+      fail(`The last ingest recorded **${noteCount}** problems and did not say how many filings it read:\n\n${shown}`);
     } else {
-      notes.push(`Last ingest recorded ${mf.notes.length} filing problem(s) — routine at this volume; they are quarantined, not published.`);
+      notes.push(
+        `Last ingest quarantined ${noteCount}${noteOf ? ` of ${noteOf}` : ""} filing(s)` +
+        `${rate != null ? ` (${(rate * 100).toFixed(1)}%)` : ""} — routine; they are withheld, not published wrong.`,
+      );
     }
   }
 

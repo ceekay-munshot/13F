@@ -490,6 +490,21 @@ describe("cache keys for shared files", () => {
     expect(manifest.notes).toHaveLength(51);
     expect(manifest.notes.at(-1)).toMatch(/150 more/);
   });
+
+  it("publishes the UNCAPPED count and what it was measured against", () => {
+    // Grading `notes.length` grades the cap, and grading a bare count treats a
+    // five-hundred-fund run like a thirteen-fund one. The first universe-scale
+    // run produced 61 unreconciled filings out of ~1,300 fund-quarters — 4.7%,
+    // every one correctly quarantined — and an absolute threshold of 25 turned
+    // that into a daily alert about the world being ordinarily messy.
+    const many = Array.from({ length: 200 }, (_, i) => `fund-${i}: quarantined`);
+    const { manifest } = mergeManifest(live, { ...incoming, notes: many, notesOf: 1300 }, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+    });
+    expect(manifest.notesTotal).toBe(200);
+    expect(manifest.notesOf).toBe(1300);
+  });
 });
 
 describe("mergeFilers", () => {

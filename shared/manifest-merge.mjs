@@ -150,6 +150,11 @@ export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {}
   const notes = [...(incoming?.notes ?? [])];
   merged.notes = notes.slice(0, 50);
   if (notes.length > 50) merged.notes.push(`…and ${notes.length - 50} more`);
+  // The uncapped count and what it was measured against. Grading `notes.length`
+  // grades the cap, and grading a bare count treats a five-hundred-fund run like
+  // a thirteen-fund one.
+  merged.notesTotal = notes.length;
+  merged.notesOf = Number(incoming?.notesOf) || 0;
 
   return { manifest: merged, changed: true, newPeriods };
 }
