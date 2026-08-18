@@ -31,7 +31,13 @@ they send to the SEC (the US financial regulator) every three months.
 
 ## Booked in
 
-- Nothing outstanding.
+- **Saturday 22 Aug 2026** — the "one big withdrawal, not 27 separate sales"
+  detector needs a second piece of evidence. Right now it compares two quarters
+  and spots that every holding moved by the same percentage. That is the right
+  answer for Cantillon — their own filing confirms it — but the check cannot
+  tell a real withdrawal apart from a fund simply changing how it splits its
+  holdings across two managers on the form. Both look identical to it. Nobody
+  needs to do anything; it is scheduled to run on its own.
 
 ### Done
 
