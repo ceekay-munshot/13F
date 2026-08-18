@@ -59,6 +59,7 @@ import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, SecBlockedError, padCik } from "./_sec-fetch.mjs";
 import { parseFormIdx } from "./_sec-parse.mjs";
 import { addDays, parseISO, toISO, currentPeriod } from "../shared/calendar.mjs";
+import { WATCHLIST_CIKS } from "../shared/watchlist.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -247,6 +248,8 @@ const plan = {
   /** And how many have been through — the number the dashboard reports. */
   filersIngested: 0,
   filersSelected: 0,
+  /** Watchlist funds this run moved to the front. */
+  prioritised: [],
   daysIncomplete: [],
   ciks: [],
 };
@@ -374,6 +377,37 @@ async function run() {
       }
     }
   };
+
+  // ---- THE CLIENT'S OWN FUNDS COME FIRST. ALWAYS. -------------------------
+  //
+  // Everything below this orders ten thousand strangers sensibly. None of that
+  // matters if the fourteen managers the dashboard is actually ABOUT are
+  // somewhere in the middle of it: the first backlog run reached 518 funds in
+  // EDGAR's publication order, none of them the client's, and somebody asked
+  // about Cantillon while its quarter sat unread.
+  //
+  // Taken from shared/watchlist.mjs on every run, so adding a fund there means
+  // the next run fetches it and removing one simply stops prioritising it — no
+  // pipeline change, no re-ingest, nothing to remember.
+  //
+  // ORDER, NOT SCOPE. This cannot make a run ingest a fund that has not filed:
+  // a CIK is only selectable if a daily index put it in `pending`. It is not a
+  // fallback and must never become one — see the `no-watchlist-fallback` guard.
+  const prioritised = [];
+  const wanted = new Set(WATCHLIST_CIKS.map((c) => padCik(c)));
+  for (const d of dates) {
+    for (const cik of state.days[d].pending) {
+      if (wanted.has(cik) && !picked.has(cik)) {
+        picked.add(cik);
+        prioritised.push(cik);
+      }
+    }
+  }
+  plan.prioritised = prioritised;
+  if (prioritised.length) {
+    note(`${prioritised.length} watchlist fund(s) moved to the front of this run: ${prioritised.join(",")}`);
+  }
+
   // Newest first for the reserved share, so today's filings never queue behind a
   // backlog; then oldest first with the remainder, so the backlog drains.
   take([...dates].reverse(), freshCap);
@@ -385,7 +419,7 @@ async function run() {
   note(
     `${plan.filersKnown} filer(s) published in the window, ${plan.filersPending} still awaiting ingest ` +
       `across ${plan.daysIncomplete.length} day(s); taking ${plan.filersSelected} this run ` +
-      `(cap ${MAX_FUNDS || "none"})`,
+      `(cap ${MAX_FUNDS || "none"}${prioritised.length ? `, ${prioritised.length} of them watchlist` : ""})`,
   );
 
   // The cursor we PROPOSE. The workflow commits it only after the publish has

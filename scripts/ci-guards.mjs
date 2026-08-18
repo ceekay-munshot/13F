@@ -441,6 +441,34 @@ function guardSameDayPublish() {
     if (!/out-state/.test(src) || !/pending/.test(src)) {
       fail(guard, d, "the planner no longer produces an ingest cursor. Without one a blocked or budgeted run silently drops the filers it did not reach.");
     }
+
+    // ----------------------------------------------------------------------
+    // PRIORITY IS NOT A FALLBACK, AND BOTH MUST STAY TRUE.
+    //
+    // The planner reads the client's watchlist to decide ORDER — those funds go
+    // to the front of every run, because they are what the dashboard is about
+    // and a client should never wait two days behind ten thousand strangers.
+    // That is the opposite of the fallback this guard exists to forbid, which
+    // substituted the watchlist for discovery and made a broken pipeline look
+    // healthy.
+    //
+    // The distinction is that priority can only REORDER `pending`, never add to
+    // it: a fund not in a daily index cannot be selected however favoured it is.
+    // So the guard checks both halves — that the planner still prioritises, and
+    // that it does so by filtering what discovery found rather than by seeding
+    // the selection from the list.
+    // ----------------------------------------------------------------------
+    if (!/WATCHLIST_CIKS/.test(src)) {
+      fail(guard, d, "the planner no longer reads the client watchlist, so their own funds are fetched in EDGAR's publication order like any other manager — during a season that is a two-day wait.");
+    }
+    // The property that keeps priority from becoming a fallback: the watchlist
+    // is used to FILTER what discovery already found. If the selection is ever
+    // seeded from the list itself, a run with no index data would still ingest
+    // the favourites and report a healthy-looking success.
+    const block = /THE CLIENT'S OWN FUNDS COME FIRST[\s\S]*?prioritised\.push/.exec(src)?.[0] ?? "";
+    if (block && !/state\.days\[d\]\.pending/.test(block)) {
+      fail(guard, d, "the watchlist selection no longer reads from the cursor's pending list. Priority may only reorder what a daily index actually produced — seeding from the list is the fallback this guard forbids.");
+    }
   }
 }
 

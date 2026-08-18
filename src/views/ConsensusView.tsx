@@ -450,7 +450,19 @@ export function ConsensusView({
   // "Has not filed" is a claim about the MANAGER. A fund we failed to fetch is
   // absent for a reason of our own, so it belongs in the failure sentence and
   // nowhere else — otherwise one fund produces two contradictory statements.
-  const notFiled = (funds ?? []).filter((f) => f.missing && !f.failed);
+  //
+  // THERE IS A THIRD ABSENCE, and it is the one that reached a client. A missing
+  // artifact was read as "not filed" whether or not the pipeline had got round to
+  // reading the quarter yet, so on 18 August the matrix announced that Nuveen had
+  // not filed for Q2 2026 — it filed on 11 August; we had ingested 528 of the
+  // 10,698 managers who had. The manifest's `known` count is the difference:
+  // while it exceeds what we hold, absence from our copy says nothing about the
+  // manager and the sentence has to say so.
+  const periodRow = mf.periods.find((p) => p.period === period);
+  const stillIngesting = (periodRow?.known ?? 0) > (periodRow?.funds ?? 0);
+  const absent = (funds ?? []).filter((f) => f.missing && !f.failed);
+  const notFiled = stillIngesting ? [] : absent;
+  const notRead = stillIngesting ? absent : [];
   const suppressed = (funds ?? []).filter((f) => f.suppressed);
 
   return (
@@ -461,10 +473,12 @@ export function ConsensusView({
           value={loading ? "…" : `${present.length} of ${funds?.length ?? 0}`}
           scope={
             failedFunds.length
-              ? `${failedFunds.length} could not be loaded${notFiled.length ? `, ${notFiled.length} not yet filed` : ""}`
-              : notFiled.length
-                ? `${notFiled.length} not yet filed`
-                : "All tracked funds"
+              ? `${failedFunds.length} could not be loaded${absent.length ? `, ${absent.length} absent` : ""}`
+              : notRead.length
+                ? `${notRead.length} filed but not read yet`
+                : notFiled.length
+                  ? `${notFiled.length} not yet filed`
+                  : "All tracked funds"
           }
         />
         <Kpi
@@ -582,10 +596,11 @@ export function ConsensusView({
             // funds than the column headers imply — the only one of the three
             // that makes the numbers themselves suspect, and the one that used
             // to live at the bottom of the page in the provenance card.
-            notFiled.length || suppressed.length || failedFunds.length ? (
+            notFiled.length || notRead.length || suppressed.length || failedFunds.length ? (
               <CaveatStrip>
                 {failedFunds.length > 0 && `${failedFunds.join(", ")} could not be loaded — every figure here is computed over the ${present.length} funds that did. Refresh to try again. `}
                 {notFiled.length > 0 && `${notFiled.map((f) => f.name).join(", ")} ${notFiled.length === 1 ? "has" : "have"} not filed for ${periodLabel(period)}. `}
+                {notRead.length > 0 && `${notRead.map((f) => f.name).join(", ")} ${notRead.length === 1 ? "has" : "have"} filed for ${periodLabel(period)} but ${notRead.length === 1 ? "is" : "are"} still queued to be read — the column fills in shortly, and ${notRead.length === 1 ? "it is" : "they are"} not counted in the consensus until then. `}
                 {suppressed.length > 0 && `${suppressed.map((f) => f.name).join(", ")} filed a structural change, so ${suppressed.length === 1 ? "its" : "their"} moves are excluded from group totals.`}
               </CaveatStrip>
             ) : undefined

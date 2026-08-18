@@ -1,62 +1,27 @@
 // src/lib/favourites.ts
 //
-// The managers this dashboard is actually about.
+// The user's chosen comparison set, on top of the client's list.
 //
-// WHY THIS LIVES IN THE FRONTEND
-// ------------------------------
-// The ingest also carries a watchlist, but that one only decides which filers
-// get a `watch` flag baked into meta/filers.json — changing it means a full
-// re-ingest before the change is visible. Since every filer in the universe is
-// stored with line items, the comparison set is purely a display decision, and
-// a display decision should not need a 30-minute pipeline run. Editing this
-// array and deploying is enough.
+// THE LIST ITSELF NOW LIVES IN shared/watchlist.mjs. It moved because the
+// pipeline needs it too: during a filing season the ingest works through ten
+// thousand managers a few hundred at a time, and the funds this dashboard is
+// about have to be at the FRONT of that queue rather than wherever EDGAR
+// happened to publish them. A frontend-only constant could not do that — the
+// client's own funds sat unread for two days while somebody asked about one.
 //
-// WHY CIKs AND NOT NAMES
-// ----------------------
-// Every CIK below was resolved against the live filer index and checked to be
-// the entity that actually files the 13F. Name matching is unreliable for this
-// asset class and quietly picks the wrong entity:
+// What stays here is the per-user layer: which of them this browser is showing,
+// and the add/remove that writes to localStorage.
 //
-//   "Pershing Sq" matches both Pershing Square Capital Management ($13.7B) and
-//                 PERSHING SQUARE HOLDCO ($0.6B)
-//   "TCI"         matches TCI Fund Management ($45.2B) and an unrelated
-//                 registered advisor called TCI Wealth Advisors ($1.9B)
-//   "Abrams"      matches Abrams Capital Management ($4.6B) and Abrams Bison
-//                 Investments ($2.3B)
-//
-// In each case the larger, well-known manager is the intended one, but that is
-// a judgement — so it is recorded here rather than re-derived from a substring
-// match at runtime.
+// NOTE THE ASYMMETRY, because it is easy to trip over. Editing the list in
+// shared/watchlist.mjs changes BOTH what the pipeline fetches first and what a
+// new visitor sees. Adding a fund through the UI changes only what THIS browser
+// shows — the pipeline cannot see localStorage, so a fund added that way is
+// ingested on the ordinary schedule like any other manager. If a fund should
+// always be fetched first, it belongs in shared/watchlist.mjs.
 
-export interface WatchFund {
-  cik: string;
-  /** Short label for matrix columns. Kept to 3 characters and unique. */
-  code: string;
-  /** Display name, shortened where the filed name is unwieldy. */
-  label: string;
-}
-
-/**
- * The client's comparison set, in the order they gave it.
- *
- * Order is preserved deliberately: it is their mental ranking, and sorting it
- * by size or alphabetically would quietly overrule that.
- */
-export const CLIENT_WATCHLIST: WatchFund[] = [
-  { cik: "0001067983", code: "BRK", label: "Berkshire Hathaway" },
-  { cik: "0001590531", code: "FOX", label: "Foxhaven" },
-  { cik: "0001061165", code: "LNP", label: "Lone Pine" },
-  { cik: "0001336528", code: "PSH", label: "Pershing Square" },
-  { cik: "0001960830", code: "SRG", label: "SurgoCap" },
-  { cik: "0001647251", code: "TCI", label: "TCI Fund Mgmt" },
-  { cik: "0001599383", code: "WND", label: "WindAcre" },
-  { cik: "0001768375", code: "ASP", label: "Aspex" },
-  { cik: "0001798849", code: "DUR", label: "Durable" },
-  { cik: "0001358706", code: "ABR", label: "Abrams Capital" },
-  { cik: "0001609098", code: "DAR", label: "Darsana" },
-  { cik: "0002087378", code: "AVY", label: "Avantyr" },
-  { cik: "0001279936", code: "CAN", label: "Cantillon" },
-];
+export type { WatchFund } from "../../shared/watchlist.mjs";
+export { CLIENT_WATCHLIST } from "../../shared/watchlist.mjs";
+import { CLIENT_WATCHLIST } from "../../shared/watchlist.mjs";
 
 const SEED = CLIENT_WATCHLIST.map((f) => f.cik);
 const KEY = "13f:favourites";
