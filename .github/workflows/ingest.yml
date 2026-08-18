@@ -205,6 +205,18 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '3'
+        # --out is a SCRATCH directory, not public/data.
+        #
+        # public/data is a committed tree: 2,399 artifacts for 397 funds across
+        # 74 quarters, last built on 2026-07-30. The ingest writes on top of it
+        # rather than replacing it, and the publisher walks whatever it finds —
+        # so pointing --out there uploaded fortnight-old copies over fresher ones
+        # in R2 and resurrected quarters the retention prune had removed, for any
+        # discovered manager that happened to be in the checkout. A clean
+        # directory holds only this run's work. (publish-day.mjs also refuses
+        # keys outside this run's quarters, so both halves have to fail before a
+        # stale file can escape.)
+        #
         # Two quarters, not eight: a delta needs the filed quarter and the one
         # before it. The budget is what keeps a season-sized backlog inside the
         # job timeout — the loop checks the clock between funds and stops clean,
@@ -215,7 +227,7 @@ jobs:
             --funds-file=.cache/ciks.txt \
             --budget-seconds=2400 \
             --out-completed=.cache/completed.txt \
-            --out=public/data | tee /tmp/ingest.log
+            --out=.build/data | tee /tmp/ingest.log
 
       # A run that finished nothing while work was waiting is not a quiet day —
       # it is the failure this whole file exists to make impossible. Say so loudly
@@ -256,7 +268,7 @@ jobs:
         # mark a filer done whose artifacts did not land. On a dispatch with an
         # explicit fund list there is no cursor to advance.
         run: |
-          ARGS="--dir=public/data --ciks-file=.cache/completed.txt --plan=.cache/plan.json"
+          ARGS="--dir=.build/data --ciks-file=.cache/completed.txt --plan=.cache/plan.json"
           if [ "${{ steps.plan.outputs.dispatch }}" != "true" ]; then
             ARGS="$ARGS --state=.cache/day-cursor.next.json"
           fi

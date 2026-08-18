@@ -192,8 +192,21 @@ if (mf) {
   }
 
   // 4. Quarantine and parse problems recorded by the last ingest.
+  //
+  //    A THRESHOLD, NOT A TRIPWIRE. This used to fire on a single note, which was
+  //    right when a run covered thirteen hand-picked, well-behaved managers. A run
+  //    now covers hundreds drawn from whoever filed, and a handful of filings that
+  //    do not reconcile against their own cover page is the ordinary state of the
+  //    world — those are quarantined and excluded from the fold, which is the
+  //    system working. Alerting on every one of them would teach everybody to
+  //    ignore the alert, and this is the only watchdog there is.
+  const NOTE_ALARM = 25;
   if (Array.isArray(mf.notes) && mf.notes.length) {
-    fail(`The last ingest recorded ${mf.notes.length} problem(s):\n\n${mf.notes.slice(0, 20).map((n) => `- \`${n}\``).join("\n")}`);
+    if (mf.notes.length >= NOTE_ALARM) {
+      fail(`The last ingest recorded **${mf.notes.length}** problems, which is more than routine:\n\n${mf.notes.slice(0, 20).map((n) => `- \`${n}\``).join("\n")}`);
+    } else {
+      notes.push(`Last ingest recorded ${mf.notes.length} filing problem(s) — routine at this volume; they are quarantined, not published.`);
+    }
   }
 
   // 5. The manifest must actually point at files that exist. A published
@@ -220,6 +233,20 @@ if (mf) {
     }
   }
 }
+
+// WRITE THE REPORT WHATEVER HAPPENS.
+//
+// The workflow reads /tmp/freshness.md to fill in the issue it opens. If this
+// script throws before writing it — a malformed manifest, an unreachable origin
+// — the human gets an issue whose entire body is "(no detail written)", which is
+// the least useful possible version of an alert.
+process.on("uncaughtException", (err) => {
+  try {
+    writeFileSync("/tmp/freshness.md", `## The freshness check itself failed\n\n\`${err.message}\`\n`);
+  } catch { /* nothing left to try */ }
+  console.error(err.stack || err.message);
+  process.exit(1);
+});
 
 const md = [
   problems.length ? `## ${problems.length} freshness problem(s)` : "## Freshness OK",

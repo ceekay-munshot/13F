@@ -57,6 +57,12 @@ export interface Manifest {
     knownAsOf?: string | null;
   }[];
   funds: Record<string, string>;
+  /**
+   * Cache keys for SHARED artifacts the same-day job rewrites in place, keyed by
+   * artifact path. Same mechanism as `funds`, one level up — see `get()`.
+   * Absent on manifests published before this existed; `buildId` is the fallback.
+   */
+  shared?: Record<string, string>;
   counts: { filers: number; filings: number; holdings: number };
   notes: string[];
 }
@@ -269,7 +275,21 @@ export function loadManifest(force = false): Promise<Manifest> {
 const memo = new Map<string, Promise<unknown>>();
 
 async function get<T>(path: string, mf: Manifest, cik?: string): Promise<T> {
-  const build = (cik && mf.funds[cik]) || mf.buildId;
+  // WHICH CACHE KEY THIS FILE IS ON.
+  //
+  //   funds[cik]    a fund the same-day job refreshed
+  //   shared[path]  a shared file it rewrote — the quarter feed, the filer index
+  //   buildId       everything else, i.e. whatever the universe run last built
+  //
+  // The middle one was missing, and its absence made a whole class of update
+  // invisible. Artifacts are published `max-age=31536000, immutable`, and the
+  // same-day job is structurally forbidden from bumping `buildId` (the merge
+  // rejects a publish that changes it, because moving the global key would bust
+  // the cache for 9,300 funds to publish an update to one). So the quarter's
+  // filings feed was rewritten in place at a URL that never changed: a visitor
+  // who had loaded the site once kept the year-old copy for a year, however many
+  // filings landed after it. First load looked perfect, which is why it survived.
+  const build = (cik && mf.funds[cik]) || mf.shared?.[path] || mf.buildId;
   const url = `${BASE}/${path}?b=${build}`;
   let p = memo.get(url) as Promise<T> | undefined;
   if (!p) {

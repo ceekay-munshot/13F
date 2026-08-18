@@ -5,7 +5,7 @@
 // from 9,268 funds to twelve. Every test here is a rehearsal of that failure.
 
 import { describe, it, expect } from "vitest";
-import { mergeManifest, mergeSummary, mergePeriodFilings, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
+import { mergeManifest, mergeSummary, mergePeriodFilings, mergeFilers, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
 
 /** Shaped like the real published manifest (checked against the live one). */
 const live = () => ({
@@ -172,10 +172,15 @@ describe("isPublishableDayKey — an allowlist, so a future shared index is excl
   });
 
   it("blocks every shared index it cannot merge", () => {
-    // meta/filers.json is the one that was clobbered.
-    expect(isPublishableDayKey("meta/filers.json")).toBe(false);
+    // meta/filers.json used to be here too, and blocking it was right while
+    // nothing could merge it — a few-hundred-fund run writing the file wholesale
+    // erases a 9,268-row search index. It is allowed now for the same reason the
+    // quarter feed is: mergeFilers exists, publish-day.mjs calls it, and CI fails
+    // if either of those stops being true. Without it a manager the same-day path
+    // discovered has artifacts nobody can navigate to.
     expect(isPublishableDayKey("meta/series.json")).toBe(false);
     expect(isPublishableDayKey("meta/periods.json")).toBe(false);
+    expect(isPublishableDayKey("period/2026-06-30/leaderboard.json")).toBe(false);
   });
 
   it("allows the quarter filing feed, which is merged rather than replaced", () => {
@@ -423,5 +428,123 @@ describe("mergeManifest — period totals from the merged feed", () => {
   it("works with no periodTotals at all — the old callers keep working", () => {
     const { manifest } = mergeManifest(live, incoming, { buildId: "def5678", ciks: ["0001067983"] });
     expect(manifest.periods.find((p) => p.period === "2026-06-30").filings).toBe(450);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE TWO SHARED FILES THE SAME-DAY JOB REWRITES IN PLACE.
+//
+// Both were invisible to anyone who had loaded the site before. Artifacts go out
+// `max-age=31536000, immutable` behind `?b={buildId}`, the same-day job may not
+// touch buildId, and neither of these files had a key of its own — so a merged
+// quarter feed and a merged filer index sat at URLs that never changed.
+// ---------------------------------------------------------------------------
+describe("cache keys for shared files", () => {
+  const live = {
+    buildId: "abc1234",
+    coverage: { from: "2025-06-30", to: "2026-06-30" },
+    periods: [{ period: "2026-06-30", label: "Q2 2026", deadline: "2026-08-14", filings: 13, funds: 13 }],
+    counts: { filers: 9268, filings: 42340, holdings: 32866 },
+    funds: {},
+  };
+  const incoming = { buildId: "def5678", periods: live.periods };
+
+  it("stamps a key for each shared file the run rewrote, and leaves buildId alone", () => {
+    const { manifest } = mergeManifest(live, incoming, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+      sharedKeys: ["period/2026-06-30/filings.json", "meta/filers.json"],
+    });
+    expect(manifest.shared["period/2026-06-30/filings.json"]).toBe("def5678");
+    expect(manifest.shared["meta/filers.json"]).toBe("def5678");
+    expect(manifest.buildId).toBe("abc1234");
+    expect(verifyMerge(live, manifest)).toEqual([]);
+  });
+
+  it("keeps keys from earlier runs for files this one did not touch", () => {
+    const withShared = { ...live, shared: { "meta/filers.json": "old0000" } };
+    const { manifest } = mergeManifest(withShared, incoming, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+      sharedKeys: ["period/2026-06-30/filings.json"],
+    });
+    expect(manifest.shared["meta/filers.json"]).toBe("old0000");
+  });
+
+  it("carries the ingest's problem notes into the published manifest", () => {
+    // They were dropped at the merge, which made the watchdog's "the last ingest
+    // recorded N problems" check permanently dead for the path that produces them.
+    const { manifest } = mergeManifest(live, { ...incoming, notes: ["0001234567: quarantined"] }, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+    });
+    expect(manifest.notes).toEqual(["0001234567: quarantined"]);
+  });
+
+  it("caps a very long note list rather than bloating the critical-path file", () => {
+    const many = Array.from({ length: 200 }, (_, i) => `fund-${i}: quarantined`);
+    const { manifest } = mergeManifest(live, { ...incoming, notes: many }, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+    });
+    expect(manifest.notes).toHaveLength(51);
+    expect(manifest.notes.at(-1)).toMatch(/150 more/);
+  });
+});
+
+describe("mergeFilers", () => {
+  const f = (cik, over = {}) => ({
+    cik, name: `FUND ${cik}`, code: null, state: "NY",
+    periods: 4, latestPeriod: "2026-03-31", latestValueUsd: 1e9, ...over,
+  });
+
+  it("adds a manager the universe build has never seen", () => {
+    // The whole point: a fund discovered by the same-day path had artifacts in
+    // the bucket and no row in the search index, so nobody could navigate to it.
+    const live = { kind: "filers", data: [f("0000000001")] };
+    const incoming = { kind: "filers", data: [f("0000000002", { latestPeriod: "2026-06-30" })] };
+    const out = mergeFilers(live, incoming, ["0000000002"]);
+    expect(out.data).toHaveLength(2);
+    expect(out.data.find((x) => x.cik === "0000000002").latestPeriod).toBe("2026-06-30");
+  });
+
+  it("moves an existing manager forward without losing what only the universe knows", () => {
+    // `watch` and `hasHoldings` come from the full data set; a two-quarter fetch
+    // has no opinion on them and must not erase them.
+    const live = { kind: "filers", data: [f("0000000001", { watch: true, hasHoldings: true })] };
+    const incoming = { kind: "filers", data: [f("0000000001", { latestPeriod: "2026-06-30", latestValueUsd: 2e9 })] };
+    const out = mergeFilers(live, incoming, ["0000000001"]);
+    expect(out.data[0]).toMatchObject({ watch: true, hasHoldings: true, latestPeriod: "2026-06-30", latestValueUsd: 2e9 });
+  });
+
+  it("carries every manager this run did not touch through untouched", () => {
+    // The 9,000-funds-to-8 rule, one file over.
+    const live = { kind: "filers", data: [f("0000000001"), f("0000000003"), f("0000000004")] };
+    const incoming = { kind: "filers", data: [f("0000000002", { latestPeriod: "2026-06-30" })] };
+    const out = mergeFilers(live, incoming, ["0000000002"]);
+    expect(out.data.map((x) => x.cik).sort()).toEqual(["0000000001", "0000000002", "0000000003", "0000000004"]);
+  });
+
+  it("ignores incoming rows for CIKs the run was not asked about", () => {
+    const live = { kind: "filers", data: [f("0000000001", { latestValueUsd: 1 })] };
+    const incoming = { kind: "filers", data: [f("0000000001", { latestValueUsd: 999 })] };
+    const out = mergeFilers(live, incoming, ["0000000002"]);
+    expect(out.data[0].latestValueUsd).toBe(1);
+  });
+
+  it("refuses an empty incoming index", () => {
+    expect(() => mergeFilers({ data: [f("0000000001")] }, { data: [] }, ["0000000001"])).toThrow(/no rows/);
+  });
+});
+
+describe("the same-day allowlist", () => {
+  it("permits the fund search index, because something merges it", () => {
+    expect(isPublishableDayKey("meta/filers.json")).toBe(true);
+  });
+
+  it("still refuses every other shared index", () => {
+    expect(isPublishableDayKey("meta/series.json")).toBe(false);
+    expect(isPublishableDayKey("meta/periods.json")).toBe(false);
+    expect(isPublishableDayKey("period/2026-06-30/leaderboard.json")).toBe(false);
   });
 });

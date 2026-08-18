@@ -303,9 +303,34 @@ function guardSameDayPublish() {
     if (!/return false;\s*\/\/ meta\/\*/.test(src) && !/isPublishableDayKey/.test(src)) {
       fail(guard, mm, "isPublishableDayKey is missing — the same-day publisher has no allowlist.");
     }
-    for (const shared of ["meta/filers.json", "meta/series.json", "meta/"]) {
-      if (new RegExp(`startsWith\\("${shared.replace("/", "\\/")}`).test(src)) {
-        fail(guard, mm, `the allowlist appears to permit ${shared}, which is a shared index.`);
+    // Shared indexes may not be permitted by a bare prefix test.
+    //
+    // This used to look only for `startsWith("meta/...")`, so widening the
+    // allowlist with a regex instead walked straight past it — the guard passing
+    // on a technicality is the exact failure its sibling below was written to
+    // stop. The rule is now stated over the ALLOWLIST FUNCTION's body, whatever
+    // shape the test takes.
+    // Backslashes stripped so a regex literal reads the same as a string: the
+    // allowlist writes `/^meta\/filers\.json$/`, and a plain includes() for
+    // "meta/filers.json" walks right past it — which is how the previous version
+    // of this guard was defeated by the very change it was meant to gate.
+    const fn = (/export function isPublishableDayKey[\s\S]*?\n\}/.exec(src)?.[0] ?? src).replace(/\\/g, "");
+    for (const shared of ["meta/series.json", "meta/periods.json"]) {
+      if (fn.includes(shared)) {
+        fail(guard, mm, `the allowlist permits ${shared}, which is a shared index with no merge behind it.`);
+      }
+    }
+    // meta/filers.json IS permitted — it has to be, or a manager the same-day
+    // path discovered is unsearchable — but ONLY while something merges it.
+    // Same conditional rule as the period feed: check the condition rather than
+    // trusting that whoever widened the allowlist also wrote the merge.
+    if (fn.includes("meta/filers.json")) {
+      if (!/export function mergeFilers\s*\(/.test(src)) {
+        fail(guard, mm, "the allowlist permits meta/filers.json but there is no mergeFilers to rebuild it — the same-day job would overwrite the whole universe's search index with its own few hundred rows.");
+      }
+      const pub = join(ROOT, "scripts/publish-day.mjs");
+      if (existsSync(pub) && !/mergeFilers\(/.test(readFileSync(pub, "utf8"))) {
+        fail(guard, pub, "meta/filers.json is allowed but publish-day.mjs never calls mergeFilers — it would replace the shared search index.");
       }
     }
 
@@ -323,7 +348,7 @@ function guardSameDayPublish() {
     // ----------------------------------------------------------------------
     const allowsPeriod = /period\\\//.test(src) && /return true/.test(src);
     if (allowsPeriod) {
-      if (!/export function mergePeriodFilings/.test(src)) {
+      if (!/export function mergePeriodFilings\s*\(/.test(src)) {
         fail(guard, mm, "the allowlist permits a period/ key but there is no mergePeriodFilings to rebuild it.");
       }
       const pub = join(ROOT, "scripts/publish-day.mjs");

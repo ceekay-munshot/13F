@@ -45,7 +45,10 @@ export const FEED_ROWS = 2000;
 /**
  * @param {object} live      the manifest currently published (authoritative)
  * @param {object} incoming  the manifest the same-day run just built locally
- * @param {{ buildId: string, ciks: string[], periodTotals?: Record<string, {filings?: number, funds?: number, known?: number, knownAsOf?: string|null}> }} opts
+ * @param {{ buildId: string, ciks: string[], periodTotals?: Record<string, {filings?: number, funds?: number, known?: number, knownAsOf?: string|null}>, sharedKeys?: string[] }} opts
+ *   `sharedKeys` are the shared artifact paths this run rewrote — the quarter
+ *   feeds and the filer index. They get their own cache key so a returning
+ *   visitor actually sees them; see the note beside `merged.shared` below.
  *   `periodTotals` is the ACCUMULATED truth for a period, taken from the merged
  *   filings feed rather than from this run's sample. Without it a backfill run
  *   that publishes 450 filings into a quarter that already held 450 reports
@@ -54,7 +57,7 @@ export const FEED_ROWS = 2000;
  *   also the number the staleness watchdog grades, so it would alert for ever.
  * @returns {{ manifest: object, changed: boolean, newPeriods: string[] }}
  */
-export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {} }) {
+export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {}, sharedKeys = [] }) {
   if (!live || typeof live !== "object" || !Array.isArray(live.periods)) {
     throw new Error("live manifest is missing or malformed — refusing to merge");
   }
@@ -68,10 +71,27 @@ export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {}
     // Deliberately NOT incoming.buildId. See the header.
     buildId: live.buildId,
     funds: { ...(live.funds ?? {}) },
+    shared: { ...(live.shared ?? {}) },
   };
 
   // Per-fund cache keys for exactly the funds this run refreshed.
   for (const cik of ciks) merged.funds[cik] = buildId;
+
+  // ---- and cache keys for the SHARED files this run rewrote ---------------
+  //
+  // Without these, everything below was invisible to anyone who had loaded the
+  // site before. Artifacts are published `max-age=31536000, immutable` and the
+  // browser is handed `?b={buildId}` — but the same-day job is forbidden from
+  // touching the global buildId (verifyMerge rejects the publish if it changes,
+  // because bumping it would bust the cache for all 9,300 funds to publish an
+  // update to one). A fund gets a fresh key from `funds[cik]`. The quarter's
+  // filings feed and the filer search index had no equivalent, so they were
+  // rewritten in place at a URL that never changed and pinned in every returning
+  // visitor's cache for a year.
+  //
+  // Same mechanism as `funds`, one level up: rewriting one shared file
+  // invalidates that one shared file.
+  for (const key of sharedKeys) merged.shared[key] = buildId;
 
   // Periods: union, taking the LARGER count on any period both know about. A
   // same-day run reports a handful of filings for a quarter the universe has
@@ -116,6 +136,20 @@ export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {}
   };
 
   merged.generatedAt = incoming?.generatedAt ?? live.generatedAt;
+
+  // CARRY THE INGEST'S PROBLEMS THROUGH. They were being dropped on the floor.
+  //
+  // `merged` spreads from `live`, and nothing ever read `incoming.notes`, so
+  // every quarantined filing and every fund the same-day run failed on vanished
+  // at the merge. The staleness watchdog's "the last ingest recorded N problems"
+  // check reads exactly this field, and the universe run publishes `notes: []`,
+  // so that check was permanently dead for the path that generates most of them.
+  //
+  // Capped, because a run over ten thousand managers can produce a long list and
+  // the manifest is on the critical path for every page load.
+  const notes = [...(incoming?.notes ?? [])];
+  merged.notes = notes.slice(0, 50);
+  if (notes.length > 50) merged.notes.push(`…and ${notes.length - 50} more`);
 
   return { manifest: merged, changed: true, newPeriods };
 }
@@ -252,9 +286,18 @@ export function mergePeriodFilings(live, incoming, ciks, { cap = FEED_ROWS, know
 
   // The safety property is checked on the FULL merge, before any display cap:
   // no manager this run does not speak for may lose a row.
-  const foreignAfter = all.filter((r) => !owned.has(r.cik)).length;
-  if (foreignAfter < foreign.length) {
-    throw new Error(`merge would drop ${foreign.length - foreignAfter} filings belonging to other managers`);
+  //
+  // Checked by ACCESSION, not by counting `all`'s foreign rows. Counting them
+  // compares an array with itself — `all` is built as `[...foreign, ...mine]`
+  // and `mine` only ever holds owned CIKs, so `foreignAfter < foreign.length`
+  // was arithmetically impossible and the guard could never fire. Identity
+  // survival is the property that actually matters, and it catches the class of
+  // edit that would break it: a changed key, a dedupe that collides two
+  // managers' rows, a filter that reaches too far.
+  const survived = new Set(all.map((r) => r.accession));
+  const lost = foreign.filter((r) => !survived.has(r.accession));
+  if (lost.length) {
+    throw new Error(`merge would drop ${lost.length} filing(s) belonging to other managers`);
   }
 
   // THE FEED IS A DISPLAY ARTIFACT AND IS CAPPED; THE COUNT IS NOT.
@@ -302,9 +345,59 @@ export function mergePeriodFilings(live, incoming, ciks, { cap = FEED_ROWS, know
  * and nothing else" — a new shared index added later is excluded by default
  * rather than included by omission.
  */
+/**
+ * Merge this run's filers into the published fund SEARCH INDEX.
+ *
+ * WHY THE SAME-DAY JOB HAS TO WRITE THIS AT ALL
+ * ---------------------------------------------
+ * `meta/filers.json` is what the fund search box reads and what the dashboard
+ * picks its opening fund from. It was written only by the monthly universe run,
+ * so a manager the same-day path discovered had artifacts in the bucket and no
+ * row in the index: invisible to search, and — because `defaultFilerCik` opens
+ * on the largest filer whose `latestPeriod` reaches the current quarter — the
+ * dashboard fell through to whatever happened to be first in the list. On
+ * 2026-08-18 the live index had ZERO rows reaching 2026-06-30, so a dashboard
+ * whose newest quarter was Q2 opened on a fund whose newest data was Q4 2025.
+ *
+ * It is a SHARED index, which is why it was excluded in the first place — this
+ * job sees a few hundred managers and the universe holds 9,268, so writing it
+ * wholesale is the 9,000-funds-to-8 failure again. So it is merged, on exactly
+ * the terms the quarter feed already is: rows for managers this run did not
+ * touch are carried through untouched, the result may not shrink, and the
+ * allowlist only permits the key because this function exists (enforced by
+ * `npm run guard`).
+ */
+export function mergeFilers(live, incoming, ciks) {
+  const liveRows = Array.isArray(live?.data) ? live.data : [];
+  const inRows = Array.isArray(incoming?.data) ? incoming.data : [];
+  if (!inRows.length) throw new Error("incoming filer index has no rows — refusing to publish it");
+
+  const owned = new Set(ciks);
+  const byCik = new Map(liveRows.map((f) => [f.cik, f]));
+
+  for (const f of inRows) {
+    if (!owned.has(f.cik)) continue; // this run only speaks for what it fetched
+    const prev = byCik.get(f.cik);
+    // The universe build knows things a two-quarter fetch does not — whether a
+    // manager is on the watchlist, whether it has stored line items. Keep those
+    // and let the fresher run supply what it actually measured.
+    byCik.set(f.cik, prev ? { ...prev, ...f } : f);
+  }
+
+  const rows = [...byCik.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  if (rows.length < liveRows.length) {
+    throw new Error(`merged filer index would shrink from ${liveRows.length} to ${rows.length}`);
+  }
+  return { ...incoming, data: rows };
+}
+
 export function isPublishableDayKey(key) {
   if (key === "manifest.json") return true;      // merged, never replaced
   if (key.startsWith("fund/")) return true;      // this run's own funds
+  // The fund search index — MERGED row-by-row by mergeFilers, never replaced.
+  // Without it a manager this run discovered has artifacts nobody can navigate
+  // to, which is indistinguishable from not having ingested it at all.
+  if (/^meta\/filers\.json$/.test(key)) return true;
   // The quarter's filings feed — MERGED row-by-row, never replaced, and only
   // for the CIKs this run speaks for. Without it the Filings view still reports
   // the universe run's count, which during filing season is the one number on

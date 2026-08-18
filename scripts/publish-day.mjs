@@ -30,7 +30,7 @@
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, relative, sep, dirname } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
-import { mergeManifest, mergeSummary, mergePeriodFilings, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
+import { mergeManifest, mergeSummary, mergePeriodFilings, mergeFilers, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
 import { signRequest } from "./_sigv4.mjs";
 
 const args = Object.fromEntries(
@@ -65,7 +65,12 @@ const PUSH_STATE = str(args.state);
 const CIKS = (() => {
   const path = str(args["ciks-file"]);
   const raw = path ? (existsSync(path) ? readFileSync(path, "utf8") : "") : String(args.ciks || "");
-  return [...new Set(raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean))];
+  // Zero-padded to ten, because that is the form every artifact path uses. A
+  // hand-dispatched run that typed `1067983` matched no `fund/0001067983/` key
+  // and silently published nothing for it.
+  return [...new Set(
+    raw.split(/[,\s]+/).map((c) => c.replace(/\D/g, "")).filter(Boolean).map((c) => c.padStart(10, "0")),
+  )];
 })();
 
 /** Coverage measured from EDGAR's daily indexes, written by the planner. */
@@ -227,16 +232,39 @@ async function readJson(key, attempts = 3) {
     const m = /^period\/(\d{4}-\d{2}-\d{2})\/filings\.json$/.exec(k);
     return Boolean(m) && freshPeriods.has(m[1]);
   };
-  // Two shapes, and the distinction matters. A fund/ key is OWNED by this run
-  // and overwritten outright; a period feed is SHARED and merged row-by-row
-  // below. Both must clear isPublishableDayKey first — that allowlist is the
-  // thing standing between this job and another shared index nobody remembered
-  // was shared.
+  /**
+   * A fund key this run actually WROTE — not merely one whose CIK it was given.
+   *
+   * The output tree is a working directory the ingest writes into, and if that
+   * directory is a checkout of `public/data` it already holds 2,399 committed
+   * artifacts for 397 funds and 74 quarters, last built 2026-07-30. Filtering on
+   * the CIK alone happily uploaded every one of those for any discovered manager,
+   * overwriting fresher R2 copies with a fortnight-old build and resurrecting
+   * quarters the retention prune had deliberately removed. The period feed got
+   * this guard when the same problem bit it (`freshPeriods`); the fund branch
+   * kept a comment claiming it was owned by the run, which was not true.
+   *
+   * The workflow now also points --out at a scratch directory, so the tree holds
+   * only this run's work. Both together: a wrong --out cannot leak stale files,
+   * and a stale file cannot be published even if one appears.
+   */
+  const isFresh = (k) => {
+    const m = /^fund\/(\d{10})\/(?:(\d{4}-\d{2}-\d{2})(?:\.p\d+)?\.json|summary\.json)$/.exec(k);
+    if (!m) return false;
+    if (!wanted.has(m[1])) return false;
+    return m[2] ? freshPeriods.has(m[2]) : true; // summary.json is always this run's
+  };
+
+  // Three shapes now, and the distinctions matter. A fund/ key is written by this
+  // run and overwritten outright; the period feed and the filer index are SHARED
+  // and merged row-by-row below. All must clear isPublishableDayKey first — that
+  // allowlist is the thing standing between this job and another shared index
+  // nobody remembered was shared.
   const uploads = all.filter(
     (k) =>
       isPublishableDayKey(k) &&
       k !== "manifest.json" &&
-      (wanted.has(fundKeyCik(k)) || isFeed(k)),
+      (isFresh(k) || isFeed(k) || k === "meta/filers.json"),
   );
   const uploadSet = new Set(uploads);
   const skipped = all.filter((k) => !uploadSet.has(k) && k !== "manifest.json");
@@ -297,7 +325,7 @@ async function readJson(key, attempts = 3) {
   // because that is the number it grades.
   const isFeedKey = (k) => /^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(k);
   const feedKeys = uploads.filter(isFeedKey);
-  const fundKeys = uploads.filter((k) => !isFeedKey(k));
+  const fundKeys = uploads.filter((k) => !isFeedKey(k) && k !== "meta/filers.json");
   /** key -> the exact bytes to upload */
   const feedBodies = new Map();
   /** period -> { filings, funds, known, knownAsOf }, for the manifest */
@@ -376,11 +404,104 @@ async function readJson(key, attempts = 3) {
     };
   }
 
+  // --- merge every fund summary, ALSO before anything is written -------------
+  //
+  // A fund's summary carries the series the Fund view charts, and this run
+  // fetched two quarters where the universe may hold four. Writing the shallow
+  // one would erase two years of bars, so read what is published and union the
+  // two: nothing this job writes may shrink.
+  //
+  // WHY IT HAPPENS HERE AND NOT DURING THE UPLOAD. It used to run inside the
+  // upload workers, where a single unreadable summary called fail() — an
+  // immediate process.exit(1) with seven sibling PUTs in flight, the feeds not
+  // yet written, the manifest not written and the cursor not advanced. That
+  // leaves artifacts in R2 with nothing pointing at them, which is the exact
+  // shape commit 9ab364e fixed for the quarter feed with the rule "fail closed
+  // on the FILE, not on the run". With thirteen funds a run it was a remote
+  // risk; over eight hundred it is a matter of time.
+  //
+  // So a fund whose summary cannot be merged is DROPPED FROM THE RUN — its
+  // artifacts are not uploaded, it is not counted, and its cursor entry is not
+  // advanced, so the next run simply fetches it again. Nothing is lost and
+  // nothing half-lands.
+  const summaryBodies = new Map();
+  const droppedFunds = new Set();
+  {
+    const summaryKeys = fundKeys.filter((k) => k.endsWith("/summary.json"));
+    const queue = [...summaryKeys];
+    await Promise.all(
+      Array.from({ length: Math.max(1, Math.min(8, queue.length)) }, async () => {
+        while (queue.length) {
+          const k = queue.shift();
+          const cik = fundKeyCik(k);
+          try {
+            const liveSummary = await readJson(k);
+            const mineSummary = JSON.parse(readFileSync(join(DIR, k), "utf8"));
+            summaryBodies.set(
+              k,
+              Buffer.from(JSON.stringify(liveSummary ? mergeSummary(liveSummary, mineSummary) : mineSummary)),
+            );
+          } catch (err) {
+            console.log(`::warning::dropping ${cik} from this run — its published summary could not be merged (${err.message}). The next run will fetch it again.`);
+            if (cik) droppedFunds.add(cik);
+          }
+        }
+      }),
+    );
+  }
+
+  const publishing = CIKS.filter((c) => !droppedFunds.has(c));
+  if (!publishing.length) fail("every fund in this run failed its summary merge — refusing to publish a manifest that claims them.");
+  const keepFund = (k) => {
+    const c = fundKeyCik(k);
+    return !c || !droppedFunds.has(c);
+  };
+
+  // --- merge the fund SEARCH INDEX -------------------------------------------
+  //
+  // `meta/filers.json` is what the search box reads and what the dashboard picks
+  // its opening fund from. It was written only by the monthly universe run, so a
+  // manager this path discovered had artifacts in the bucket and no row in the
+  // index: unfindable, and — because the dashboard opens on the largest filer
+  // whose newest period reaches the current quarter — it fell through to
+  // whichever fund happened to be first. Verified live on 2026-08-18: the
+  // published index had ZERO rows reaching Q2 2026 while the manifest's newest
+  // quarter WAS Q2 2026.
+  //
+  // Shared, so merged on the same terms as the feed: this run speaks only for
+  // its own CIKs and every other row is carried through untouched.
+  let filersBody = null;
+  const FILERS_KEY = "meta/filers.json";
+  if (uploads.includes(FILERS_KEY)) {
+    try {
+      const liveFilers = await readJson(FILERS_KEY);
+      const mineFilers = JSON.parse(readFileSync(join(DIR, FILERS_KEY), "utf8"));
+      filersBody = Buffer.from(
+        JSON.stringify(liveFilers ? mergeFilers(liveFilers, mineFilers, publishing) : mineFilers),
+      );
+    } catch (err) {
+      // The index is an aid to navigation, not the data. A run that cannot merge
+      // it should still publish the holdings it fetched — and say plainly that
+      // those managers will not be searchable until the next run repairs it.
+      console.log(`::warning::could not merge ${FILERS_KEY} (${err.message}); this run's funds will not appear in fund search until a later run repairs it.`);
+    }
+  }
+
   // --- merge the manifest ----------------------------------------------------
   const buildId = incoming.buildId;
   let merged;
   try {
-    ({ manifest: merged } = mergeManifest(live, incoming, { buildId, ciks: CIKS, periodTotals }));
+    ({ manifest: merged } = mergeManifest(live, incoming, {
+      buildId,
+      // Only funds whose artifacts are actually going up get a cache key. A
+      // stamp on a fund nothing was written for moves its URL to a build that
+      // does not exist for it and grows the manifest on the critical path.
+      ciks: publishing,
+      periodTotals,
+      // Rewriting a shared file has to move its cache key too, or it stays
+      // pinned in every returning visitor's cache for a year.
+      sharedKeys: [...feedBodies.keys(), ...(filersBody ? [FILERS_KEY] : [])],
+    }));
   } catch (err) {
     fail(`merge refused: ${err.message}`);
   }
@@ -419,32 +540,16 @@ async function readJson(key, attempts = 3) {
   // The manifest is the index; publishing it before the files it points at would
   // advertise artifacts that 404. Last, always.
   let done = 0;
-  let mergedSummaries = 0;
-  const total = fundKeys.length + feedBodies.size;
-  const queue = [...fundKeys];
+  const toUpload = fundKeys.filter(keepFund);
+  const total = toUpload.length + feedBodies.size + (filersBody ? 1 : 0);
+  const queue = [...toUpload];
   await Promise.all(
     Array.from({ length: Math.max(1, Math.min(8, queue.length)) }, async () => {
       while (queue.length) {
         const k = queue.shift();
-        let body = readFileSync(join(DIR, k));
-
-        // A fund's summary carries the series the Fund view charts, and this
-        // run fetched two quarters where the universe may hold four. Writing
-        // the shallow one would erase two years of bars, so read what is
-        // published and union the two. Same rule as the manifest, one level
-        // down: nothing this job writes may shrink.
-        if (k.endsWith("/summary.json")) {
-          try {
-            const liveSummary = await readJson(k);
-            if (liveSummary) {
-              body = Buffer.from(JSON.stringify(mergeSummary(liveSummary, JSON.parse(body.toString("utf8")))));
-              mergedSummaries++;
-            }
-          } catch (err) {
-            fail(`could not merge ${k} (${err.message}). Refusing to truncate a fund's history.`);
-          }
-        }
-
+        // Summaries were merged in the preflight above; everything else goes up
+        // exactly as the ingest wrote it.
+        const body = summaryBodies.get(k) ?? readFileSync(join(DIR, k));
         await sendSigned("PUT", k, body);
         if (++done % 100 === 0 || done === total) console.log(`  uploaded ${done}/${total}`);
       }
@@ -454,8 +559,14 @@ async function readJson(key, attempts = 3) {
     await sendSigned("PUT", k, body);
     if (++done % 100 === 0 || done === total) console.log(`  uploaded ${done}/${total}`);
   }
+  if (filersBody) {
+    await sendSigned("PUT", FILERS_KEY, filersBody);
+    if (++done % 100 === 0 || done === total) console.log(`  uploaded ${done}/${total}`);
+  }
 
-  if (mergedSummaries) console.log(`  ${mergedSummaries} fund summar${mergedSummaries === 1 ? "y" : "ies"} merged with published history`);
+  if (summaryBodies.size) console.log(`  ${summaryBodies.size} fund summar${summaryBodies.size === 1 ? "y" : "ies"} merged with published history`);
+  if (filersBody) console.log(`  fund search index merged (${publishing.length} manager(s) refreshed)`);
+  if (droppedFunds.size) console.log(`  ${droppedFunds.size} fund(s) dropped from this run and left for the next: ${[...droppedFunds].slice(0, 5).join(", ")}`);
   if (mergedFeeds) console.log(`  ${mergedFeeds} quarter filing feed(s) merged with published rows`);
   if (repairedFeeds.length) console.log(`  ${repairedFeeds.length} feed(s) rewritten whole (unreadable, but no rows lost): ${repairedFeeds.join(", ")}`);
   if (skippedFeeds.length) console.log(`  ${skippedFeeds.length} feed(s) left untouched: ${skippedFeeds.join(", ")}`);
@@ -472,6 +583,16 @@ async function readJson(key, attempts = 3) {
   if (PUSH_STATE) {
     if (!existsSync(PUSH_STATE)) {
       console.log(`::warning::${PUSH_STATE} does not exist — the cursor was not advanced, so the next run re-offers these filers.`);
+    } else if (droppedFunds.size) {
+      // The cursor was advanced for every fund the ingest finished, including
+      // the ones dropped here. Rather than teach this script the cursor's shape
+      // to un-advance a handful, leave it where it was: the next run re-offers
+      // this whole batch and re-fetching a few hundred funds we already have is
+      // idempotent. Wasting one run beats losing a manager.
+      console.log(
+        `::warning::${droppedFunds.size} fund(s) were dropped from this publish, so the cursor is left ` +
+        `where it was and the next run repeats this batch. Nothing is lost.`,
+      );
     } else {
       await sendSigned("PUT", STATE_KEY, readFileSync(PUSH_STATE));
       console.log(`ingest cursor advanced (${STATE_KEY}).`);
