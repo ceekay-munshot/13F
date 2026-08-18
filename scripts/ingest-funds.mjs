@@ -494,7 +494,17 @@ await runJob(async () => {
           .sort((a, b) => (b.valuePrior ?? 0) - (a.valuePrior ?? 0));
 
         const acts = summarizeActions(changes);
-        const turnover = priorState === PRIOR_STATE.OK
+        // NO TURNOVER FOR A QUARTER WHOSE DELTAS ARE WITHHELD.
+        //
+        // Turnover is a delta measure — (entries + exits) over positions, and
+        // traded value over average book — so a quarter where per-row changes are
+        // too misleading to publish cannot have a meaningful one either. It was
+        // computed anyway: Cantillon's Q2-2026 card reported "TURNOVER 33.8%" a
+        // few inches above an Activity widget refusing to draw the same
+        // comparison, and a value turnover of 183% derived entirely from the one
+        // redemption. Withheld, not zeroed — zero would be a confident wrong
+        // answer where a dash is the true one.
+        const turnover = priorState === PRIOR_STATE.OK && !suppressed
           ? computeTurnover(changes, { holdings: cur.holdings, value_long_usd: cur.value_long_usd },
               { holdings: prior.holdings, value_long_usd: prior.value_long_usd })
           : { turnover_position_pct: null, turnover_value_pct: null };

@@ -178,3 +178,9 @@ Worth recording, because each was invisible in unit tests and obvious on screen:
 | `parseFormIdx` reading column offsets from "the line above the rule" | EDGAR wraps that header onto two lines, so the offsets were never found and the parser returned **zero rows** for every live file. Every fixture used a tidy one-line header |
 | A quarantined quarter left `summary: null` but `noticeOnly: false` | Fell through the notice guard and threw on `summary.value_long_usd`, ending the whole run and publishing nothing. Caught live on Adelante Capital's Q2-2026 filing |
 | "Outstanding = every filer minus the ones we hold" | Told a client 9,255 managers had not filed, on a day when they had and we simply had not read them yet |
+| The same list is capped at 2,000 rows by its producer | So even a fully-ingested quarter named ~7,300 managers as "no filing" — the cap was mistaken for the quarter |
+| Reported total read from `foldable[last]` | The submissions API returns filings newest-first, so it took the ORIGINAL of every amended period. Berkshire's Q1-25 showed the superseded $258.70bn beside holdings totalling $259.81bn |
+| `showRaw` initialised `true` and never set `false` | The suppression explanation was unreachable, the branch that did render said "Deltas hidden" while they were on screen, and the Position changes card called a manager's eighth quarter its first |
+| `suppressAll` nulled only the percentage deltas | The "Δ Value" toggle ranked by `d_value` and laid one redemption out as 27 separate sells — the exact reading suppression exists to prevent |
+| Turnover computed for a suppressed quarter | "TURNOVER 33.8%" inches above an Activity widget refusing to draw the same comparison |
+| Shared artifacts rewritten in place behind an immutable year-long cache | The merged feed and the filer index reached R2 and never reached a returning browser |

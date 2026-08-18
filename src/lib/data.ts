@@ -365,6 +365,7 @@ const SERIES_FIELDS = [
   "n_new", "n_added", "n_trimmed", "n_exited", "turnover_position_pct",
   "priorState", "structuralEvent", "confidentialOmitted", "filingLagDays",
   "valueOptionsUsd", "positionsLong", "positionsOptions", "hasHoldings",
+  "deltasSuppressed",
 ] as const;
 
 interface SeriesRow { cik: string; name: string; state: string | null; hasHoldings: boolean; s: unknown[][] }
@@ -390,7 +391,17 @@ function expandSeries(tuple: unknown[]): FundSeriesPoint {
     label: `Q${q} ${period.slice(0, 4)}`,
     confidentialOmitted: o.confidentialOmitted === 1 || o.confidentialOmitted === true,
     hasHoldings: o.hasHoldings === 1 || o.hasHoldings === true,
-    deltasSuppressed: Boolean(o.structuralEvent),
+    // RE-DERIVED ONLY WHERE THE COMPACT FORMAT PREDATES THE FIELD.
+    //
+    // `Boolean(structuralEvent)` is not the rule the ingest applies: it suppresses
+    // for PRO_RATA_REDUCTION and UNIT_SCALE_CHANGE, and publishes a REVIEW-flagged
+    // quarter with its deltas intact. Re-deriving here made this path disagree
+    // with the fund's own summary.json about the same quarter, so which numbers a
+    // reader saw depended on which artifact happened to answer.
+    deltasSuppressed:
+      o.deltasSuppressed == null
+        ? Boolean(o.structuralEvent)
+        : o.deltasSuppressed === 1 || o.deltasSuppressed === true,
     pages: 0,
     acceptedAt: null,
   };

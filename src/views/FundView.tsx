@@ -17,6 +17,7 @@ import {
   loadFundSummary, loadFundPeriod, edgarUrl,
   type Manifest, type FundSummary, type FundPeriod, type Holding,
 } from "../lib/data";
+import { priorPeriod } from "../../shared/calendar.mjs";
 
 const GRID_WIDE: React.CSSProperties = {
   display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
@@ -211,17 +212,22 @@ export function FundView({
   const [valueView, setValueView] = useState<"Chart" | "Filings">("Chart");
   const [moverView, setMoverView] = useState<"Δ Weight" | "Δ Value">("Δ Weight");
   const [q, setQ] = useState("");
-  // Private use: show every number by default. The structural-event note still
-  // appears so the reader knows a -95.4% is one redemption rather than 27
-  // trades, but the figures themselves are never hidden behind a click.
-  const [showRaw, setShowRaw] = useState(true);
+  // There is no "show the raw deltas anyway" toggle any more, because there was
+  // never anything to show.
+  //
+  // It was `useState(true)` and the only `setShowRaw(false)` in the file sat
+  // inside a button that rendered only when showRaw was already false — so the
+  // flag could never change, `suppressed` was permanently false, and the branch
+  // that DID render read "Deltas hidden" while the deltas were on screen. And
+  // the toggle could not have worked regardless: the ingest nulls the withheld
+  // fields before publishing, so there is no raw number in the artifact to
+  // reveal. Suppression is decided once, at ingest, and this view states it.
 
   useEffect(() => {
     let cancelled = false;
     // Only blank on a FIRST load; a reload dims in place (see WidgetCard).
     setLoading((prev) => prev || !hasData.current);
     setErr(null);
-    setShowRaw(true);
     // Deliberately NOT setFp(null): clearing it here is what blanked the whole
     // fund page on every refresh. Stale-but-labelled beats a flash of skeleton.
 
@@ -358,7 +364,7 @@ export function FundView({
   }, [holdings, groupHolders]);
 
   const meta = fp?.meta;
-  const suppressed = Boolean(meta?.deltasSuppressed) && !showRaw;
+  const suppressed = Boolean(meta?.deltasSuppressed);
 
   /**
    * Names opened this quarter — the other half of the anchor.
@@ -481,9 +487,24 @@ export function FundView({
   const seriesDesc = useMemo(() => [...seriesAsc].reverse(), [seriesAsc]);
   const latestPoint = seriesDesc[0];
   const point = seriesAsc.find((s) => s.period === period);
+  /**
+   * The PRIOR QUARTER, not the previous row.
+   *
+   * The series only holds quarters we ingested, so the entry before the selected
+   * one can be two or six quarters back — and every KPI below labelled the
+   * difference "QoQ" regardless. That was survivable when the universe build was
+   * the only source and its coverage was contiguous; it is not while a quarter is
+   * being filled in over a couple of days, because a fund whose Q1 has landed and
+   * whose Q4 has not would have had its Q1 compared to Q3 and called
+   * quarter-on-quarter.
+   *
+   * Adjacency is checked against the calendar, so a gap shows a dash rather than
+   * a confident wrong comparison.
+   */
   const priorPoint = useMemo(() => {
     const i = seriesAsc.findIndex((s) => s.period === period);
-    return i > 0 ? seriesAsc[i - 1] : undefined;
+    const prev = i > 0 ? seriesAsc[i - 1] : undefined;
+    return prev && prev.period === priorPeriod(period) ? prev : undefined;
   }, [seriesAsc, period]);
   const series = seriesAsc;
 
@@ -515,27 +536,50 @@ export function FundView({
     );
   }
 
-  // Not filed for this quarter. A real, expected state — and the one that most
-  // of the universe is in for six weeks after every quarter closes. Say so, and
-  // offer the latest quarter this manager actually has.
+  /**
+   * No artifact for this quarter — but WHICH of the two reasons?
+   *
+   * "They have not filed" and "we have not read it yet" produce exactly the same
+   * absence, and only one of them is a statement about the manager. This screen
+   * asserted the first from the second and got it badly wrong: on 18 August 2026,
+   * four days after the Q2 deadline, the dashboard held 13 of the 10,698
+   * managers who had filed, so more than ten thousand fund pages said "has not
+   * filed for Q2 2026" about a manager whose filing was sitting on EDGAR. A
+   * client wrote in about one of them.
+   *
+   * The manifest now carries `known` — how many managers EDGAR has published for
+   * the quarter, counted from its daily indexes rather than from anything we
+   * hold. When that exceeds what we hold, the quarter is still being read and
+   * this page has no business making a claim about any particular manager.
+   */
+  const periodRow = mf.periods.find((p) => p.period === period);
+  const stillIngesting = (periodRow?.known ?? 0) > (periodRow?.funds ?? 0);
+
   if (!loading && summary && !point) {
     const latest = latestPoint;
+    const outstanding = (periodRow?.known ?? 0) - (periodRow?.funds ?? 0);
     return (
       <div style={{ ...GRID_WIDE, marginTop: 22 }}>
         <WidgetCard
           refreshing={refreshing}
           title={summary.name}
-          subtitle={`No 13F filing for ${periodLabel(period)}`}
+          subtitle={stillIngesting ? `${periodLabel(period)} is still being loaded` : `No 13F filing for ${periodLabel(period)}`}
           span={2}
           bodyMinHeight={220}
         >
           <EmptyState
             icon="◷"
-            message={`${summary.name} has not filed for ${periodLabel(period)}`}
+            message={
+              stillIngesting
+                ? `We have not read ${periodLabel(period)} for ${summary.name} yet`
+                : `${summary.name} has not filed for ${periodLabel(period)}`
+            }
             hint={
-              latest
-                ? `Their most recent filing is ${latest.label} — use the quarter stepper to go back. 13F is due 45 days after each quarter ends, and most managers file close to the deadline.`
-                : "No filings found for this manager in the covered window."
+              stillIngesting
+                ? `${count(outstanding)} managers have filed with the SEC for this quarter and are still queued for reading — this may be one of them. Check back in a few hours, or use the quarter stepper to see ${latest ? latest.label : "an earlier quarter"} in the meantime.`
+                : latest
+                  ? `Their most recent filing is ${latest.label} — use the quarter stepper to go back. 13F is due 45 days after each quarter ends, and most managers file close to the deadline.`
+                  : "No filings found for this manager in the covered window."
             }
           />
         </WidgetCard>
@@ -580,7 +624,16 @@ export function FundView({
         <Kpi
           label="Positions"
           value={loading ? "…" : count(point?.positions ?? null)}
-          delta={point && priorPoint ? `${point.positions - priorPoint.positions >= 0 ? "+" : ""}${point.positions - priorPoint.positions} QoQ` : undefined}
+          // Guarded on suppression exactly like the Reported value beside it. It
+          // was not, so a quarter whose value delta was deliberately withheld
+          // still printed "-11 QoQ" next to it — the withholding read as an
+          // oversight rather than a decision, and the one number that did appear
+          // implied the change was ordinary.
+          delta={
+            point && priorPoint && !point.deltasSuppressed
+              ? `${point.positions - priorPoint.positions >= 0 ? "+" : ""}${point.positions - priorPoint.positions} QoQ`
+              : undefined
+          }
           scope={point ? `${count(point.positionsLong)} long · ${count(point.positionsOptions)} options` : undefined}
         />
         <Kpi
@@ -591,7 +644,10 @@ export function FundView({
         <Kpi
           label="Turnover"
           value={loading ? "…" : pct(point?.turnover_position_pct ?? null)}
-          scope="(entries + exits) ÷ positions"
+          // Null at ingest for a suppressed quarter, so this renders a dash and
+          // the scope line says why. It used to read "33.8%" a few inches above
+          // an Activity widget refusing to draw the same comparison.
+          scope={point?.deltasSuppressed ? "Not comparable this quarter" : "(entries + exits) ÷ positions"}
         />
         <Kpi
           label="Filing lag"
@@ -808,25 +864,11 @@ export function FundView({
           }
           caveat={
             suppressed ? (
-              <CaveatStrip
-                action={
-                  <button
-                    className="pressable"
-                    onClick={() => setShowRaw(false)}
-                    style={{
-                      border: "none", background: "transparent", color: "#92400e", cursor: "pointer",
-                      fontSize: 11, fontWeight: 700, textDecoration: "underline", fontFamily: "inherit",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    Hide the misleading deltas
-                  </button>
-                }
-              >
-                {suppressionReason}
-              </CaveatStrip>
-            ) : showRaw && meta?.deltasSuppressed ? (
-              <CaveatStrip>Deltas hidden — they would describe one structural event as many separate trades.</CaveatStrip>
+              // The REASON, not a generic line about hiding things. This is the
+              // sentence the whole detector exists to be able to write: a
+              // reference site printed "-95.40%" on 22 of Cantillon's rows, and
+              // the honest answer is that it was one redemption, not 22 sells.
+              <CaveatStrip>{suppressionReason}</CaveatStrip>
             ) : originMissing ? (
               <CaveatStrip>
                 The original filing for this quarter is not in the data set — what is shown was
@@ -845,7 +887,23 @@ export function FundView({
               hint="They would describe one structural event as many separate trades."
             />
           ) : movers.up.length === 0 ? (
-            <EmptyState icon="≡" message="No comparable changes" hint="This is the first quarter of coverage for this manager." />
+            // WHY there is nothing to rank, not a guess at why. With the deltas
+            // nulled at ingest this branch is where a suppressed quarter lands,
+            // and it used to tell the reader they were looking at a manager's
+            // first covered quarter when they were looking at its eighth.
+            <EmptyState
+              icon="≡"
+              message="No comparable changes"
+              hint={
+                meta?.priorState === "NO_PRIOR"
+                  ? "This is the first quarter of coverage for this manager."
+                  : meta?.priorState === "PRIOR_IS_NT"
+                    ? "Last quarter this manager filed a notice rather than a holdings report, so there is nothing to compare against."
+                    : meta?.priorState === "PRIOR_MISSING"
+                      ? "The prior quarter is not in the data set, so changes cannot be computed."
+                      : "Every position moved by the same structural event, so ranking them against each other says nothing."
+              }
+            />
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr" }}>
               {[movers.up, null, movers.down].map((group, gi) =>

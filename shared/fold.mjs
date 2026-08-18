@@ -326,7 +326,15 @@ export function computeChanges(current, prior, priorState, opts = {}) {
   const structural = detectStructuralEvent(current, prior);
   // A pro-rata reduction or a unit restatement makes EVERY per-row delta
   // misleading, so they are withheld wholesale rather than rendered with a
-  // footnote nobody reads. The UI offers an explicit "show raw deltas anyway".
+  // footnote nobody reads.
+  //
+  // EVERY delta means every delta, including the absolute ones. This used to
+  // null only the three percentage fields and publish `d_shares` and `d_value`
+  // beside them, so the Position changes card's "Δ Value" toggle rendered the
+  // withheld comparison in dollars — the same misleading number the percentage
+  // was hidden for, in a different unit. A reader ranking Cantillon's Q2-2026 by
+  // Δ Value got the full 95.4% redemption laid out as 27 individual sells, which
+  // is precisely the reading this suppression exists to prevent.
   const suppressAll =
     structural.event === "PRO_RATA_REDUCTION" || structural.event === "UNIT_SCALE_CHANGE";
 
@@ -383,11 +391,11 @@ export function computeChanges(current, prior, priorState, opts = {}) {
       action,
       shares_now: h.ssh_prnamt,
       shares_prior: p?.ssh_prnamt ?? null,
-      d_shares: dShares,
+      d_shares: suppressAll ? null : dShares,
       d_shares_pct: suppressAll ? null : dSharesPct,
       value_now: h.value_usd,
       value_prior: valuePrior,
-      d_value: valuePrior != null ? h.value_usd - valuePrior : null,
+      d_value: suppressAll || valuePrior == null ? null : h.value_usd - valuePrior,
       d_value_pct:
         suppressAll || !valuePrior ? null : ((h.value_usd - valuePrior) / valuePrior) * 100,
       weight_now: h.weight_pct,

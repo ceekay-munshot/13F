@@ -659,6 +659,11 @@ await runJob(async () => {
           x.priorState, x.structuralEvent, x.confidentialOmitted ? 1 : 0,
           x.filingLagDays, x.valueOptionsUsd, x.positionsLong, x.positionsOptions,
           fundStored && holdingPeriods.has(x.period) ? 1 : 0,
+          // Published rather than re-derived downstream. The frontend used to
+          // infer it as Boolean(structuralEvent), which is not the rule applied
+          // here — a REVIEW-flagged quarter keeps its deltas — so this file and a
+          // fund's own summary.json disagreed about the same quarter.
+          x.deltasSuppressed ? 1 : 0,
         ]),
       });
       const latest = series.at(-1);
@@ -679,7 +684,8 @@ await runJob(async () => {
       fields: ["period", "valueLongUsd", "positions", "reportedTotalUsd", "top10WeightPct",
                "n_new", "n_added", "n_trimmed", "n_exited", "turnover_position_pct",
                "priorState", "structuralEvent", "confidentialOmitted", "filingLagDays",
-               "valueOptionsUsd", "positionsLong", "positionsOptions", "hasHoldings"],
+               "valueOptionsUsd", "positionsLong", "positionsOptions", "hasHoldings",
+               "deltasSuppressed"],
     },
     data: allSeries,
   }));

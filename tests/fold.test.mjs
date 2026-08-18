@@ -146,9 +146,45 @@ describe("PRO_RATA_REDUCTION — the trust-defining detector", () => {
     expect(reason).toBe("PRO_RATA_REDUCTION");
     expect(changes.every((c) => c.d_shares_pct === null)).toBe(true);
     expect(changes.every((c) => c.d_weight_pp === null)).toBe(true);
+    expect(changes.every((c) => c.d_value_pct === null)).toBe(true);
     // The holdings themselves are still reported — only the misleading deltas
     // are withheld.
     expect(changes.filter((c) => c.action !== "EXITED")).toHaveLength(27);
+  });
+
+  it("withholds the ABSOLUTE deltas too, not just the percentages", () => {
+    // Only the three percentage fields were nulled, so `d_value` and `d_shares`
+    // were published beside them — and the Position changes card's "Δ Value"
+    // toggle ranked by exactly those. The same misleading comparison the
+    // percentage was hidden for, in dollars instead: the whole 95.4% redemption
+    // laid out as 27 individual sells.
+    const { current, prior } = cantillonPair();
+    const { changes } = computeChanges(current, prior, PRIOR_STATE.OK);
+    const retained = changes.filter((c) => c.action !== "EXITED");
+    expect(retained.every((c) => c.d_value === null)).toBe(true);
+    expect(retained.every((c) => c.d_shares === null)).toBe(true);
+  });
+
+  it("but an EXIT keeps its size, because -100% of a gone position is exact", () => {
+    // The suppression is about a MULTIPLIER applied to positions that survived:
+    // "-95.4%" reads as a decision about that holding when it was one event
+    // across the book. A position absent from the new filing is simply gone, and
+    // "sold out of" is the client's stated anchor — withholding it would hide a
+    // fact rather than a misleading inference.
+    const { current, prior } = cantillonPair();
+    const { changes } = computeChanges(current, prior, PRIOR_STATE.OK);
+    const exits = changes.filter((c) => c.action === "EXITED");
+    expect(exits.length).toBeGreaterThan(0);
+    expect(exits.every((c) => c.d_value === -c.value_prior)).toBe(true);
+  });
+
+  it("keeps the DIRECTION, because that part is a fact", () => {
+    // A position genuinely was trimmed; what is unsound is the size of the move,
+    // not that it happened. Nulling the action too would hide the event itself.
+    const { current, prior } = cantillonPair();
+    const { changes } = computeChanges(current, prior, PRIOR_STATE.OK);
+    expect(changes.filter((c) => c.action === "TRIMMED").length).toBeGreaterThan(0);
+    expect(changes.every((c) => c.value_now != null)).toBe(true);
   });
 
   it("does NOT fire when positions moved independently", () => {
