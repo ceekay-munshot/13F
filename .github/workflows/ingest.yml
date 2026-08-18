@@ -178,14 +178,20 @@ jobs:
               --out=.cache/ciks.txt \
               --out-plan=.cache/plan.json > /dev/null
           fi
+          # appendFileSync, not a write stream: every step below is gated on these
+          # values, and a stream that had not flushed when node exited would leave
+          # the conditions empty — which reads as "nothing to do" and skips the
+          # entire ingest silently.
           node -e '
-            const p = JSON.parse(require("fs").readFileSync(".cache/plan.json", "utf8"));
-            const out = require("fs").createWriteStream(process.env.GITHUB_OUTPUT, { flags: "a" });
-            out.write(`blocked=${p.blocked ? "true" : "false"}\n`);
-            out.write(`selected=${p.filersSelected ?? 0}\n`);
-            out.write(`pending=${p.filersPending ?? 0}\n`);
-            out.write(`known=${p.filersKnown ?? 0}\n`);
-            out.end();
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync(".cache/plan.json", "utf8"));
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, [
+              `blocked=${p.blocked ? "true" : "false"}`,
+              `selected=${p.filersSelected ?? 0}`,
+              `pending=${p.filersPending ?? 0}`,
+              `known=${p.filersKnown ?? 0}`,
+              "",
+            ].join("\n"));
           '
 
       - name: The SEC is refusing us this run
