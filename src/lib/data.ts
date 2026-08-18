@@ -33,7 +33,29 @@ export interface Manifest {
   buildId: string;
   generatedAt: string;
   coverage: { from: string; to: string; holdingsFrom: string };
-  periods: { period: string; label: string; deadline: string; filings: number; funds: number }[];
+  periods: {
+    period: string;
+    label: string;
+    deadline: string;
+    /** Filings we HOLD for this quarter. */
+    filings: number;
+    /** Managers we HOLD a filing from for this quarter. */
+    funds: number;
+    /**
+     * Managers who have actually filed for this quarter, counted from EDGAR's
+     * daily indexes rather than from anything we hold.
+     *
+     * The difference between this and `funds` is the only honest way to say
+     * "still loading" — without it the Filings view subtracted what we held from
+     * the whole filer universe and called the remainder "outstanding", which
+     * told a client that 9,255 managers had not filed on a day when they had.
+     *
+     * Absent on quarters published before this existed, and on quarters the
+     * monthly universe run rebuilt; treat undefined as "no opinion", never as 0.
+     */
+    known?: number;
+    knownAsOf?: string | null;
+  }[];
   funds: Record<string, string>;
   counts: { filers: number; filings: number; holdings: number };
   notes: string[];

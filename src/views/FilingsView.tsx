@@ -190,6 +190,31 @@ export function FilingsView({
 
   const deadline = filingDeadline(period) as string;
   const filedCiks = new Set((rows ?? []).map((r) => r.cik));
+
+  /**
+   * HOW MUCH OF THIS QUARTER IS ACTUALLY LOADED.
+   *
+   * `row.funds` is what we hold; `row.known` is what EDGAR has published. When
+   * they differ the quarter is still being ingested, and saying so is the whole
+   * point of this block.
+   *
+   * The view used to subtract what we held from the entire filer universe and
+   * label the remainder "outstanding" — i.e. "these managers have not filed".
+   * On 18 August 2026 that read "9,255 outstanding" for Q2, four days after the
+   * deadline, when in fact 10,698 managers HAD filed and the pipeline had
+   * ingested thirteen of them. A client wrote in to ask why a manager who filed
+   * on 29 July was missing. Not knowing something and it not existing are
+   * different facts, and only one of them was ever true here.
+   */
+  const periodRow = mf.periods.find((p) => p.period === period);
+  const known = periodRow?.known ?? null;
+  const held = periodRow?.funds ?? filedCiks.size;
+  const stillLoading = known !== null && known > held;
+  const notYetLoaded = stillLoading ? known - held : 0;
+
+  // Managers we hold NO filing from and that EDGAR has not published one for
+  // either. Only meaningful once the quarter is fully ingested — while it is
+  // still loading, absence from our copy says nothing about the filer.
   const outstanding = filers.filter((f) => !filedCiks.has(f.cik));
   const amendments = (rows ?? []).filter((r) => r.amendment);
   const notices = (rows ?? []).filter((r) => r.notice);
@@ -238,21 +263,58 @@ export function FilingsView({
           {periodLabel(period)} filings due {dateLabel(deadline)}
         </span>
         <span style={{ fontSize: 12, color: t.textMuted }}>
-          · {filedCiks.size} of {filers.length} tracked funds filed
+          {known !== null
+            ? `· ${count(held)} of ${count(known)} managers who filed are loaded`
+            : `· ${filedCiks.size} of ${filers.length} tracked funds filed`}
         </span>
         <div style={{ flex: 1, minWidth: 80, height: 3, background: "#e0e7ff", borderRadius: 2, overflow: "hidden" }}>
           <div
             className="flow-bar"
             style={{
               height: "100%", width: "100%", background: t.primary,
-              transform: `scaleX(${filers.length ? filedCiks.size / filers.length : 0})`,
+              transform: `scaleX(${
+                known !== null
+                  ? Math.min(1, known ? held / known : 0)
+                  : filers.length ? filedCiks.size / filers.length : 0
+              })`,
             }}
           />
         </div>
       </div>
 
+      {/* STILL LOADING IS NOT THE SAME AS NOT FILED. Say which one it is. */}
+      {stillLoading && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+            background: t.warnBg, border: `1px solid ${t.warnBorder}`,
+            borderRadius: 10, padding: "9px 14px", marginBottom: 20,
+          }}
+        >
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#92400e" }}>
+            This quarter is still loading
+          </span>
+          <span style={{ fontSize: 12, color: "#92400e" }}>
+            {count(notYetLoaded)} more manager{notYetLoaded === 1 ? "" : "s"} have filed with the SEC than
+            we have read so far. They are queued and arrive over the next few hours — a manager missing
+            from this list has not necessarily failed to file.
+          </span>
+        </div>
+      )}
+
       <KpiRow>
-        <Kpi label="Filed this period" value={loading ? "…" : `${filedCiks.size} of ${filers.length}`} scope={outstanding.length ? `${outstanding.length} outstanding` : "Complete"} />
+        <Kpi
+          label="Managers loaded"
+          value={loading ? "…" : known !== null ? `${count(held)} of ${count(known)}` : `${filedCiks.size} of ${filers.length}`}
+          scope={
+            known !== null
+              ? stillLoading
+                ? `${count(notYetLoaded)} filed and not yet read`
+                : "Every filing the SEC has published"
+              : outstanding.length ? `${outstanding.length} with no filing here` : "Complete"
+          }
+        />
+        <Kpi label="Filings held" value={loading ? "…" : count(periodRow?.filings ?? (rows ?? []).length)} scope={`${count((rows ?? []).length)} shown in the feed`} />
         <Kpi label="Due date" value={dateLabel(deadline)} scope="45 days after quarter end" />
         <Kpi label="Most recent filing" value={latest ? dateLabel(latest.slice(0, 10)) : "—"} scope={latest ? utcStamp(latest) : undefined} />
         <Kpi label="Amendments" value={loading ? "…" : count(amendments.length)} scope={notices.length ? `${notices.length} notice filing${notices.length === 1 ? "" : "s"}` : "Restatements & additions"} />
@@ -399,7 +461,18 @@ export function FilingsView({
 
         {/* INSIGHT — who is missing. A dashboard that says what is MISSING
             cannot go silently stale, which is the worst failure mode here. */}
-        <WidgetCard title="Outstanding" subtitle={`Tracked funds with no ${periodLabel(period)} filing`} bodyMinHeight={200}>
+        <WidgetCard
+          title={stillLoading ? "Not read yet" : "Outstanding"}
+          // The honest subtitle depends on whether the quarter is complete. While
+          // it is loading, a manager's absence from our copy is a fact about us,
+          // not about them, and the heading has to say which.
+          subtitle={
+            stillLoading
+              ? `We have not read a ${periodLabel(period)} filing for these yet — ${count(notYetLoaded)} managers are still queued`
+              : `Managers with no ${periodLabel(period)} filing`
+          }
+          bodyMinHeight={200}
+        >
           {loading ? (
             <TableSkeleton rows={4} cols={2} />
           ) : outstanding.length === 0 ? (

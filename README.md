@@ -67,9 +67,28 @@ All sec.gov traffic goes through `scripts/_sec-fetch.mjs` — one surface, ≤5 
 about a specific address; GitHub-hosted runners draw from a shared pool of ~7,300 Azure
 CIDRs. Because each run gets a different IP, a block caused by someone else's abuse
 self-heals on the next run — provided we never retry inside a run and never lose our
-place. Hence: preflight probe, terminal 403, resumable cursors, three slots a day, and a
-poison detector that escalates only when consecutive runs on different IPs fail.
-`npm run guard` fails CI if anyone adds a retry.
+place. Hence: preflight probe, terminal 403, resumable cursors, and a poison detector
+that escalates only when consecutive runs on different IPs fail. `npm run guard` fails
+CI if anyone adds a retry.
+
+**But 403 also means "no such file".** EDGAR answers 403, not 404, for any missing path
+under `/Archives/` — a daily index for today (not cut until evening), for a weekend, or
+for a date in the future. Reading that as a ban is what took Q2-2026 coverage down to 13
+filers out of 10,698 for eleven days. So the inference is now corroborated rather than
+assumed: on a 403 for a path the caller declared may be absent, one HEAD goes to a
+different, known-good static file. Served → the file is missing. Refused → we really are
+blocked, terminal as before. The blocked URL is never re-requested, so the no-retry rule
+is untouched. On top of that, discovery reads the quarter's `index.json` to learn which
+daily indexes exist instead of guessing dates, so it does not ask for absent files at all.
+
+**Nothing is missed, only deferred.** A filing season is ~10,700 managers, far more than
+one polite job can fetch. Each same-day run reads whichever daily indexes are new, adds
+their filers to a cursor kept in R2, drains a bounded slice (35% reserved for the newest
+day so same-day freshness is never starved by a backlog), and advances the cursor only
+for the funds whose artifacts actually landed. A blocked run, a dropped cron or a
+budget-truncated run costs time, never a filing. There is deliberately no watchlist
+fallback: publishing a token slice of the universe and calling the run green is strictly
+worse than stopping, and `npm run guard` now fails CI if one reappears.
 
 Steady-state usage is a few hundred requests per quarter: one daily-index file covers
 every filer for a day (2,552 filings on 2026-05-15 in a single request), and one DERA
@@ -155,3 +174,7 @@ Worth recording, because each was invisible in unit tests and obvious on screen:
 | Exit-only rows failed the holder threshold | A name the **whole group** sold out of vanished from the exits list |
 | Lag from timestamps, not calendar days | Every punctual filer painted amber as "late" |
 | Amendments mixed into the filing timeline | A 323-day-late restatement stretched the axis and hid the real 30–60 day signal |
+| Asking EDGAR for *today's* daily index first | It does not exist until evening, EDGAR answers **403**, and 403 meant "IP banned" — so discovery declared every run blocked, fell back to 13 hard-coded funds, and reported success. Q2-2026 sat at 13 of 10,698 filers for eleven days |
+| `parseFormIdx` reading column offsets from "the line above the rule" | EDGAR wraps that header onto two lines, so the offsets were never found and the parser returned **zero rows** for every live file. Every fixture used a tidy one-line header |
+| A quarantined quarter left `summary: null` but `noticeOnly: false` | Fell through the notice guard and threw on `summary.value_long_usd`, ending the whole run and publishing nothing. Caught live on Adelante Capital's Q2-2026 filing |
+| "Outstanding = every filer minus the ones we hold" | Told a client 9,255 managers had not filed, on a day when they had and we simply had not read them yet |

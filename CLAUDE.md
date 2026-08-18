@@ -31,11 +31,16 @@ they send to the SEC (the US financial regulator) every three months.
 
 ## Booked in
 
-- **Saturday 15 Aug 2026** — make the same-day ingest fetch only NEW filings
-  (key on the filing's accession number, keep a cursor between runs). Scheduled
-  to run on its own; the owner should not have to ask. This is the real cure for
-  the SEC intermittently refusing us — everything shipped on 13 Aug is
-  protection around the problem, not the fix for it.
+- Nothing outstanding.
+
+### Done
+
+- **18 Aug 2026** — the same-day ingest now fetches only what it has not already
+  got, and remembers between runs where it is up to (the "cursor"). This was
+  booked for Sat 15 Aug and is now shipped. It also turned out to be the fix for
+  a bigger problem: only 13 of the ~10,700 funds that filed for Apr–Jun 2026 had
+  reached the dashboard, because the pipeline was misreading "the SEC has not
+  published today's list yet" as "the SEC has banned us".
 
 ## Standing promises
 

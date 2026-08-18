@@ -377,6 +377,49 @@ function guardSameDayPublish() {
 }
 
 // ---------------------------------------------------------------------------
+// GUARD 6 — discovery may not fall back to a hard-coded fund list.
+//
+// The same-day job used to answer "we could not ask the SEC who filed" with
+// "then ingest these thirteen favourites". It sounds defensive. What it actually
+// did was make a completely broken discovery indistinguishable from a working
+// pipeline: every run for a whole quarter reported SUCCESS while publishing 13
+// filers out of the ~10,700 who had filed for Q2 2026, and the first person to
+// notice was a client asking why a manager who filed on 29 July was missing.
+//
+// The cure is not a better fallback, it is no fallback. The ingest cursor in R2
+// means a run that cannot reach the SEC loses nothing by doing nothing, and the
+// next run resumes from the same place. A run that publishes a token slice of
+// the universe and calls itself green is strictly worse than one that stops.
+// ---------------------------------------------------------------------------
+{
+  const guard = "no-watchlist-fallback";
+  checks.push(guard);
+  const f = join(ROOT, ".github/workflows/ingest.yml");
+  if (existsSync(f)) {
+    readFileSync(f, "utf8").split(/\r?\n/).forEach((line, i) => {
+      const code = line.replace(/^\s*#.*$/, "");
+      if (/favourites\.(ts|js)/.test(code)) {
+        fail(
+          guard,
+          f,
+          `line ${i + 1}: the same-day job reads the favourites list. Discovery must not fall back to a fixed set of funds — that is what let a broken run report success for a whole quarter. If the SEC cannot be reached, do nothing and let the cursor resume.\n      ${line.trim()}`,
+        );
+      }
+    });
+  }
+
+  // And the planner must keep a cursor, because "do nothing" is only safe when
+  // nothing is forgotten by doing it.
+  const d = join(ROOT, "scripts/discover-13f-filers.mjs");
+  if (existsSync(d)) {
+    const src = readFileSync(d, "utf8");
+    if (!/out-state/.test(src) || !/pending/.test(src)) {
+      fail(guard, d, "the planner no longer produces an ingest cursor. Without one a blocked or budgeted run silently drops the filers it did not reach.");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 guardSameDayPublish();
 

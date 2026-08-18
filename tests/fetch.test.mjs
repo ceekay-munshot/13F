@@ -181,3 +181,96 @@ describe("URL builders", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 403 MEANS TWO DIFFERENT THINGS AND ONLY ONE OF THEM IS A BLOCK.
+//
+// EDGAR answers 403 — not 404 — for a path under /Archives/ that does not
+// exist. Verified live on 2026-08-18:
+//
+//   daily-index/2026/QTR3/form.20260817.idx  (Monday, exists)     -> 200
+//   daily-index/2026/QTR3/form.20260818.idx  (today, not yet cut) -> 403
+//   daily-index/2026/QTR3/form.20260816.idx  (a Sunday, no file)  -> 403
+//
+// Discovery asked for TODAY's index first on every run, so the first request of
+// every run 403'd, the run declared itself IP-blocked, and the same-day ingest
+// fell back to thirteen hard-coded funds while reporting success. Four days
+// after the Q2-2026 deadline the dashboard held 13 filers of ~10,700.
+//
+// The rule that "a 403 is never retried" is unchanged and still guarded in CI.
+// What is new is that the INFERENCE is corroborated: one HEAD to a different,
+// known-good file decides which of the two meanings applies.
+// ---------------------------------------------------------------------------
+describe("403 for a path that may not exist", () => {
+  it("is a block by default — an unannotated 403 keeps the strict reading", async () => {
+    stubFetch(403);
+    const sec = fetcher();
+    await expect(sec.get("https://www.sec.gov/Archives/x.idx")).rejects.toThrow(SecBlockedError);
+    expect(sec.blocked).toBe(true);
+  });
+
+  it("is a MISSING FILE when the corroborating probe is served", async () => {
+    // 1st call: the daily index -> 403. 2nd call: the probe -> 200.
+    const calls = stubFetch(403, 200);
+    const sec = fetcher();
+    let caught;
+    try {
+      await sec.get("https://www.sec.gov/Archives/edgar/daily-index/2026/QTR3/form.20260818.idx", {
+        mayNotExist: true,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught?.name).toBe("SecMissingError");
+    expect(caught?.missing).toBe(true);
+    // The run is NOT poisoned: the next request must still be allowed.
+    expect(sec.blocked).toBe(false);
+    expect(sec.missingCount).toBe(1);
+    // The probe is a DIFFERENT url and a HEAD — the 403'd path is never re-sent.
+    expect(calls[1].url).toBe(SEC_URLS.probe());
+    expect(calls[1].method).toBe("HEAD");
+    expect(calls[0].url).not.toBe(calls[1].url);
+  });
+
+  it("is still a BLOCK when the probe is refused too", async () => {
+    stubFetch(403, 403);
+    const sec = fetcher();
+    await expect(
+      sec.get("https://www.sec.gov/Archives/edgar/daily-index/2026/QTR3/form.20260818.idx", { mayNotExist: true }),
+    ).rejects.toThrow(SecBlockedError);
+    expect(sec.blocked).toBe(true);
+  });
+
+  it("fails SAFE when the probe cannot be reached at all", async () => {
+    // Proving nothing is not the same as proving we are served. An unprovable
+    // case must keep the strict reading, or a real block would degrade into a
+    // run that quietly discovers nothing.
+    stubFetch(403, new Error("ECONNRESET"));
+    const sec = fetcher();
+    await expect(
+      sec.get("https://www.sec.gov/Archives/x.idx", { mayNotExist: true }),
+    ).rejects.toThrow(SecBlockedError);
+    expect(sec.blocked).toBe(true);
+  });
+
+  it("fails SAFE on a 5xx probe — the SEC being busy proves nothing either way", async () => {
+    stubFetch(403, 503);
+    const sec = fetcher();
+    await expect(
+      sec.get("https://www.sec.gov/Archives/x.idx", { mayNotExist: true }),
+    ).rejects.toThrow(SecBlockedError);
+  });
+
+  it("does not re-probe for every missing file in a batch", async () => {
+    // The probe costs a request. Two misses close together share one verdict.
+    const calls = stubFetch(403, 200, 403);
+    const sec = fetcher();
+    for (const n of [1, 2]) {
+      await expect(
+        sec.get(`https://www.sec.gov/Archives/a${n}.idx`, { mayNotExist: true }),
+      ).rejects.toThrow(/does not exist/);
+    }
+    expect(calls).toHaveLength(3); // miss, probe, miss — not miss, probe, miss, probe
+    expect(sec.missingCount).toBe(2);
+  });
+});

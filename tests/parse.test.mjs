@@ -290,6 +290,72 @@ Form Type   Company Name                                                  CIK   
     expect(parseFormIdx(FORM_IDX)[0].cik).toBe("0001000097");
   });
 
+  // -------------------------------------------------------------------------
+  // THE HEADER EDGAR ACTUALLY SENDS, WHICH WRAPS ONTO TWO LINES.
+  //
+  // Copied byte for byte from
+  // https://www.sec.gov/Archives/edgar/daily-index/2026/QTR3/form.20260814.idx
+  // on 2026-08-18. The old parser found its column offsets in "the line above
+  // the rule", which here is "      Date Filed  File Name" — no "Company Name",
+  // no "CIK" — so offset detection bailed and it returned ZERO ROWS for the
+  // whole file. Every fixture it had used a tidy one-line header, so nothing
+  // caught it.
+  //
+  // Note also the trailing padding on each row and the awkward names: a company
+  // called "&PARTNERS", one called "10Elms LLP" that starts with digits, and a
+  // filing submitted under an AGENT's accession prefix (0000902664-) whose filer
+  // is someone else entirely. All three broke a whitespace-splitting parse.
+  // -------------------------------------------------------------------------
+  const FORM_IDX_LIVE =
+    "Description:           Daily Index of EDGAR Dissemination Feed by Form Type\n" +
+    "Last Data Received:    Aug 14, 2026\n" +
+    "Comments:              webmaster@sec.gov\n" +
+    "Anonymous FTP:         ftp://ftp.sec.gov/edgar/\n" +
+    " \n \n \n \n" +
+    "Form Type   Company Name                                                  CIK\n" +
+    "      Date Filed  File Name\n" +
+    "-".repeat(141) + "\n" +
+    "1-A              Deedflow INC                                                  2143384     20260814    edgar/data/2143384/0001683168-26-006495.txt        \n" +
+    "13F-HR           &PARTNERS                                                     107136      20260814    edgar/data/107136/0001214659-26-010148.txt         \n" +
+    "13F-HR           10Elms LLP                                                    2056650     20260814    edgar/data/2056650/0002056650-26-000004.txt        \n" +
+    "13F-HR           11 Capital Partners LP                                        1801172     20260814    edgar/data/1801172/0000902664-26-003493.txt        \n" +
+    "13F-NT           PERSHING SQUARE CAPITAL MANAGEMENT, L.P.                      1336528     20260814    edgar/data/1336528/0001172661-26-003777.txt        \n";
+
+  it("reads the two-line header EDGAR actually sends", () => {
+    // The regression. This returned [] against every live file for months, which
+    // meant discovery could not have worked even once the 403 handling was right.
+    const rows = parseFormIdx(FORM_IDX_LIVE);
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.form_type)).toEqual(["13F-HR", "13F-HR", "13F-HR", "13F-NT"]);
+  });
+
+  it("does not let trailing padding swallow the company name", () => {
+    // Slicing at `line.length - path.length` lands inside the path when the row
+    // is space-padded, and hands back the whole row as the name.
+    const rows = parseFormIdx(FORM_IDX_LIVE);
+    expect(rows.map((r) => r.company_name)).toEqual([
+      "&PARTNERS",
+      "10Elms LLP",
+      "11 Capital Partners LP",
+      "PERSHING SQUARE CAPITAL MANAGEMENT, L.P.",
+    ]);
+    expect(rows.every((r) => !r.company_name.includes("edgar/"))).toBe(true);
+  });
+
+  it("takes the FILER's cik from the archive path, not the submitter's from the accession", () => {
+    // 11 Capital Partners filed through an agent: the accession begins 0000902664
+    // and the filer is 1801172. Deriving the cik from the accession would file a
+    // manager's holdings under its lawyer.
+    const row = parseFormIdx(FORM_IDX_LIVE).find((r) => r.accession_number === "0000902664-26-003493");
+    expect(row.cik).toBe("0001801172");
+  });
+
+  it("reads the compact YYYYMMDD filing date the live files use", () => {
+    expect(parseFormIdx(FORM_IDX_LIVE)[0].filing_date).toBe("2026-08-14");
+    // …and still the dashed form the older fixtures carry.
+    expect(parseFormIdx(FORM_IDX)[0].filing_date).toBe("2026-05-15");
+  });
+
   it("parses the pipe-delimited master.idx variant", () => {
     const MASTER = `CIK|Company Name|Form Type|Date Filed|Filename
 --------------------------------------------------------------------------------

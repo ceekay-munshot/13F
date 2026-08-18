@@ -27,8 +27,8 @@
 // NOTHING. A stale dashboard is a bad day; a dashboard that has forgotten the
 // universe is an outage.
 
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, relative, sep, dirname } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { mergeManifest, mergeSummary, mergePeriodFilings, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
 import { signRequest } from "./_sigv4.mjs";
@@ -42,7 +42,42 @@ const args = Object.fromEntries(
 
 const DIR = args.dir || "public/data";
 const DRY = Boolean(args["dry-run"]);
-const CIKS = String(args.ciks || "").split(",").map((s) => s.trim()).filter(Boolean);
+const str = (v) => (typeof v === "string" && v ? v : null);
+
+/**
+ * The ingest cursor's home in the bucket.
+ *
+ * `state/` is deliberately outside the artifact tree. publish-r2.mjs --prune
+ * deletes any remote key the local build does not contain, and the cursor is
+ * never part of a build — so the prefix is excluded there by name. Losing the
+ * cursor costs a re-scan, not data, but there is no reason to lose it monthly.
+ */
+const STATE_KEY = str(args["state-key"]) || "state/day-cursor.json";
+/** Download the cursor and exit. Run before the planner. */
+const PULL_STATE = str(args["pull-state"]);
+/** Upload this file as the cursor, but only once the publish has succeeded. */
+const PUSH_STATE = str(args.state);
+
+/**
+ * The funds this run finished. A file, not a flag, once a run can cover a whole
+ * filing season: eight hundred CIKs is a nine-kilobyte command line.
+ */
+const CIKS = (() => {
+  const path = str(args["ciks-file"]);
+  const raw = path ? (existsSync(path) ? readFileSync(path, "utf8") : "") : String(args.ciks || "");
+  return [...new Set(raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean))];
+})();
+
+/** Coverage measured from EDGAR's daily indexes, written by the planner. */
+const PLAN = (() => {
+  const path = str(args.plan);
+  if (!path || !existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+})();
 
 const ACCOUNT = process.env.R2_ACCOUNT_ID;
 const KEY = process.env.R2_ACCESS_KEY_ID;
@@ -52,13 +87,16 @@ const HOST = `${ACCOUNT}.r2.cloudflarestorage.com`;
 
 const fail = (msg) => { console.error(`::error::${msg}`); process.exit(1); };
 
-if (!CIKS.length) fail("--ciks is required: the funds this run refreshed. Refusing to publish blind.");
+if (!PULL_STATE && !CIKS.length) fail("--ciks or --ciks-file is required: the funds this run refreshed. Refusing to publish blind.");
 if (!DRY && (!ACCOUNT || !KEY || !SECRET)) {
   fail("R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY must all be set.");
 }
 
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 5;
+
+/** Where a dry run reads published artifacts from — the directory holding the manifest. */
+const DRY_BASE = (process.env.LIVE_MANIFEST_URL || "").replace(/\/manifest\.json.*$/, "");
 
 async function sendSigned(method, key, body, okStatuses = new Set()) {
   let lastErr;
@@ -119,6 +157,16 @@ async function readJson(key, attempts = 3) {
   let last;
   for (let i = 1; i <= attempts; i++) {
     try {
+      // A dry run has no credentials by design, so it reads the published copy
+      // over HTTPS instead. That is not a lesser rehearsal: the feed merge is
+      // the step most worth rehearsing, and reading it through the CDN exercises
+      // exactly the bytes a real run would merge into.
+      if (DRY) {
+        const r = await fetch(`${DRY_BASE}/${key}`, { headers: { "cache-control": "no-cache" } });
+        if (r.status === 404) return null;
+        if (!r.ok) throw new Error(`GET ${key} -> ${r.status}`);
+        return await r.json();
+      }
       const res = await sendSigned("GET", key, null, new Set([404]));
       if (res.status === 404) return null;
       return JSON.parse(await res.text());
@@ -131,11 +179,35 @@ async function readJson(key, attempts = 3) {
 }
 
 (async () => {
+  // --- pull the ingest cursor and stop ---------------------------------------
+  //
+  // Run before the planner. This is a read of the one piece of state the same-day
+  // job owns, kept in the same script as the write so all of this job's R2 access
+  // stays behind one surface.
+  if (PULL_STATE) {
+    let body = "{}";
+    try {
+      const res = await sendSigned("GET", STATE_KEY, null, new Set([404]));
+      if (res.status !== 404) body = await res.text();
+      else console.log(`no ingest cursor yet at ${STATE_KEY} — the planner will start a fresh one.`);
+    } catch (err) {
+      // A cursor we cannot read is a re-scan, not a data loss. Say so and carry
+      // on rather than failing the run over an optimisation.
+      console.log(`::warning::could not read the ingest cursor (${err.message}); starting from a fresh one this run.`);
+    }
+    mkdirSync(dirname(PULL_STATE), { recursive: true });
+    writeFileSync(PULL_STATE, body);
+    return;
+  }
+
   if (!existsSync(DIR)) fail(`${DIR} does not exist — nothing was built.`);
 
   // --- what this run is allowed to upload ----------------------------------
   const all = walk(DIR);
-  const wanted = new Set(CIKS.map((c) => `fund/${c}/`));
+  // Membership, not prefix scanning. With thirteen CIKs a `some(startsWith)` over
+  // every key was free; with eight hundred it is 800 x 3,600 string compares.
+  const wanted = new Set(CIKS);
+  const fundKeyCik = (k) => (/^fund\/(\d{10})\//.exec(k) ?? [])[1] ?? null;
   // ONLY the quarters this run actually re-ingested.
   //
   // walk(DIR) sees the whole checked-out tree, which carries a filings feed for
@@ -164,9 +236,10 @@ async function readJson(key, attempts = 3) {
     (k) =>
       isPublishableDayKey(k) &&
       k !== "manifest.json" &&
-      ([...wanted].some((w) => k.startsWith(w)) || isFeed(k)),
+      (wanted.has(fundKeyCik(k)) || isFeed(k)),
   );
-  const skipped = all.filter((k) => !uploads.includes(k) && k !== "manifest.json");
+  const uploadSet = new Set(uploads);
+  const skipped = all.filter((k) => !uploadSet.has(k) && k !== "manifest.json");
 
   console.log(`same-day publish · ${CIKS.length} fund(s) · ${uploads.length} artifact(s)`);
   if (skipped.length) {
@@ -174,10 +247,10 @@ async function readJson(key, attempts = 3) {
   }
   if (!uploads.length) fail("no fund artifacts matched the requested CIKs — refusing to touch the manifest.");
 
-  // --- merge the manifest BEFORE uploading anything -------------------------
+  // --- read the live manifest FIRST -----------------------------------------
   //
-  // Order matters. If the merge is going to be rejected, it must be rejected
-  // while the bucket is still untouched.
+  // Everything below merges INTO what is published, and the merge has to be
+  // rejectable while the bucket is still untouched.
   const localManifestPath = join(DIR, "manifest.json");
   if (!existsSync(localManifestPath)) fail("the run produced no manifest.json — the ingest did not complete.");
   const incoming = JSON.parse(readFileSync(localManifestPath, "utf8"));
@@ -208,10 +281,106 @@ async function readJson(key, attempts = 3) {
     }
   }
 
+  // --- merge the quarter filing feeds, BEFORE the manifest -------------------
+  //
+  // The feed is SHARED — the universe run writes every manager's rows into it —
+  // so it is merged by accession and never replaced. Replacing it would be the
+  // 9,000-funds-to-8 failure again, one file over.
+  //
+  // It happens here, ahead of the manifest, because the merged feed is the only
+  // place the ACCUMULATED size of a quarter is known. The manifest used to take
+  // `max(published, this run's sample)`, which is right when the universe holds
+  // 10,648 and a same-day run sees 13 — and badly wrong once the same-day job is
+  // the thing filling a quarter. Run after run publishing 450 filings into a
+  // quarter that already held 450 would report 450 for ever: the dashboard's
+  // count of the quarter would freeze, and so would the staleness watchdog's,
+  // because that is the number it grades.
+  const isFeedKey = (k) => /^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(k);
+  const feedKeys = uploads.filter(isFeedKey);
+  const fundKeys = uploads.filter((k) => !isFeedKey(k));
+  /** key -> the exact bytes to upload */
+  const feedBodies = new Map();
+  /** period -> { filings, funds, known, knownAsOf }, for the manifest */
+  const periodTotals = {};
+  const skippedFeeds = [];
+  const repairedFeeds = [];
+  let mergedFeeds = 0;
+
+  // Coverage measured from EDGAR's daily indexes: how many managers have
+  // actually filed for the quarter, whatever we happen to hold. Attached only to
+  // the period the plan was drawn for — it says nothing about any other.
+  const planned = (period) =>
+    PLAN && PLAN.period === period && Number.isFinite(PLAN.filersKnown) && PLAN.filersKnown > 0;
+
+  const knownFor = (period) =>
+    planned(period) ? { known: PLAN.filersKnown, knownAsOf: PLAN.generatedAt ?? null } : {};
+
+  for (const k of feedKeys) {
+    const period = k.split("/")[1];
+    const mineEnvelope = JSON.parse(readFileSync(join(DIR, k), "utf8"));
+    let liveFeed = null;
+    try {
+      liveFeed = await readJson(k);
+    } catch (err) {
+      // The live feed could not be READ. That is not the same as knowing a write
+      // would truncate it — and the manifest already records how many filings
+      // each quarter has, so the question can be answered without the file.
+      const liveCount = (live?.periods ?? []).find((x) => x.period === period)?.filings ?? Infinity;
+      const mineCount = mineEnvelope.data?.length ?? 0;
+      if (mineCount >= liveCount) {
+        console.log(
+          `::warning::could not read ${k} (${err.message}); publishing this run's ${mineCount} rows, ` +
+            `which is not fewer than the ${liveCount} the manifest records.`,
+        );
+        repairedFeeds.push(k);
+      } else {
+        console.log(
+          `::warning::could not merge ${k} (${err.message}); this run holds ${mineCount} rows against ` +
+            `${liveCount} published, so the feed is left alone rather than shortened.`,
+        );
+        skippedFeeds.push(k);
+        continue;
+      }
+    }
+
+    let out;
+    try {
+      out = liveFeed
+        ? mergePeriodFilings(liveFeed, mineEnvelope, CIKS, knownFor(period))
+        : {
+            // Nothing published for this quarter yet — ours IS the feed.
+            ...mineEnvelope,
+            total: mineEnvelope.data?.length ?? 0,
+            funds: new Set((mineEnvelope.data ?? []).map((r) => r.cik)).size,
+            shown: mineEnvelope.data?.length ?? 0,
+            ...knownFor(period),
+          };
+    } catch (err) {
+      fail(`could not merge ${k} (${err.message}). Refusing to shorten a shared feed.`);
+    }
+    if (liveFeed) mergedFeeds++;
+    feedBodies.set(k, Buffer.from(JSON.stringify(out)));
+
+    // THE CURSOR IS THE AUTHORITY ON HOW MUCH OF A QUARTER IS IN.
+    //
+    // The feed's own count stops climbing once a quarter passes the display cap,
+    // because a capped list cannot count what was dropped from it. The ingest
+    // cursor can: it holds every filer EDGAR published for the season and every
+    // one still owed a fetch, so `known - pending` is exactly how many managers
+    // have been through, however large the quarter gets.
+    const ingested = planned(period) && Number.isFinite(PLAN.filersIngested) ? PLAN.filersIngested : 0;
+    periodTotals[period] = {
+      filings: Math.max(out.total ?? 0, ingested),
+      funds: Math.max(out.funds ?? 0, ingested),
+      ...(out.known != null ? { known: out.known, knownAsOf: out.knownAsOf ?? null } : {}),
+    };
+  }
+
+  // --- merge the manifest ----------------------------------------------------
   const buildId = incoming.buildId;
   let merged;
   try {
-    ({ manifest: merged } = mergeManifest(live, incoming, { buildId, ciks: CIKS }));
+    ({ manifest: merged } = mergeManifest(live, incoming, { buildId, ciks: CIKS, periodTotals }));
   } catch (err) {
     fail(`merge refused: ${err.message}`);
   }
@@ -230,6 +399,14 @@ async function readJson(key, attempts = 3) {
   console.log(`  live build ${live.buildId} · ${live.counts?.filers} filers · coverage → ${live.coverage?.to}`);
   console.log(`  merged: ${merged.periods.length} periods, coverage → ${merged.coverage.to}` +
               (newPeriods.length ? `, NEW ${newPeriods.join(", ")}` : ", no new quarter"));
+  for (const [period, t] of Object.entries(periodTotals)) {
+    console.log(
+      `  ${period}: ${t.filings} filing(s) from ${t.funds} manager(s)` +
+      (t.known
+        ? ` · EDGAR has published ${t.known} for this quarter — ${Math.round((t.funds / t.known) * 100)}% ingested`
+        : ""),
+    );
+  }
   console.log(`  per-fund cache keys stamped: ${CIKS.length}`);
 
   if (DRY) {
@@ -237,18 +414,16 @@ async function readJson(key, attempts = 3) {
     return;
   }
 
-  // --- upload the fund artifacts, THEN the manifest --------------------------
+  // --- upload the fund artifacts, THEN the feeds, THEN the manifest ----------
   //
-  // The manifest is the index; publishing it before the files it points at
-  // would advertise artifacts that 404. Last, always.
+  // The manifest is the index; publishing it before the files it points at would
+  // advertise artifacts that 404. Last, always.
   let done = 0;
   let mergedSummaries = 0;
-  let mergedFeeds = 0;
-  const skippedFeeds = [];
-  const repairedFeeds = [];
-  const queue = [...uploads];
+  const total = fundKeys.length + feedBodies.size;
+  const queue = [...fundKeys];
   await Promise.all(
-    Array.from({ length: Math.min(8, queue.length) }, async () => {
+    Array.from({ length: Math.max(1, Math.min(8, queue.length)) }, async () => {
       while (queue.length) {
         const k = queue.shift();
         let body = readFileSync(join(DIR, k));
@@ -270,60 +445,36 @@ async function readJson(key, attempts = 3) {
           }
         }
 
-        // The quarter's filings feed is SHARED — the universe run writes every
-        // manager's rows into it. Merge this run's rows in by accession and
-        // carry everyone else's through untouched. Replacing it would be the
-        // 9,000-funds-to-8 failure again, one file over.
-        if (/^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(k)) {
-          try {
-            const liveFeed = await readJson(k);
-            body = liveFeed
-              ? Buffer.from(JSON.stringify(mergePeriodFilings(liveFeed, JSON.parse(body.toString("utf8")), CIKS)))
-              : body; // nothing published for this quarter yet — ours IS the feed
-            mergedFeeds++;
-          } catch (err) {
-            // The live feed could not be READ. That is not the same as knowing
-            // a write would truncate it — and the manifest already records how
-            // many filings each quarter has, so the question can be answered
-            // without the file.
-            //
-            // If this run holds at least as many rows as the published manifest
-            // claims for the quarter, writing ours cannot lose a filing. That
-            // is the in-season case exactly: the manifest says 13, the feed
-            // object is unreadable, and ours has 13. Skipping there leaves the
-            // Filings view reporting one filing out of thirteen — stale in the
-            // one place staleness is most visible.
-            const period = k.split("/")[1];
-            const liveCount = (live?.periods ?? []).find((x) => x.period === period)?.filings ?? Infinity;
-            const mineCount = JSON.parse(body.toString("utf8")).data?.length ?? 0;
-            if (mineCount >= liveCount) {
-              console.log(
-                `::warning::could not read ${k} (${err.message}); publishing this run's ${mineCount} rows, ` +
-                  `which is not fewer than the ${liveCount} the manifest records.`,
-              );
-              repairedFeeds.push(k);
-            } else {
-              console.log(
-                `::warning::could not merge ${k} (${err.message}); this run holds ${mineCount} rows against ` +
-                  `${liveCount} published, so the feed is left alone rather than shortened.`,
-              );
-              skippedFeeds.push(k);
-              continue;
-            }
-          }
-        }
-
         await sendSigned("PUT", k, body);
-        if (++done % 25 === 0 || done === uploads.length) console.log(`  uploaded ${done}/${uploads.length}`);
+        if (++done % 100 === 0 || done === total) console.log(`  uploaded ${done}/${total}`);
       }
     }),
   );
+  for (const [k, body] of feedBodies) {
+    await sendSigned("PUT", k, body);
+    if (++done % 100 === 0 || done === total) console.log(`  uploaded ${done}/${total}`);
+  }
+
   if (mergedSummaries) console.log(`  ${mergedSummaries} fund summar${mergedSummaries === 1 ? "y" : "ies"} merged with published history`);
   if (mergedFeeds) console.log(`  ${mergedFeeds} quarter filing feed(s) merged with published rows`);
   if (repairedFeeds.length) console.log(`  ${repairedFeeds.length} feed(s) rewritten whole (unreadable, but no rows lost): ${repairedFeeds.join(", ")}`);
   if (skippedFeeds.length) console.log(`  ${skippedFeeds.length} feed(s) left untouched: ${skippedFeeds.join(", ")}`);
 
   await sendSigned("PUT", "manifest.json", Buffer.from(JSON.stringify(merged, null, 2)));
-  console.log(`\npublished ${uploads.length} artifact(s) + merged manifest.`);
+  console.log(`\npublished ${total} artifact(s) + merged manifest.`);
   if (newPeriods.length) console.log(`the dashboard's quarter stepper can now reach ${newPeriods.join(", ")}.`);
+
+  // --- advance the ingest cursor, LAST ---------------------------------------
+  //
+  // Only now. The cursor records which filers no longer need fetching, so writing
+  // it before the artifacts landed would mark work done that a failed upload
+  // never did — and nothing would ever go back for it.
+  if (PUSH_STATE) {
+    if (!existsSync(PUSH_STATE)) {
+      console.log(`::warning::${PUSH_STATE} does not exist — the cursor was not advanced, so the next run re-offers these filers.`);
+    } else {
+      await sendSigned("PUT", STATE_KEY, readFileSync(PUSH_STATE));
+      console.log(`ingest cursor advanced (${STATE_KEY}).`);
+    }
+  }
 })().catch((err) => fail(err.stack || err.message));

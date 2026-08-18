@@ -576,50 +576,79 @@ const FORM_TYPES = new Set(["13F-HR", "13F-HR/A", "13F-NT", "13F-NT/A"]);
 /**
  * Parse a daily-index or full-index `form.idx`.
  *
- * These are FIXED-WIDTH with an 8-line preamble, so splitting on whitespace
- * breaks on any company name containing spaces (which is most of them). Column
- * offsets are derived from the header rule rather than assumed.
+ * ---------------------------------------------------------------------------
+ * PARSED FROM THE ARCHIVE PATH, NOT FROM COLUMN OFFSETS.
+ * ---------------------------------------------------------------------------
+ * This used to locate the header rule, read the column offsets out of the line
+ * above it, and slice each row at those offsets. It returned ZERO ROWS against
+ * the live file, and had done for as long as anyone had looked, because EDGAR
+ * wraps the header across two lines:
  *
- * One daily file covers EVERY filer: 2026-05-15 contained 1,730 13F-HR + 62
- * 13F-HR/A + 740 13F-NT + 20 13F-NT/A = 2,552 filings in a single request. That
- * is the entire global feed for one day at a cost of one request — which is
- * what makes the SEC 403 risk manageable.
+ *   Form Type   Company Name                                            CIK
+ *         Date Filed  File Name
+ *   -------------------------------------------------------------------------
+ *   13F-HR           &PARTNERS                    107136   20260814   edgar/data/107136/0001214659-26-010148.txt
+ *
+ * The line immediately above the rule is "      Date Filed  File Name", which
+ * contains neither "Company Name" nor "CIK", so offset detection bailed and the
+ * function returned []. The offsets do not line up with the data even when the
+ * header is joined — "Company Name" sits at column 12 and the names start at 17.
+ *
+ * Every row ends in `edgar/data/{cik}/{accession}.txt`, and that is a far better
+ * anchor than any column: it carries the FILER's cik and the accession
+ * unambiguously and cannot drift. Checked against the whole of 2026-08-14 —
+ * 11,140 rows — the path's cik equals the CIK column on every single one.
+ *
+ * (Not to be confused with taking the cik from the ACCESSION, which is wrong:
+ * the accession's first ten digits are the SUBMITTER, often a filing agent. It
+ * is the `data/{cik}/` directory segment that identifies the filer.)
+ *
+ * One daily file covers EVERY filer: 2026-08-14 contained 1,784 13F-HR + 51
+ * 13F-HR/A + 767 13F-NT in a single request. That is the entire global feed for
+ * one day at a cost of one request — which is what makes the SEC 403 risk
+ * manageable.
  */
+const IDX_PATH = /(?:^|\s)(edgar\/data\/(\d{1,10})\/(\d{10}-\d{2}-\d{6})\.[A-Za-z0-9]+)\s*$/;
+
 export function parseFormIdx(text) {
   const lines = String(text).split(/\r?\n/);
+  // Skip the preamble when there is a rule line, but do not REQUIRE one: a row
+  // has to start with a 13F form type and end with an archive path, and no
+  // header line can do both.
   const ruleIdx = lines.findIndex((l) => /^-{10,}/.test(l));
-  if (ruleIdx < 0) return [];
-
-  const header = lines[ruleIdx - 1] || "";
-  const col = (label) => header.indexOf(label);
-  const cForm = Math.max(0, col("Form Type"));
-  const cName = col("Company Name");
-  const cCik = col("CIK");
-  const cDate = col("Date Filed");
-  const cFile = col("File Name");
-  if (cName < 0 || cCik < 0 || cDate < 0 || cFile < 0) return [];
+  const body = ruleIdx >= 0 ? lines.slice(ruleIdx + 1) : lines;
 
   const seen = new Set();
   const out = [];
-  for (const line of lines.slice(ruleIdx + 1)) {
+  for (const line of body) {
     if (!line.trim()) continue;
-    const formType = line.slice(cForm, cName).trim();
+    const formType = (/^(\S+)/.exec(line) ?? [])[1] ?? "";
     if (!FORM_TYPES.has(formType)) continue;
 
-    const path = line.slice(cFile).trim();
-    const accession = accessionFromPath(path);
-    if (!accession) continue;
+    const p = IDX_PATH.exec(line);
+    if (!p) continue;
+    const [, path, cikRaw, accession] = p;
+
+    // Everything between the form type and the path: the company name, the CIK
+    // column and the filing date, in that order, separated by runs of spaces.
+    //
+    // Sliced at the MATCH INDEX, not at `length - path.length`: EDGAR pads these
+    // rows with trailing spaces, so counting back from the end of the line lands
+    // inside the path and hands the whole row back as the company name.
+    const middle = line.slice(formType.length, p.index).trim();
+    const tail = /^(.*?)\s+(\d{1,10})\s+(\d{4}-?\d{2}-?\d{2})$/.exec(middle);
+
     // Index files contain byte-identical duplicate rows. Verified: Kingdon
     // Capital's 2026-05-15 13F-HR appears twice.
-    const key = `${accession}|${line.slice(cCik, cDate).trim()}`;
+    const key = `${accession}|${cikRaw}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
     out.push({
       form_type: formType,
-      company_name: line.slice(cName, cCik).trim(),
-      cik: line.slice(cCik, cDate).trim().padStart(10, "0"),
-      filing_date: normalizeDate(line.slice(cDate, cFile).trim()),
+      company_name: tail ? tail[1].trim() : middle,
+      cik: cikRaw.padStart(10, "0"),
+      filing_date: tail ? normalizeDate(tail[3]) : null,
       accession_number: accession,
       path,
     });

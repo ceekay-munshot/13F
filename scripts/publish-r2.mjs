@@ -241,11 +241,25 @@ if (PRUNE) {
   }
 }
 
+/**
+ * Prefixes prune must never touch.
+ *
+ * `state/` holds the same-day job's ingest cursor — which filers EDGAR has
+ * published and which of them still need fetching. It is not part of any build,
+ * so a diff against the local tree calls it stale every single month. Deleting
+ * it does not lose data (the next run rebuilds it by re-reading the daily
+ * indexes) but it does throw away a filing season's worth of progress and send
+ * the ingest back over ten thousand managers it had already done.
+ */
+const PROTECTED_PREFIXES = ["state/"];
+
 async function prune() {
   console.log(`\npruning keys no longer in the build…`);
   const current = await listAll();
   const local = new Set(files);
-  const stale = [...current.keys()].filter((k) => !local.has(k));
+  const stale = [...current.keys()].filter(
+    (k) => !local.has(k) && !PROTECTED_PREFIXES.some((p) => k.startsWith(p)),
+  );
   console.log(`  ${current.size} remote, ${stale.length} stale`);
 
   // SAFETY RAIL. Prune decides what to delete by diffing remote keys against

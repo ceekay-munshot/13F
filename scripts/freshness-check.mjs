@@ -147,6 +147,50 @@ if (mf) {
     fail(`It is **${season.season}** season for ${periodLabel(season.period)} and the build has not changed in ${ageDays} days. Filings arrive daily in this window.`);
   }
 
+  // 3b. COVERAGE, GRADED AGAINST WHAT THE SEC HAS ACTUALLY PUBLISHED.
+  //
+  //     Every check above compares the dashboard to itself — to its own age, to
+  //     its own previous quarter — and all of them passed for eleven days while
+  //     the same-day ingest quietly published thirteen filers out of 10,698 for
+  //     Q2 2026. The first one to notice was check 2, which only looks three days
+  //     AFTER a deadline, by which point the quarter has been wrong for a fortnight.
+  //
+  //     `known` is the count of managers EDGAR's daily indexes show have filed
+  //     for the quarter. It comes from outside our own data, it exists from the
+  //     first day of a season rather than three days after the deadline, and it
+  //     is the only number here that can tell "nobody has filed yet" apart from
+  //     "we are not reading the filings".
+  const cur = periods.find((p) => p.period === season.period);
+  if (cur?.known) {
+    const pct = cur.known ? (cur.funds ?? 0) / cur.known : 1;
+    notes.push(`${periodLabel(cur.period)} coverage: ${cur.funds} of ${cur.known} managers EDGAR has published (${(pct * 100).toFixed(0)}%)`);
+    // 90%: filings that arrive within the hour are legitimately not in yet, and
+    // a manager whose filing we quarantined is deliberately absent.
+    if (pct < 0.9) {
+      fail(
+        `${periodLabel(cur.period)}: **${cur.funds} of ${cur.known}** managers who have filed are on the dashboard ` +
+        `(${(pct * 100).toFixed(0)}%). ${cur.known - (cur.funds ?? 0)} filings the SEC has published are not ingested. ` +
+        `If the ingest is running this clears itself within a day or two — check that the last few runs of ` +
+        `\`Ingest 13F filings\` are green and that their summaries show the number climbing.`,
+      );
+    }
+    // And the counter itself has to be moving. It is written by the same-day job
+    // on every run, so a stale one means that job is not running at all — which
+    // no other check here can see, because everything else it publishes would
+    // simply stay as it was.
+    if (cur.knownAsOf) {
+      const hours = Math.round((Date.parse(today + "T23:59:59Z") - Date.parse(cur.knownAsOf)) / 3_600_000);
+      if (hours > 36) {
+        fail(`The same-day ingest has not recorded a filing count since ${cur.knownAsOf} (${hours}h ago). It runs every three hours, so it is not running.`);
+      }
+    }
+  } else if (season.season === "ramp" || season.season === "peak" || season.season === "tail") {
+    notes.push(
+      "No `known` count on the current period — the same-day ingest has not published one yet, " +
+      "so coverage cannot be graded against the SEC this run.",
+    );
+  }
+
   // 4. Quarantine and parse problems recorded by the last ingest.
   if (Array.isArray(mf.notes) && mf.notes.length) {
     fail(`The last ingest recorded ${mf.notes.length} problem(s):\n\n${mf.notes.slice(0, 20).map((n) => `- \`${n}\``).join("\n")}`);
@@ -155,9 +199,25 @@ if (mf) {
   // 5. The manifest must actually point at files that exist. A published
   //    manifest referencing missing artifacts is worse than no manifest: the UI
   //    renders chrome and then fails per widget.
+  //
+  //    CHECK THE SAME PLACE THE MANIFEST CAME FROM. This used to stat the local
+  //    checkout even when --origin had been given, so in the mode this watchdog
+  //    actually runs in it graded a tree nobody serves against a manifest from a
+  //    bucket — two unrelated things — and could report a missing file that was
+  //    published, or miss one that was not.
   for (const p of periods.slice(0, 2)) {
-    const path = `${DATA}/period/${p.period}/filings.json`;
-    if (!existsSync(path)) fail(`Manifest lists ${periodLabel(p.period)} but \`${path}\` is missing.`);
+    const rel = `period/${p.period}/filings.json`;
+    if (!ORIGIN) {
+      if (!existsSync(`${DATA}/${rel}`)) fail(`Manifest lists ${periodLabel(p.period)} but \`${DATA}/${rel}\` is missing.`);
+      continue;
+    }
+    const url = `${ORIGIN.replace(/\/+$/, "")}/data/${rel}?freshness=${Date.now()}`;
+    try {
+      const r = await fetch(url, { method: "HEAD", headers: { "cache-control": "no-cache" } });
+      if (!r.ok) fail(`Manifest lists ${periodLabel(p.period)} but \`${url}\` returned **${r.status}**.`);
+    } catch (err) {
+      fail(`Manifest lists ${periodLabel(p.period)} but \`${url}\` could not be reached (${err.message}).`);
+    }
   }
 }
 

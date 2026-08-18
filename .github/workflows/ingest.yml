@@ -1,65 +1,60 @@
 name: Ingest 13F filings
 
 # ---------------------------------------------------------------------------
-# THREE off-minute slots, all after the EDGAR cutoff.
+# SAME-DAY 13F INGEST — follow the filings, keep a cursor, never lose a place.
 #
-# Filings submitted after 17:30 ET are assigned the NEXT business day's filing
-# date, so a job that runs at UTC midnight systematically truncates the day it
-# thinks it is covering. These slots are 19:07, 21:13 and 23:31 ET.
+# WHAT WENT WRONG, AND WHY THIS FILE LOOKS DIFFERENT NOW
+# ------------------------------------------------------
+# Discovery asked EDGAR for TODAY's daily index first, every run. EDGAR answers
+# 403 — not 404 — for a daily index it has not cut yet, and 403 in this project
+# correctly means "the SEC has blocked this IP, stop". So every run declared
+# itself blocked on its first request, fell back to thirteen hard-coded
+# favourites, and reported SUCCESS. Four days past the Q2-2026 deadline the
+# dashboard held 13 filers out of the ~10,700 who had filed, and a client asked
+# why a manager who filed on 29 July was missing.
 #
-# Three, not one, because GitHub is explicit that scheduled runs are best-effort:
-# "The schedule event can be delayed during periods of high loads... some queued
-# jobs may be dropped." A single slot has silently lost multi-day windows in a
-# sibling repo. The job is idempotent, so extra runs are free.
+# Three things changed:
 #
-# Never :00 or :30 — those minutes are the most contended on the whole platform.
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# SAME-DAY 13F INGEST. Runs on a schedule again, and now publishes to R2.
+#   1. THE WATCHLIST FALLBACK IS GONE. It is what let a completely broken
+#      discovery look like a working pipeline for a whole quarter. A run that
+#      cannot reach the SEC now does nothing, says so, and stops.
+#   2. THERE IS A CURSOR, IN R2. Every daily index read seeds a list of filers
+#      owed an ingest; a filer leaves that list only once its artifacts are
+#      published. A blocked run, a dropped cron or a timeout no longer loses a
+#      filing — it only defers one.
+#   3. THE RUN IS BUDGETED AND HONEST. A filing season is ten thousand managers,
+#      far more than one job can fetch politely, so each run drains a bounded
+#      slice, publishes exactly what it finished, and prints how much of the
+#      quarter is actually on the dashboard.
 #
-# It was switched off on 2026-07-31 after taking the live dashboard from 9,396
-# funds down to 8: it wrote manifest.json and meta/filers.json — the shared
-# indexes describing the whole universe — with this job's twelve-fund versions.
+# The safety properties that were already here are unchanged: this job never
+# writes a shared index (allowlist in shared/manifest-merge.mjs), MERGES the
+# manifest into the live copy rather than replacing it, and verifies the merge
+# before anything leaves. If the live manifest cannot be read, or the merge
+# would lose a period or a filer, it exits non-zero having written NOTHING.
 #
-# Three things changed so it can run safely:
-#
-#   1. IT NO LONGER WRITES SHARED INDEXES. scripts/publish-day.mjs uploads
-#      fund/{cik}/** and nothing else, enforced by an allowlist
-#      (shared/manifest-merge.mjs) rather than by remembering.
-#   2. IT MERGES THE MANIFEST INSTEAD OF REPLACING IT. The live copy is the
-#      base, the run may only add, and the result is verified against the live
-#      copy before it is allowed to leave. Nothing shrinks.
-#   3. IT FOLLOWS THE FILINGS, NOT A LIST. Discovery reads EDGAR's daily index
-#      — one request covering every filer — so any manager who publishes gets
-#      picked up, not just a hard-coded dozen.
-#
-# It also no longer COMMITS anything. It now discovers hundreds of funds on a
-# deadline day, and the artifact tree belongs in R2 for exactly the reason
-# scripts/publish-r2.mjs exists: git keeps every version forever.
-#
-# Every three hours, because 13F filings arrive throughout the day and "same
-# day" is the whole point. Off-minute deliberately — :00 is the most contended
-# minute on the platform.
+# Every three hours, off-minute — :00 is the most contended minute on the
+# platform, and GitHub is explicit that scheduled runs are best-effort, so the
+# job is idempotent and extra runs are free.
 # ---------------------------------------------------------------------------
 on:
   schedule:
-    - cron: '17 */4 * * *'
+    - cron: '17 */3 * * *'
   workflow_dispatch:
     inputs:
       periods:
-        # TWO, not eight. A delta needs the filed quarter and the one before it,
-        # and this now runs over every fund that filed — hundreds on a deadline
-        # day. Eight was the default when this job ingested a dozen; leaving it
-        # there meant a hand-dispatched run did four times the work of the
-        # scheduled one and ran into the timeout. Longer history is preserved by
-        # merging each fund's summary, not by re-fetching it.
+        # TWO. A delta needs the filed quarter and the one before it. Longer
+        # history is preserved by merging each fund's summary, not by re-fetching.
         description: 'Quarters of history to ingest (2 is enough for deltas)'
         default: '2'
       funds:
-        description: 'Comma-separated CIKs (blank = whoever filed, from EDGAR daily index)'
+        description: 'Comma-separated CIKs (blank = whoever EDGAR says filed and we have not ingested)'
         default: ''
-      force:
-        description: 'Rebuild artifacts even if nothing changed'
+      max_funds:
+        description: 'Cap on funds this run may ingest'
+        default: '800'
+      reset_cursor:
+        description: 'Ignore the saved cursor and re-read the whole season'
         type: boolean
         default: false
 
@@ -70,15 +65,17 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   issues: write
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    # Generous but bounded. A full seed ingest is ~4 minutes; anything past 30
-    # means something is hung, and failing fast beats burning six hours.
-    timeout-minutes: 30
+    # The fund loop stops itself at --budget-seconds (40 minutes); this is the
+    # backstop for everything around it — checkout, gates, the plan, and the
+    # publish. Generous because a backlog run is a long one, bounded because a
+    # hung job should fail rather than burn six hours.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -91,6 +88,9 @@ jobs:
       - name: Validate configuration
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           if [ -z "$SEC_USER_AGENT" ]; then
             echo "::error::Repository variable SEC_USER_AGENT is not set."
@@ -102,6 +102,9 @@ jobs:
             *@*.*) ;;
             *) echo "::error::SEC_USER_AGENT must contain a contact email address."; exit 1 ;;
           esac
+          for v in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::$v is not set — see DEPLOY.md."; exit 1; fi
+          done
 
       - run: npm ci
 
@@ -121,9 +124,6 @@ jobs:
           # runs on a shared machine that many other projects also point at sec.gov,
           # so the polite budget is smaller than the published one.
           SEC_RATE_LIMIT_RPS: '3'
-        # The map only grows, and the fails-to-deliver files publish on a lag, so
-        # a short window each day is enough to stay current without re-reading a
-        # year of archives every run.
         run: node scripts/build-securities.mjs --months=4
 
       - name: Note degraded enrichment
@@ -131,132 +131,162 @@ jobs:
         run: |
           echo "::warning::CUSIP->ticker refresh failed — holdings will show issuer names without tickers. Values and deltas are unaffected."
 
-      # WHO FILED? Follow the filings, not a list.
-      #
-      # EDGAR's daily index is one file per day covering every filer, so this is
-      # a couple of requests rather than a crawl. A manual dispatch that names
-      # funds explicitly skips discovery and uses exactly those.
-      # The last good list of filers, kept between runs.
-      #
-      # The SEC refuses a request now and then — not a ban, just a busy shared
-      # machine being turned away. When that happens the run should carry on
-      # with the list it had yesterday, which is very nearly right, instead of
-      # collapsing to the thirteen hard-coded favourites.
-      - name: Restore the last known filer list
-        uses: actions/cache@v4
-        with:
-          path: .cache/last-filers.txt
-          key: 13f-filers-${{ github.run_id }}
-          restore-keys: |
-            13f-filers-
-
-      - name: Discover today's 13F filers
-        id: discover
-        env:
-          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
-          # 3, not 5. The SEC's stated ceiling is 10 across all its hosts; this
-          # runs on a shared machine that many other projects also point at sec.gov,
-          # so the polite budget is smaller than the published one.
-          SEC_RATE_LIMIT_RPS: '3'
-        run: |
-          if [ -n "${{ github.event.inputs.funds }}" ]; then
-            echo "ciks=${{ github.event.inputs.funds }}" >> "$GITHUB_OUTPUT"
-            echo "Using the funds given on dispatch."
-            exit 0
-          fi
-          # DISCOVERY IS BEST-EFFORT; THE WATCHLIST IS THE FLOOR.
-          #
-          # A 403 from the SEC is an IP-level block and is not retryable, so the
-          # discovery step is allowed to fail — but "we could not ask who filed"
-          # must not become "publish nothing today". Fall back to the curated
-          # watchlist, which needs no discovery because the CIKs are known, and
-          # shout about the degradation so it is not mistaken for a quiet day.
-          mkdir -p .cache
-          if CIKS="$(node scripts/discover-13f-filers.mjs --days=2)"; then
-            echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
-            # Keep it for the next run, in case the SEC refuses that one.
-            printf '%s' "$CIKS" > .cache/last-filers.txt
-          else
-            # Yesterday's list first — it is very nearly today's. Only if we
-            # have never had one do we drop to the hard-coded favourites.
-            if [ -s .cache/last-filers.txt ]; then
-              CIKS="$(cat .cache/last-filers.txt)"
-              echo "::warning::The SEC refused us this run. Reusing the last known filer list ($(echo "$CIKS" | tr ',' '\n' | wc -l) funds) rather than shrinking to the favourites."
-            else
-              CIKS="$(node -e "
-                const s=require('fs').readFileSync('src/lib/favourites.ts','utf8');
-                const m=[...s.matchAll(/cik:\s*\"(\d{10})\"/g)].map(x=>x[1]);
-                process.stdout.write([...new Set(m)].join(','));
-              ")"
-              echo "::warning::The SEC refused us and there is no previous list yet. Falling back to the favourites — funds outside them will NOT get same-day data this run."
-            fi
-            echo "ciks=$CIKS" >> "$GITHUB_OUTPUT"
-            echo "degraded=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Nothing filed is a legitimate outcome on a quiet day — stop cleanly
-      # rather than running an ingest over an empty list and publishing a
-      # manifest for no reason.
-      - name: Nothing new
-        if: steps.discover.outputs.ciks == ''
-        run: |
-          echo "No 13F filings in the window. Nothing to publish."
-          echo 'No 13F filings in the window.' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Ingest filings and build artifacts
-        if: steps.discover.outputs.ciks != ''
-        env:
-          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
-          # 3, not 5. The SEC's stated ceiling is 10 across all its hosts; this
-          # runs on a shared machine that many other projects also point at sec.gov,
-          # so the polite budget is smaller than the published one.
-          SEC_RATE_LIMIT_RPS: '3'
-        # Two quarters, not eight: a delta needs the filed quarter and the one
-        # before it, and this runs every three hours over hundreds of funds.
-        # The fund's longer history is preserved by merging its summary rather
-        # than by re-fetching it — see shared/manifest-merge.mjs.
-        run: |
-          node scripts/ingest-funds.mjs \
-            --periods=${{ github.event.inputs.periods || '2' }} \
-            --funds='${{ steps.discover.outputs.ciks }}' \
-            --out=public/data | tee /tmp/ingest.log
-
-      - name: Summary
-        if: always()
-        run: |
-          echo '### 13F ingest' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -25 /tmp/ingest.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo '(no log)' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
       # ---------------------------------------------------------------------
-      # PUBLISH TO R2 — ADDITIVELY.
+      # THE CURSOR LIVES IN R2, NOT IN THE ACTIONS CACHE.
       #
-      # This is the step that was removed on 2026-07-31 after it took the site
-      # from 9,396 funds to 8. It is back in a form that cannot repeat that:
-      # publish-day.mjs uploads only fund/{cik}/** for the CIKs this run
-      # actually ingested, MERGES manifest.json into the live copy rather than
-      # replacing it, and verifies the merge against the live copy before
-      # writing. If the live manifest cannot be read, or the merge would lose a
-      # period or a filer, it exits non-zero having written NOTHING.
+      # It used to be an actions/cache entry keyed on the run id. That cache was
+      # never once written, because the only step that wrote the file ran after a
+      # success that never happened — and even had it worked, GitHub evicts cache
+      # entries after seven days of no hits and under storage pressure, which is
+      # the wrong durability for the record of what a filing season still owes us.
       #
-      # NOT COMMITTED TO GIT. This job now discovers hundreds of funds on a
-      # deadline day, and git keeps every version forever — the exact problem
-      # R2 exists to solve. The committed tree stays as the universe job left
-      # it, which is what the manifest fallback in functions/data/[[path]].js
-      # is supposed to serve.
+      # R2 is already this job's storage, already credentialed here, and
+      # publish-r2.mjs is told to leave the `state/` prefix alone when it prunes.
       # ---------------------------------------------------------------------
-      - name: Publish to R2
-        if: steps.discover.outputs.ciks != ''
+      - name: Fetch the ingest cursor
+        if: github.event.inputs.reset_cursor != 'true'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: node scripts/publish-day.mjs --pull-state=.cache/day-cursor.json
+
+      # WHO STILL NEEDS FETCHING?
+      #
+      # One request lists which daily indexes EDGAR has actually cut; the ones we
+      # have not read yet are read; whoever filed and has not been published is
+      # offered up, newest-day-first for a reserved share so same-day freshness is
+      # never starved by a backlog, oldest-first for the rest so the backlog drains.
+      - name: Plan this run
+        id: plan
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '3'
         run: |
-          node scripts/publish-day.mjs \
-            --dir=public/data \
-            --ciks='${{ steps.discover.outputs.ciks }}' | tee -a /tmp/ingest.log
+          mkdir -p .cache
+          if [ -n "${{ github.event.inputs.funds }}" ]; then
+            printf '%s' '${{ github.event.inputs.funds }}' > .cache/ciks.txt
+            echo '{"period":null,"blocked":false,"filersKnown":0,"filersPending":0,"filersSelected":0}' > .cache/plan.json
+            echo "Using the funds given on dispatch; the cursor is left alone."
+            echo "dispatch=true" >> "$GITHUB_OUTPUT"
+          else
+            node scripts/discover-13f-filers.mjs \
+              --max-funds='${{ github.event.inputs.max_funds || 800 }}' \
+              --state=.cache/day-cursor.json \
+              --out-state=.cache/day-cursor.next.json \
+              --out=.cache/ciks.txt \
+              --out-plan=.cache/plan.json > /dev/null
+          fi
+          node -e '
+            const p = JSON.parse(require("fs").readFileSync(".cache/plan.json", "utf8"));
+            const out = require("fs").createWriteStream(process.env.GITHUB_OUTPUT, { flags: "a" });
+            out.write(`blocked=${p.blocked ? "true" : "false"}\n`);
+            out.write(`selected=${p.filersSelected ?? 0}\n`);
+            out.write(`pending=${p.filersPending ?? 0}\n`);
+            out.write(`known=${p.filersKnown ?? 0}\n`);
+            out.end();
+          '
+
+      - name: The SEC is refusing us this run
+        if: steps.plan.outputs.blocked == 'true'
+        run: |
+          echo "::warning::The SEC refused this machine. Nothing was lost — the cursor is untouched and the next scheduled run resumes from it on a different IP."
+          echo 'The SEC refused this run. Nothing was lost; the next run resumes from the same place.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nothing to do
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected == '0'
+        run: |
+          echo "Every filer EDGAR has published in the window is already on the dashboard."
+          echo 'Up to date — every filer EDGAR has published in the window is already on the dashboard.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Ingest filings and build artifacts
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '3'
+        # Two quarters, not eight: a delta needs the filed quarter and the one
+        # before it. The budget is what keeps a season-sized backlog inside the
+        # job timeout — the loop checks the clock between funds and stops clean,
+        # and whatever it did not reach stays queued in the cursor.
+        run: |
+          node scripts/ingest-funds.mjs \
+            --periods=${{ github.event.inputs.periods || '2' }} \
+            --funds-file=.cache/ciks.txt \
+            --budget-seconds=2400 \
+            --out-completed=.cache/completed.txt \
+            --out=public/data | tee /tmp/ingest.log
+
+      # A run that finished nothing while work was waiting is not a quiet day —
+      # it is the failure this whole file exists to make impossible. Say so loudly
+      # rather than letting a green tick imply coverage nobody has.
+      - name: Assert the run actually did something
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        run: |
+          COMPLETED=$(tr ',' '\n' < .cache/completed.txt 2>/dev/null | grep -c . || true)
+          echo "completed $COMPLETED of ${{ steps.plan.outputs.selected }} planned"
+          if [ "${COMPLETED:-0}" -eq 0 ]; then
+            echo "::error::${{ steps.plan.outputs.selected }} filers were queued and none were ingested."
+            exit 1
+          fi
+
+      # CROSS OFF WHAT THE INGEST ACTUALLY FINISHED — not what the plan offered.
+      #
+      # Those differ on every run the budget cuts short, and crossing off the plan
+      # would abandon the tail of each one. This also recomputes how many managers
+      # are now on the dashboard, which is the number the publish step stamps into
+      # the manifest and the Filings view reads.
+      - name: Advance the cursor
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0' && steps.plan.outputs.dispatch != 'true'
+        run: |
+          node scripts/discover-13f-filers.mjs --commit \
+            --state=.cache/day-cursor.next.json \
+            --completed=.cache/completed.txt \
+            --out-state=.cache/day-cursor.next.json \
+            --out-plan=.cache/plan.json
+
+      - name: Publish to R2
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        # --state is uploaded LAST and only on success, so the cursor can never
+        # mark a filer done whose artifacts did not land. On a dispatch with an
+        # explicit fund list there is no cursor to advance.
+        run: |
+          ARGS="--dir=public/data --ciks-file=.cache/completed.txt --plan=.cache/plan.json"
+          if [ "${{ steps.plan.outputs.dispatch }}" != "true" ]; then
+            ARGS="$ARGS --state=.cache/day-cursor.next.json"
+          fi
+          # shellcheck disable=SC2086
+          node scripts/publish-day.mjs $ARGS | tee -a /tmp/ingest.log
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '### 13F same-day ingest'
+            echo ''
+            if [ -f .cache/plan.json ]; then
+              node -e '
+                const p = JSON.parse(require("fs").readFileSync(".cache/plan.json", "utf8"));
+                if (p.blocked) { console.log("The SEC refused this run. Nothing lost; the next run resumes."); process.exit(0); }
+                const done = p.filersIngested ?? (p.filersKnown - p.filersPending);
+                const pct = p.filersKnown ? Math.round((done / p.filersKnown) * 100) : 0;
+                console.log(`**${p.period ?? "current quarter"}** — EDGAR has published **${p.filersKnown}** 13F filers for this quarter.`);
+                console.log("");
+                console.log(`${p.committedAt ? "After" : "Before"} this run: **${done}** on the dashboard (${pct}%), ${p.filersPending} still queued.`);
+                console.log(`This run took ${p.filersSelected}.`);
+                if (p.indexDaysUnread) console.log(`${p.indexDaysUnread} daily index file(s) still unread — the next run picks them up.`);
+              '
+            fi
+            echo ''
+            echo '```'
+            tail -25 /tmp/ingest.log 2>/dev/null || echo '(no log)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open or update failure issue
         if: failure()
@@ -268,10 +298,12 @@ jobs:
             const body = [
               `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               '',
-              'If the log shows a SEC 403: that is an IP-level block on a shared GitHub runner and is',
-              'NOT retryable. The next scheduled slot draws a different IP and normally recovers.',
-              'Escalate only if several CONSECUTIVE runs are blocked — that means the block is',
-              'following our behaviour rather than our luck.',
+              'A SEC 403 no longer fails this job: it is reported as a warning, nothing is lost, and',
+              'the next scheduled slot resumes from the ingest cursor on a different IP. So a failure',
+              'here is something else, and worth reading the log for.',
+              '',
+              'Note that EDGAR answers 403 for a path that does not exist as well as for a blocked IP.',
+              'SecFetcher tells those apart by probing a known-good file — see scripts/_sec-fetch.mjs.',
             ].join('\n');
 
             const existing = await github.rest.issues.listForRepo({

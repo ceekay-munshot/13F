@@ -33,12 +33,28 @@
 const byPeriod = (list) => new Map((list ?? []).map((p) => [p.period, p]));
 
 /**
+ * Rows kept in a quarter's filings feed.
+ *
+ * Matches the cap the universe run applies for the same reason: the feed is what
+ * the Filings view renders, nobody scrolls past a few hundred rows, and a full
+ * season is ~10,700 filings. The count of what exists travels alongside as
+ * `total`, so capping the list never means understating the quarter.
+ */
+export const FEED_ROWS = 2000;
+
+/**
  * @param {object} live      the manifest currently published (authoritative)
  * @param {object} incoming  the manifest the same-day run just built locally
- * @param {{ buildId: string, ciks: string[] }} opts
+ * @param {{ buildId: string, ciks: string[], periodTotals?: Record<string, {filings?: number, funds?: number, known?: number, knownAsOf?: string|null}> }} opts
+ *   `periodTotals` is the ACCUMULATED truth for a period, taken from the merged
+ *   filings feed rather than from this run's sample. Without it a backfill run
+ *   that publishes 450 filings into a quarter that already held 450 reports
+ *   `max(450, 450) = 450` forever, so the dashboard's count of a quarter would
+ *   freeze at one run's worth while the data behind it kept growing — which is
+ *   also the number the staleness watchdog grades, so it would alert for ever.
  * @returns {{ manifest: object, changed: boolean, newPeriods: string[] }}
  */
-export function mergeManifest(live, incoming, { buildId, ciks }) {
+export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {} }) {
   if (!live || typeof live !== "object" || !Array.isArray(live.periods)) {
     throw new Error("live manifest is missing or malformed — refusing to merge");
   }
@@ -63,16 +79,20 @@ export function mergeManifest(live, incoming, { buildId, ciks }) {
   const livePeriods = byPeriod(live.periods);
   const newPeriods = [];
   for (const p of incoming?.periods ?? []) {
+    const totals = periodTotals[p.period] ?? {};
     const existing = livePeriods.get(p.period);
     if (!existing) {
-      livePeriods.set(p.period, p);
+      livePeriods.set(p.period, { ...p, ...pick(totals) });
       newPeriods.push(p.period);
       continue;
     }
     livePeriods.set(p.period, {
       ...existing,
-      filings: Math.max(existing.filings ?? 0, p.filings ?? 0),
-      funds: Math.max(existing.funds ?? 0, p.funds ?? 0),
+      // Prefer the accumulated total from the merged feed; fall back to the
+      // larger of the two samples when this run could not read the feed.
+      filings: Math.max(existing.filings ?? 0, p.filings ?? 0, totals.filings ?? 0),
+      funds: Math.max(existing.funds ?? 0, p.funds ?? 0, totals.funds ?? 0),
+      ...pick(totals),
     });
   }
   merged.periods = [...livePeriods.values()].sort((a, b) => b.period.localeCompare(a.period));
@@ -102,6 +122,23 @@ export function mergeManifest(live, incoming, { buildId, ciks }) {
 
 const max = (a, b) => (a && b ? (a > b ? a : b) : a || b);
 const min = (a, b) => (a && b ? (a < b ? a : b) : a || b);
+
+/**
+ * The coverage fields a period row carries forward.
+ *
+ * `known` is how many managers EDGAR has published for the quarter, measured
+ * from its daily indexes. It is not a count of anything we hold, which is
+ * exactly why it is worth carrying: it is the only honest denominator for "how
+ * much of this quarter is actually on the dashboard yet".
+ */
+function pick(totals) {
+  const out = {};
+  if (totals.known != null) {
+    out.known = totals.known;
+    out.knownAsOf = totals.knownAsOf ?? null;
+  }
+  return out;
+}
 
 /**
  * Refuse to publish a merge that lost something.
@@ -195,7 +232,7 @@ export function mergeSummary(live, incoming) {
  * every other manager are carried through untouched. Anything that would drop
  * one of those throws: a shorter feed is not a fresher feed.
  */
-export function mergePeriodFilings(live, incoming, ciks) {
+export function mergePeriodFilings(live, incoming, ciks, { cap = FEED_ROWS, known = null, knownAsOf = null } = {}) {
   const liveRows = Array.isArray(live?.data) ? live.data : [];
   const inRows = Array.isArray(incoming?.data) ? incoming.data : [];
   if (!inRows.length) throw new Error("incoming feed has no rows — refusing to publish it");
@@ -209,17 +246,52 @@ export function mergePeriodFilings(live, incoming, ciks) {
   for (const r of liveRows) if (owned.has(r.cik)) mine.set(r.accession, r);
   for (const r of inRows) if (owned.has(r.cik)) mine.set(r.accession, r);
 
-  const rows = [...foreign, ...mine.values()].sort((a, b) =>
+  const all = [...foreign, ...mine.values()].sort((a, b) =>
     String(b.accepted ?? b.filed ?? "").localeCompare(String(a.accepted ?? a.filed ?? "")),
   );
 
-  const foreignBefore = liveRows.filter((r) => !owned.has(r.cik)).length;
-  const foreignAfter = rows.filter((r) => !owned.has(r.cik)).length;
-  if (foreignAfter < foreignBefore) {
-    throw new Error(`merge would drop ${foreignBefore - foreignAfter} filings belonging to other managers`);
+  // The safety property is checked on the FULL merge, before any display cap:
+  // no manager this run does not speak for may lose a row.
+  const foreignAfter = all.filter((r) => !owned.has(r.cik)).length;
+  if (foreignAfter < foreign.length) {
+    throw new Error(`merge would drop ${foreign.length - foreignAfter} filings belonging to other managers`);
   }
 
-  return { ...incoming, data: rows };
+  // THE FEED IS A DISPLAY ARTIFACT AND IS CAPPED; THE COUNT IS NOT.
+  //
+  // The universe run already caps at FEED_ROWS — nobody scrolls past a few
+  // hundred rows and shipping ten thousand to every visitor is pure weight — and
+  // records the real number alongside. The same-day merge has to do the same, or
+  // a season that ends with ~10,700 filers would grow this file to several
+  // megabytes on the one view people open during filing week.
+  //
+  // `total` is the LARGER of what was recorded and what this merge can see, and
+  // never a plain recount: recounting a capped list can only ever see the rows
+  // that survived the cap, which would report a ten-thousand-filing quarter as
+  // two thousand the moment a same-day run touched it.
+  //
+  // While a quarter is small the merged list IS the whole quarter and `all.length`
+  // is exact. Once it passes the cap this number stops climbing, and the manifest
+  // stops relying on it: the ingest cursor knows precisely how many managers have
+  // been through, and publish-day.mjs passes that instead.
+  const rows = cap > 0 ? all.slice(0, cap) : all;
+
+  return {
+    ...incoming,
+    total: Math.max(Number(live?.total) || 0, all.length),
+    funds: Math.max(Number(live?.funds) || 0, new Set(all.map((r) => r.cik)).size),
+    shown: rows.length,
+    // How many managers EDGAR has actually published for this quarter. Measured
+    // from the daily indexes, not from what we hold — it is the denominator that
+    // turns "9,255 outstanding" (a lie, they had filed) into "463 of 10,698
+    // ingested so far" (the truth).
+    ...(known != null
+      ? { known, knownAsOf }
+      : live?.known != null
+        ? { known: live.known, knownAsOf: live.knownAsOf ?? null }
+        : {}),
+    data: rows,
+  };
 }
 
 /**

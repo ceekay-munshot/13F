@@ -285,3 +285,143 @@ describe("mergePeriodFilings", () => {
     expect(out.data[0].positions).toBe(10);
   });
 });
+
+// ---------------------------------------------------------------------------
+// COUNTING A QUARTER THAT IS BEING FILLED ONE RUN AT A TIME.
+//
+// These landed with the fix for the Q2-2026 outage. Before it the same-day job
+// ingested thirteen funds and the universe job supplied every real number, so
+// "take whichever count is bigger" was right. Once the same-day job became the
+// thing that fills a quarter — ten thousand managers, several hundred a run —
+// that rule froze the quarter's count at one run's worth for ever, and the
+// staleness watchdog grades exactly that number.
+// ---------------------------------------------------------------------------
+describe("mergePeriodFilings — counting a quarter as it fills", () => {
+  const row = (cik, accession, accepted) => ({
+    cik, accession, accepted, fund: `FUND ${cik}`, form: "13F-HR", filed: accepted.slice(0, 10),
+  });
+  const env = (rows, over = {}) => ({ kind: "period-filings", period: "2026-06-30", data: rows, ...over });
+
+  it("counts the whole merged quarter while it still fits under the cap", () => {
+    const ours = ["0000000002"];
+    const live = env([row("0000000001", "a-1", "2026-08-14T12:00:00Z")], { total: 1, funds: 1 });
+    const incoming = env([row("0000000002", "b-1", "2026-08-15T12:00:00Z")]);
+    const out = mergePeriodFilings(live, incoming, ours);
+    expect(out.total).toBe(2);
+    expect(out.funds).toBe(2);
+  });
+
+  it("never reports fewer than what was already recorded", () => {
+    // The universe run publishes 10,776 filings for a quarter and ships the
+    // newest 2,000 of them. A same-day run that merges nine rows into that must
+    // not recount the visible list and announce the quarter shrank to 2,009.
+    const ours = ["0000000002"];
+    const many = Array.from({ length: 20 }, (_, i) =>
+      row("0000000001", `a-${i}`, `2026-05-15T12:00:${String(i).padStart(2, "0")}Z`));
+    const live = env(many, { total: 10776, funds: 10648 });
+    const incoming = env([row("0000000002", "b-1", "2026-05-16T12:00:00Z")]);
+    const out = mergePeriodFilings(live, incoming, ours, { cap: 20 });
+    expect(out.total).toBe(10776);
+    expect(out.funds).toBe(10648);
+  });
+
+  it("does not double-count a filing it already published", () => {
+    const ours = ["0000000002"];
+    const live = env(
+      [row("0000000001", "a-1", "2026-08-14T12:00:00Z"), row("0000000002", "b-1", "2026-08-15T12:00:00Z")],
+      { total: 450, funds: 450 },
+    );
+    const incoming = env([row("0000000002", "b-1", "2026-08-15T12:00:00Z")]);
+    expect(mergePeriodFilings(live, incoming, ours).total).toBe(450);
+  });
+
+  it("caps the rows it ships but never the count it reports", () => {
+    // A whole season is ~10,700 filings. Shipping them all to every visitor of
+    // the Filings view is megabytes for a list nobody scrolls; the count travels
+    // alongside so capping the list never understates the quarter.
+    const ours = ["0000000002"];
+    const many = Array.from({ length: 30 }, (_, i) =>
+      row("0000000001", `a-${i}`, `2026-08-14T12:00:${String(i).padStart(2, "0")}Z`));
+    const live = env(many, { total: 30, funds: 1 });
+    const incoming = env([row("0000000002", "b-1", "2026-08-15T12:00:00Z")]);
+    const out = mergePeriodFilings(live, incoming, ours, { cap: 10 });
+    expect(out.data).toHaveLength(10);
+    expect(out.shown).toBe(10);
+    expect(out.total).toBe(31);
+    expect(out.funds).toBe(2);
+    // Newest first, so what IS shipped is the part of the feed anyone reads.
+    expect(out.data[0].accession).toBe("b-1");
+  });
+
+  it("still refuses to drop another manager's row, cap or no cap", () => {
+    // The safety property is checked on the full merge, BEFORE the display cap —
+    // otherwise capping would look like the very data loss the guard exists for.
+    const ours = ["0000000002"];
+    const live = env([row("0000000001", "a-1", "2026-08-14T12:00:00Z")], { total: 1, funds: 1 });
+    const incoming = env([row("0000000002", "b-1", "2026-08-15T12:00:00Z")]);
+    const out = mergePeriodFilings(live, incoming, ours, { cap: 5 });
+    expect(out.data.some((r) => r.accession === "a-1")).toBe(true);
+  });
+
+  it("carries how many managers EDGAR has published, and keeps it when not re-supplied", () => {
+    const ours = ["0000000002"];
+    const first = mergePeriodFilings(
+      env([row("0000000001", "a-1", "2026-08-14T12:00:00Z")]),
+      env([row("0000000002", "b-1", "2026-08-15T12:00:00Z")]),
+      ours,
+      { known: 10698, knownAsOf: "2026-08-18T05:00:00.000Z" },
+    );
+    expect(first.known).toBe(10698);
+
+    // A later run that could not draw a plan must not erase the denominator.
+    const second = mergePeriodFilings(first, env([row("0000000002", "b-2", "2026-08-16T12:00:00Z")]), ours);
+    expect(second.known).toBe(10698);
+    expect(second.knownAsOf).toBe("2026-08-18T05:00:00.000Z");
+  });
+});
+
+describe("mergeManifest — period totals from the merged feed", () => {
+  const live = {
+    buildId: "abc1234",
+    coverage: { from: "2025-06-30", to: "2026-06-30" },
+    periods: [{ period: "2026-06-30", label: "Q2 2026", deadline: "2026-08-14", filings: 450, funds: 450 }],
+    counts: { filers: 9268, filings: 42340, holdings: 32866 },
+    funds: {},
+  };
+  const incoming = {
+    buildId: "def5678",
+    periods: [{ period: "2026-06-30", label: "Q2 2026", deadline: "2026-08-14", filings: 450, funds: 450 }],
+  };
+
+  it("uses the accumulated total rather than freezing at one run's sample", () => {
+    // Without periodTotals this is max(450, 450) = 450 for ever, however many
+    // runs go by — the exact shape of the bug that hid the Q2-2026 outage.
+    const { manifest } = mergeManifest(live, incoming, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+      periodTotals: { "2026-06-30": { filings: 900, funds: 895, known: 10698, knownAsOf: "2026-08-18T05:00:00.000Z" } },
+    });
+    const row = manifest.periods.find((p) => p.period === "2026-06-30");
+    expect(row.filings).toBe(900);
+    expect(row.funds).toBe(895);
+    expect(row.known).toBe(10698);
+    expect(row.knownAsOf).toBe("2026-08-18T05:00:00.000Z");
+  });
+
+  it("never lets a total go backwards, even if the feed read low", () => {
+    const { manifest } = mergeManifest(live, incoming, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+      periodTotals: { "2026-06-30": { filings: 3, funds: 3 } },
+    });
+    const row = manifest.periods.find((p) => p.period === "2026-06-30");
+    expect(row.filings).toBe(450);
+    expect(row.funds).toBe(450);
+    expect(verifyMerge(live, manifest)).toEqual([]);
+  });
+
+  it("works with no periodTotals at all — the old callers keep working", () => {
+    const { manifest } = mergeManifest(live, incoming, { buildId: "def5678", ciks: ["0001067983"] });
+    expect(manifest.periods.find((p) => p.period === "2026-06-30").filings).toBe(450);
+  });
+});
