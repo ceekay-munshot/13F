@@ -518,3 +518,64 @@ describe("exits carry the reporting unit", () => {
     expect(exits[0].ssh_prnamt_type).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE REPORTED TOTAL IS FOLDED TOO.
+//
+// It used to be read off `foldable[foldable.length - 1]` in the caller — the
+// last element of the INPUT array. The submissions API returns filings
+// newest-first, so for every amended period that picked the OLDEST filing: the
+// original the amendment exists to supersede. Verified live against Berkshire's
+// 2025-03-31 and Cantillon's three 2026-02-17 restatements.
+// ---------------------------------------------------------------------------
+describe("foldFilings — the cover-page total", () => {
+  const f = (accession, accepted, over = {}) => ({
+    accession_number: accession,
+    acceptance_datetime: accepted,
+    is_amendment: false,
+    amendment_type: null,
+    table_value_total: 100,
+    rows: [],
+    ...over,
+  });
+
+  it("takes the restatement's total, whatever order the array arrived in", () => {
+    // Newest-first, exactly as the submissions API hands them over.
+    const filings = [
+      f("a-2", "2026-02-17T12:00:00Z", { is_amendment: true, amendment_type: "RESTATEMENT", table_value_total: 250 }),
+      f("a-1", "2025-10-30T12:00:00Z", { table_value_total: 999 }),
+    ];
+    expect(foldFilings(filings).reportedTotalUsd).toBe(250);
+  });
+
+  it("adds a NEW HOLDINGS amendment rather than replacing with it", () => {
+    // Its cover total covers only the entries it adds, so the period's total is
+    // the original plus the addition — the same rule the rows follow.
+    const filings = [
+      f("a-2", "2026-02-17T12:00:00Z", { is_amendment: true, amendment_type: "NEW HOLDINGS", table_value_total: 40 }),
+      f("a-1", "2025-10-30T12:00:00Z", { table_value_total: 1000 }),
+    ];
+    expect(foldFilings(filings).reportedTotalUsd).toBe(1040);
+  });
+
+  it("lets a later restatement wipe an earlier addition, as the rows do", () => {
+    const filings = [
+      f("a-1", "2025-10-30T12:00:00Z", { table_value_total: 1000 }),
+      f("a-2", "2025-11-30T12:00:00Z", { is_amendment: true, amendment_type: "NEW HOLDINGS", table_value_total: 40 }),
+      f("a-3", "2026-02-17T12:00:00Z", { is_amendment: true, amendment_type: "RESTATEMENT", table_value_total: 900 }),
+    ];
+    expect(foldFilings(filings).reportedTotalUsd).toBe(900);
+  });
+
+  it("ignores a filing with no cover total instead of nulling the period", () => {
+    const filings = [
+      f("a-2", "2026-02-17T12:00:00Z", { is_amendment: true, amendment_type: "RESTATEMENT", table_value_total: null }),
+      f("a-1", "2025-10-30T12:00:00Z", { table_value_total: 1000 }),
+    ];
+    expect(foldFilings(filings).reportedTotalUsd).toBe(1000);
+  });
+
+  it("is null when nothing reported one", () => {
+    expect(foldFilings([f("a-1", "2025-10-30T12:00:00Z", { table_value_total: null })]).reportedTotalUsd).toBeNull();
+  });
+});

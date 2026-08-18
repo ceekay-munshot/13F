@@ -86,6 +86,8 @@ export function FilingsView({
   // First load vs reload. A ref so it cannot itself retrigger the effect.
   const hasData = useRef(false);
   const [rows, setRows] = useState<FilingRow[] | null>(null);
+  /** Filings this quarter actually has, against how many of them are in `rows`. */
+  const [feedTotal, setFeedTotal] = useState(0);
   const [timeline, setTimeline] = useState<{ cik: string; fund: string; lag: number; period: string; color: string }[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,7 +110,8 @@ export function FilingsView({
     (async () => {
       const current = await loadPeriodFilings(period, mf);
       if (cancelled) return;
-      setRows(current);
+      setRows(current.rows);
+      setFeedTotal(current.total);
       // PAINT NOW. The feed, the KPIs and the amendments card are all fully
       // determined by this one file. Everything below only builds the timeline
       // chart, and holding the whole page as skeletons until it finished meant
@@ -133,7 +136,7 @@ export function FilingsView({
         periods.map(async (p) => {
           try {
             const fs = await loadPeriodFilings(p, mf);
-            for (const r of fs) {
+            for (const r of fs.rows) {
               if (!r.accepted) continue;
               // ORIGINAL filings only. Amendments arrive arbitrarily late —
               // Cantillon restated three 2025 quarters on one day in Feb 2026,
@@ -186,6 +189,8 @@ export function FilingsView({
    * nothing is hidden silently.
    */
   const FEED_ROWS = 200;
+  /** Same reasoning, for the outstanding list — see the note beside that table. */
+  const OUTSTANDING_ROWS = 200;
   const shown = useMemo(() => filtered.slice(0, FEED_ROWS), [filtered]);
 
   const deadline = filingDeadline(period) as string;
@@ -212,16 +217,39 @@ export function FilingsView({
   const stillLoading = known !== null && known > held;
   const notYetLoaded = stillLoading ? known - held : 0;
 
-  // Managers we hold NO filing from and that EDGAR has not published one for
-  // either. Only meaningful once the quarter is fully ingested — while it is
-  // still loading, absence from our copy says nothing about the filer.
-  const outstanding = filers.filter((f) => !filedCiks.has(f.cik));
+  /**
+   * CAN WE EVEN NAME WHO HAS NOT FILED?
+   *
+   * Only if this list is the WHOLE quarter. The feed is capped at 2,000 rows by
+   * both producers — a season is ~10,700 filings and nobody scrolls past a few
+   * hundred — and the real count travels beside it as `total`. Naming managers
+   * absent from a capped list is a statement about the cap, not about them: for
+   * Q1 2026, a quarter that is completely ingested, it put roughly 7,300
+   * managers under the heading "no Q1 2026 filing" when every one of them had
+   * filed.
+   *
+   * So the list is only offered when the feed is complete AND the quarter is
+   * fully ingested. Otherwise the card says what it actually knows.
+   */
+  const feedComplete = (rows ?? []).length >= feedTotal;
+  const canNameOutstanding = feedComplete && !stillLoading;
+  const outstanding = canNameOutstanding ? filers.filter((f) => !filedCiks.has(f.cik)) : [];
   const amendments = (rows ?? []).filter((r) => r.amendment);
   const notices = (rows ?? []).filter((r) => r.notice);
   const latest = (rows ?? []).reduce<string | null>((a, r) => (r.accepted && (!a || r.accepted > a) ? r.accepted : a), null);
 
-  // Chart lanes: one per fund, so a dot's vertical position identifies the manager.
-  const lanes = useMemo(() => filers.map((f, i) => ({ ...f, y: i + 1, color: fundColor(i) })), [filers]);
+  // Chart lanes: one per fund THAT ACTUALLY HAS A DOT, so a dot's vertical
+  // position identifies the manager.
+  //
+  // It used to be one per fund in the universe — 9,268 of them — and every one
+  // was passed to the axis as an explicit tick. Recharts materialises each
+  // supplied tick, so the chart carried ~9,000 tick objects for the few hundred
+  // managers with a point on it. The repo's own perf work capped the feed rows
+  // and the scatter dots for exactly this reason and never touched the lanes.
+  const lanes = useMemo(() => {
+    const plotting = new Set(timeline.map((p) => p.cik));
+    return filers.filter((f) => plotting.has(f.cik)).map((f, i) => ({ ...f, y: i + 1, color: fundColor(i) }));
+  }, [filers, timeline]);
   const laneOf = useMemo(() => new Map(lanes.map((l) => [l.cik, l.y])), [lanes]);
 
   /**
@@ -462,19 +490,31 @@ export function FilingsView({
         {/* INSIGHT — who is missing. A dashboard that says what is MISSING
             cannot go silently stale, which is the worst failure mode here. */}
         <WidgetCard
-          title={stillLoading ? "Not read yet" : "Outstanding"}
-          // The honest subtitle depends on whether the quarter is complete. While
-          // it is loading, a manager's absence from our copy is a fact about us,
-          // not about them, and the heading has to say which.
+          title={canNameOutstanding ? "Outstanding" : "Still loading"}
+          // The honest subtitle depends on what we can actually establish. A
+          // manager's absence from a capped or half-ingested list is a fact
+          // about us, not about them, and the heading has to say which.
           subtitle={
-            stillLoading
-              ? `We have not read a ${periodLabel(period)} filing for these yet — ${count(notYetLoaded)} managers are still queued`
-              : `Managers with no ${periodLabel(period)} filing`
+            canNameOutstanding
+              ? `Managers with no ${periodLabel(period)} filing`
+              : stillLoading
+                ? `${count(notYetLoaded)} managers have filed with the SEC and are still queued for reading`
+                : `The feed holds the ${count((rows ?? []).length)} most recent of ${count(feedTotal)} filings, so who is missing cannot be listed`
           }
           bodyMinHeight={200}
         >
           {loading ? (
             <TableSkeleton rows={4} cols={2} />
+          ) : !canNameOutstanding ? (
+            <EmptyState
+              icon="◷"
+              message={stillLoading ? "This quarter is still being read" : "Not enough of the feed to say"}
+              hint={
+                stillLoading
+                  ? `${count(held)} of ${count(known ?? 0)} managers who filed are loaded. Naming the rest as "not filed" would be wrong — they have filed, we have not read them yet.`
+                  : `Only the ${count((rows ?? []).length)} newest of ${count(feedTotal)} filings are carried here, so a manager's absence from the list means nothing.`
+              }
+            />
           ) : outstanding.length === 0 ? (
             <EmptyState icon="✓" message="Every tracked fund has filed" hint={`All ${filers.length} managers reported for ${periodLabel(period)}.`} />
           ) : (
@@ -498,6 +538,11 @@ export function FilingsView({
                   ))}
                 </tbody>
               </table>
+              {outstanding.length > OUTSTANDING_ROWS && (
+                <div style={{ padding: "8px 12px", fontSize: 11.5, color: t.textMuted }}>
+                  Showing {count(OUTSTANDING_ROWS)} of {count(outstanding.length)} managers with no {periodLabel(period)} filing.
+                </div>
+              )}
             </div>
           )}
         </WidgetCard>

@@ -100,7 +100,44 @@ export function foldFilings(filings) {
     });
   }
 
-  return { rows, accessions, warnings };
+  return { rows, accessions, warnings, reportedTotalUsd: foldReportedTotal(ordered) };
+}
+
+/**
+ * The period's REPORTED total — the cover-page figure, folded on exactly the
+ * rules the rows are folded on.
+ *
+ * It has to live here, next to the row fold, because it is the same question
+ * asked of a different field and the two must never disagree. The caller used to
+ * answer it with `foldable[foldable.length - 1].table_value_total` — the LAST
+ * ELEMENT OF THE INPUT ARRAY. The submissions API returns filings newest-first,
+ * so for every amended period that picked the OLDEST filing: the original, the
+ * one the amendment exists to supersede. Verified live — Berkshire's 2025-03-31
+ * original reports 110 entries and $258.7bn where the amendment restates it, and
+ * Cantillon's three 2026-02-17 restatements sit ahead of their originals in the
+ * array exactly the same way.
+ *
+ * The line immediately after it in the caller already sorted the same array to
+ * get the latest acceptance, which is what makes this a slip rather than a
+ * judgement: array position was never acceptance order.
+ *
+ * And "take the newest" would still have been wrong. A NEW HOLDINGS amendment's
+ * cover total covers only the entries it adds, so the period's reported total is
+ * the original plus each addition — the same accumulate-or-reset the rows get.
+ *
+ * @param {Array} ordered  filings sorted oldest-first by acceptance
+ * @returns {number|null}
+ */
+function foldReportedTotal(ordered) {
+  let total = null;
+  for (const f of ordered) {
+    const v = f.table_value_total;
+    if (v == null) continue;
+    const type = (f.amendment_type || "").toUpperCase();
+    if (f.is_amendment && type === "NEW HOLDINGS") total = (total ?? 0) + v;
+    else total = v; // an original, a restatement, or an unclassified amendment
+  }
+  return total;
 }
 
 // ---------------------------------------------------------------------------

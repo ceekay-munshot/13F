@@ -494,9 +494,34 @@ export function prefetchFund(cik: string, period: string, mf: Manifest): void {
   void loadFundPeriod(cik, period, mf, 0).catch(() => {});
 }
 
-export async function loadPeriodFilings(period: string, mf: Manifest): Promise<FilingRow[]> {
-  const env = await get<{ data: FilingRow[] }>(`period/${period}/filings.json`, mf);
-  return env.data;
+/** A quarter's feed, and — crucially — whether it is the WHOLE quarter. */
+export interface PeriodFeed {
+  rows: FilingRow[];
+  /** Filings that exist for this quarter. */
+  total: number;
+  /** How many of them are in `rows`. Less than `total` means the list is a tail. */
+  shown: number;
+}
+
+/**
+ * The quarter's filing feed.
+ *
+ * RETURNS THE ENVELOPE, NOT JUST THE ROWS. The producers cap this file at 2,000
+ * rows — a full season is ~10,700 filings and nobody scrolls past a few hundred —
+ * and record the real count beside it. This function used to return `env.data`
+ * and drop `total`/`shown`, so every consumer had to assume the list was the
+ * whole quarter. The Filings view did assume it, subtracted the visible CIKs from
+ * the entire filer universe, and printed the remainder under the heading
+ * "Outstanding — managers with no filing". For Q1 2026 that named roughly 7,300
+ * managers as not having filed when all of them had.
+ */
+export async function loadPeriodFilings(period: string, mf: Manifest): Promise<PeriodFeed> {
+  const env = await get<{ data: FilingRow[]; total?: number; shown?: number }>(
+    `period/${period}/filings.json`,
+    mf,
+  );
+  const rows = env.data ?? [];
+  return { rows, total: env.total ?? rows.length, shown: env.shown ?? rows.length };
 }
 
 /**

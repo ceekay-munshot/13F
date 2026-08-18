@@ -382,12 +382,12 @@ await runJob(async () => {
             acceptance_datetime: p.acceptance_datetime,
             is_amendment: p.is_amendment,
             amendment_type: p.amendment_type,
+            table_value_total: p.table_value_total,
             rows: p.rows,
           })),
         );
 
         const summary = summarizeHoldings(folded.rows);
-        const last = foldable[foldable.length - 1];
         loaded.set(period, {
           noticeOnly: false,
           holdings: folded.rows,
@@ -395,7 +395,11 @@ await runJob(async () => {
           warnings: folded.warnings,
           value_long_usd: summary.value_long_usd,
           summary,
-          reported_total_usd: last.table_value_total,
+          // From the FOLD, not from the last element of the input array. The
+          // submissions API returns filings newest-first, so array-last was the
+          // OLDEST filing — the original an amendment exists to supersede. See
+          // foldReportedTotal in shared/fold.mjs.
+          reported_total_usd: folded.reportedTotalUsd,
           confidentialOmitted: foldable.some((p) => p.is_confidential_omitted),
           acceptance: foldable.map((p) => p.acceptance_datetime).sort().pop(),
           filings: parsed,
