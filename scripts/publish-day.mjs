@@ -600,19 +600,44 @@ async function readJson(key, attempts = 3) {
   if (PUSH_STATE) {
     if (!existsSync(PUSH_STATE)) {
       console.log(`::warning::${PUSH_STATE} does not exist — the cursor was not advanced, so the next run re-offers these filers.`);
-    } else if (droppedFunds.size) {
-      // The cursor was advanced for every fund the ingest finished, including
-      // the ones dropped here. Rather than teach this script the cursor's shape
-      // to un-advance a handful, leave it where it was: the next run re-offers
-      // this whole batch and re-fetching a few hundred funds we already have is
-      // idempotent. Wasting one run beats losing a manager.
-      console.log(
-        `::warning::${droppedFunds.size} fund(s) were dropped from this publish, so the cursor is left ` +
-        `where it was and the next run repeats this batch. Nothing is lost.`,
-      );
     } else {
-      await sendSigned("PUT", STATE_KEY, readFileSync(PUSH_STATE));
-      console.log(`ingest cursor advanced (${STATE_KEY}).`);
+      // REQUEUE ONLY THE FUNDS THIS PUBLISH DROPPED — bank the rest.
+      //
+      // The commit step already crossed EVERY completed fund off the cursor,
+      // including any that then failed their summary merge here (a transient
+      // "terminated" R2 read is the usual cause). The first version of this
+      // guard reacted to a single drop by discarding the WHOLE advance and
+      // re-offering the entire batch next run. That is safe but ruinously slow:
+      // at ~555 funds a run a lone transient drop is common, so most runs banked
+      // nothing and the next simply re-did all 555 — the cursor crept forward
+      // only on the rare drop-free run, roughly quartering real throughput.
+      //
+      // The correct move is surgical: put just the dropped CIKs back on the
+      // pending list (on every day whose index listed them), leave the other
+      // ~554 crossed off, and advance. A dropped fund is retried next run; a
+      // finished fund is never re-fetched. Still never loses a manager.
+      let cursor;
+      try {
+        cursor = JSON.parse(readFileSync(PUSH_STATE, "utf8"));
+      } catch (err) {
+        fail(`the cursor at ${PUSH_STATE} did not parse (${err.message}); refusing to publish a broken cursor.`);
+      }
+      let requeued = 0;
+      if (droppedFunds.size && cursor?.days) {
+        for (const day of Object.values(cursor.days)) {
+          const all = new Set(day.all ?? []);
+          const pending = new Set(day.pending ?? []);
+          for (const cik of droppedFunds) {
+            if (all.has(cik) && !pending.has(cik)) { pending.add(cik); requeued++; }
+          }
+          day.pending = [...pending];
+        }
+      }
+      await sendSigned("PUT", STATE_KEY, Buffer.from(JSON.stringify(cursor)));
+      console.log(
+        `ingest cursor advanced (${STATE_KEY})` +
+        (droppedFunds.size ? ` · ${droppedFunds.size} dropped fund(s) requeued for the next run` : "") + ".",
+      );
     }
   }
 })().catch((err) => fail(err.stack || err.message));
