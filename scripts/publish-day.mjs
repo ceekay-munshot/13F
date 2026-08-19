@@ -105,6 +105,19 @@ const DRY_BASE = (process.env.LIVE_MANIFEST_URL || "").replace(/\/manifest\.json
 /** path -> cache key, filled from the live manifest once a dry run has read it. */
 let DRY_BUILD = {};
 
+/** The published origin, for reading an artifact the direct R2 stream keeps aborting on. */
+const SITE = (process.env.SITE_URL || "https://13f-eo2.pages.dev").replace(/\/+$/, "");
+/** The live manifest, kept module-level so readJson can resolve an artifact's cache key. */
+let LIVE_MANIFEST = null;
+
+/** The cache key the manifest currently hands out for a logical artifact path. */
+function liveKeyFor(key) {
+  if (!LIVE_MANIFEST) return null;
+  const m = /^fund\/(\d{10})\/summary\.json$/.exec(key);
+  if (m) return LIVE_MANIFEST.funds?.[m[1]] || LIVE_MANIFEST.buildId;
+  return LIVE_MANIFEST.shared?.[key] || LIVE_MANIFEST.buildId;
+}
+
 async function sendSigned(method, key, body, okStatuses = new Set()) {
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -160,7 +173,7 @@ function walk(dir, base = dir, out = []) {
  *
  * Returns null for 404 — "not published yet" is an answer, not a failure.
  */
-async function readJson(key, attempts = 3) {
+async function readJson(key, attempts = 4) {
   let last;
   for (let i = 1; i <= attempts; i++) {
     try {
@@ -189,8 +202,32 @@ async function readJson(key, attempts = 3) {
       return JSON.parse(await res.text());
     } catch (err) {
       last = err;
-      if (i < attempts) await new Promise((r) => setTimeout(r, i * 400));
+      if (i < attempts) await new Promise((r) => setTimeout(r, i * 500));
     }
+  }
+
+  // THE DIRECT R2 STREAM KEEPS ABORTING — read the published copy over the CDN.
+  //
+  // Some artifacts (FMR/Fidelity's summary among them, CIK 0000914208) reliably
+  // return `terminated` on the signed R2 GET: the request succeeds and the body
+  // stream aborts part way through, every attempt. Left there, the fund was
+  // DROPPED from every run — a major manager permanently absent, and, because
+  // its drop suppressed the whole run's cursor advance under the old logic, the
+  // jam that stalled the backfill for hours.
+  //
+  // The same bytes serve cleanly over the CDN, keyed the way the manifest hands
+  // them out. A published artifact is a published artifact whichever door we
+  // read it through, so this is a fallback read, not a weakening of anything.
+  if (!DRY && LIVE_MANIFEST) {
+    const b = liveKeyFor(key);
+    try {
+      const r = await fetch(`${SITE}/data/${key}${b ? `?b=${b}` : ""}`, { headers: { "cache-control": "no-cache" } });
+      if (r.status === 404) return null;
+      if (r.ok) {
+        console.log(`::warning::read ${key} over the CDN after the direct R2 stream aborted (${last?.message ?? "terminated"}).`);
+        return await r.json();
+      }
+    } catch { /* fall through to the original error */ }
   }
   throw last;
 }
@@ -325,6 +362,9 @@ async function readJson(key, attempts = 3) {
       fail(`the live manifest did not parse (${err.message}). Refusing to overwrite it.`);
     }
   }
+
+  // Now readJson can resolve any artifact's cache key for its CDN fallback.
+  LIVE_MANIFEST = live;
 
   // --- merge the quarter filing feeds, BEFORE the manifest -------------------
   //
