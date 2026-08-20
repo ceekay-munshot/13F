@@ -84,6 +84,17 @@ jobs:
           SEC_RATE_LIMIT_RPS: '5'
         run: node scripts/build-securities.mjs --months=6
 
+      # Same contract as the ticker map: enrichment, never a blocker. Without it
+      # every sector reads "Unclassified", which is legible; a failed run here
+      # must not cost the universe ingest that follows.
+      - name: Refresh sector map
+        id: sectors
+        continue-on-error: true
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '5'
+        run: node scripts/build-sectors.mjs --quarters=4
+
       - name: Note degraded enrichment
         if: steps.securities.outcome != 'success'
         run: |

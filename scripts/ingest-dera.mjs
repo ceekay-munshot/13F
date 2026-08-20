@@ -95,6 +95,20 @@ const SECURITIES = (() => {
   return JSON.parse(readFileSync(p, "utf8")).securities ?? {};
 })();
 
+/**
+ * ticker -> { sic, sector }, from scripts/build-sectors.mjs.
+ *
+ * Enrichment, like the ticker map: absent means every sector reads
+ * "Unclassified", which is legible, rather than the run failing.
+ */
+const SECTOR_MAP = (() => {
+  const p = args.sectors || "data/sectors.json";
+  if (!existsSync(p)) return {};
+  return JSON.parse(readFileSync(p, "utf8")).sectors ?? {};
+})();
+const sectorOf = (ticker) =>
+  (ticker && SECTOR_MAP[String(ticker).toUpperCase()]?.sector) || "Unclassified";
+
 /** Split a DERA tab-separated line, tolerating trailing empties. */
 function tsv(line) {
   return line.split("\t").map((c) => c.trim());
@@ -423,6 +437,8 @@ await runJob(async () => {
   const filerIndex = [];
   const allSeries = [];
   const filingsByPeriod = new Map();
+  /** period -> sector -> { bought, sold, held } in USD, across EVERY filer. */
+  const sectorFlows = new Map();
   let latestAcceptance = "";
   let holdingsWritten = 0;
 
@@ -589,6 +605,50 @@ await runJob(async () => {
           valuePrior: c.value_prior, weightPrior: c.weight_prior,
         })).sort((a, b) => (b.valuePrior ?? 0) - (a.valuePrior ?? 0));
 
+        // ---- universe-wide sector flows ---------------------------------
+        //
+        // TRADED value, not change in value. dValue moves when the PRICE moves,
+        // so summing it reports a manager who touched nothing as a buyer:
+        // measured on this quarter's tracked funds, Computers & Hardware showed
+        // +$8.11B by value and exactly $0 of trading. Shares times the
+        // period-end price isolates the decision from the market.
+        //
+        // A fund whose deltas were suppressed contributes nothing — a structural
+        // event is not trading, and letting one through would put a whole book's
+        // worth of phantom flow into a sector.
+        if (!suppressed) {
+          let bucket = sectorFlows.get(period);
+          if (!bucket) { bucket = new Map(); sectorFlows.set(period, bucket); }
+          const bump = (ticker, traded, value) => {
+            const k = sectorOf(ticker);
+            const e = bucket.get(k) ?? { bought: 0, sold: 0, held: 0 };
+            if (traded > 0) e.bought += traded;
+            else if (traded < 0) e.sold += -traded;
+            e.held += value ?? 0;
+            bucket.set(k, e);
+          };
+          for (const r of rows) {
+            if (r.type || r.unit !== "SH") continue;   // long equity only
+            // A NEW position carries d_shares = null — there is no prior
+            // holding to subtract from — so reading the share delta alone
+            // counts a brand-new stake as zero buying while still counting
+            // every full exit. That asymmetry made EVERY sector net-negative
+            // across all 13F filers, which is not a thing that can happen.
+            // A new position is, by definition, entirely a purchase.
+            const traded = r.action === "NEW"
+              ? (r.value ?? 0)
+              : (r.dShares != null && r.price != null ? r.dShares * r.price : 0);
+            bump(r.ticker, traded, r.value);
+          }
+          // A position sold out entirely leaves the holdings table, so it is only
+          // in `exits`. Omitting these would count every buy and no complete sale —
+          // the easiest way to make a quarter look bullish when it was not.
+          for (const e of exits) {
+            if (e.unit && e.unit !== "SH") continue;
+            bump(e.ticker, -(e.valuePrior ?? 0), 0);
+          }
+        }
+        
         const meta = {
           priorState, priorPeriod: priorState === PRIOR_STATE.OK ? pp : null,
           deltasSuppressed: suppressed, structuralEvent,
@@ -729,6 +789,33 @@ await runJob(async () => {
     funds: new Set(filingsByPeriod.get(p).map((f) => f.cik)).size,
   }));
   writer.write(paths.periods(), envelope({ kind: "periods", buildId: null, data: periodMeta }));
+
+  // The ticker -> sector map, so the browser can bucket the comparison set's
+  // own holdings without a second request per fund. Small: one short string per
+  // listed company, and it is the same map the universe aggregate below used,
+  // so the two scopes can never disagree about what sector a name is in.
+  writer.write(paths.sectorMap(), envelope({
+    kind: "sector-map", buildId: null,
+    data: Object.fromEntries(Object.entries(SECTOR_MAP).map(([t, v]) => [t, v.sector])),
+  }));
+
+  // Universe-wide sector flows. Precomputed because the browser cannot load
+  // 9,000 funds to work it out, which is the same reason the leaderboard is
+  // precomputed. Sorted by net so the biggest moves are first in the file.
+  for (const [period, bucket] of sectorFlows) {
+    const rows = [...bucket.entries()]
+      .map(([sector, e]) => ({
+        sector,
+        bought: Math.round(e.bought),
+        sold: Math.round(e.sold),
+        net: Math.round(e.bought - e.sold),
+        held: Math.round(e.held),
+      }))
+      .sort((a, b) => b.net - a.net);
+    writer.write(paths.periodSectors(period), envelope({
+      kind: "period-sectors", period, buildId: null, data: rows,
+    }));
+  }
 
   for (const p of reported) {
     // The global feed is ordered by arrival and capped: nobody scrolls past a

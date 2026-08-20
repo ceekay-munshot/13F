@@ -32,3 +32,6 @@ tmp/
 # artifacts carry ticker and an opaque issuerId, never the CUSIP.
 # ---------------------------------------------------------------------------
 data/securities.json
+
+# Rebuilt from the SEC each run by scripts/build-sectors.mjs; no need to version it.
+data/sectors.json

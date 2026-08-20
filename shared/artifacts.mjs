@@ -62,6 +62,8 @@ export const paths = {
   periodFilings: (period) => `period/${period}/filings.json`,
   periodLeaderboard: (period) => `period/${period}/leaderboard.json`,
   periodSectors: (period) => `period/${period}/sectors.json`,
+  /** ticker -> sector, shared by both scopes so they cannot disagree. */
+  sectorMap: () => "meta/sectors.json",
   fundSummary: (cik) => `fund/${cik}/summary.json`,
   fundPeriod: (cik, period, page = 0) =>
     page > 0 ? `fund/${cik}/${period}.p${page}.json` : `fund/${cik}/${period}.json`,
