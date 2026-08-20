@@ -610,3 +610,42 @@ export function edgarUrl(cik: string, accession: string): string {
   const bare = String(Number(cik.replace(/\D/g, "")));
   return `https://www.sec.gov/Archives/edgar/data/${bare}/${accession.replace(/-/g, "")}/${accession}-index.htm`;
 }
+
+// ---------------------------------------------------------------------------
+// Sectors
+// ---------------------------------------------------------------------------
+
+export interface SectorFlow {
+  sector: string;
+  /** USD of stock actually bought — shares that moved, at period-end price. */
+  bought: number;
+  sold: number;
+  net: number;
+  /** USD held at period end, for context beside the flow. */
+  held: number;
+}
+
+let sectorMapPromise: Promise<Record<string, string>> | null = null;
+
+/**
+ * ticker -> sector, for bucketing holdings the browser already has.
+ *
+ * The same map the ingest used for the universe aggregate, so the two scopes on
+ * screen can never disagree about which sector a name is in. Optional by
+ * design: a build published before sectors existed simply has no file, and the
+ * views fall back to "Unclassified" rather than failing.
+ */
+export function loadSectorMap(mf: Manifest): Promise<Record<string, string>> {
+  if (!sectorMapPromise) {
+    sectorMapPromise = get<{ data: Record<string, string> }>("meta/sectors.json", mf)
+      .then((env) => env.data ?? {})
+      .catch(() => ({}));
+  }
+  return sectorMapPromise;
+}
+
+/** Universe-wide sector flows for one quarter, precomputed at ingest. */
+export async function loadPeriodSectors(period: string, mf: Manifest): Promise<SectorFlow[]> {
+  const env = await get<{ data: SectorFlow[] }>(`period/${period}/sectors.json`, mf);
+  return env.data ?? [];
+}

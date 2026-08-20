@@ -14,7 +14,10 @@ import { usd, pct, pp, count, periodLabel } from "../lib/format";
 import { buildConsensus, sortConsensus, buildAnchor, type ConsensusRow, type FundInput, type SortKey } from "../lib/consensus";
 import { TickerDrawer } from "../components/TickerDrawer";
 import { downloadCsv, type CsvColumn } from "../lib/csv";
-import { loadFundPeriodAll, MissingArtifactError, type Manifest, type Filer } from "../lib/data";
+import {
+  loadFundPeriodAll, loadSectorMap, loadPeriodSectors, MissingArtifactError,
+  type Manifest, type Filer, type SectorFlow,
+} from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
 
 const GRID_WIDE: React.CSSProperties = {
@@ -227,6 +230,164 @@ function AnchorList({
   );
 }
 
+/**
+ * SECTOR FLOWS — what was bought and sold, grouped.
+ *
+ * MEASURED AS TRADING, NOT AS CHANGE IN VALUE. A position's value moves when
+ * the PRICE moves, so summing the value change reports a manager who touched
+ * nothing as a buyer. On this group's Q2 2026 book, Computers & Hardware showed
+ * +$8.11B by value and exactly $0 of trading. Shares that actually moved,
+ * valued at the period-end price, isolate the decision from the market.
+ *
+ * A NEW position has no prior holding to subtract from, so its share delta is
+ * null; it counts as bought in full. Reading the delta alone counted every new
+ * stake as zero buying while still counting every full exit, which made every
+ * sector net-negative across all filers — impossible, since one manager's sale
+ * is another's purchase.
+ */
+function SectorFlows({
+  funds, sectorMap, universe, universeLoading, period, refreshing,
+}: {
+  funds: FundInput[] | null;
+  sectorMap: Record<string, string>;
+  universe: SectorFlow[] | null;
+  universeLoading: boolean;
+  period: string;
+  refreshing?: boolean;
+}) {
+  const [scope, setScope] = useState<"My funds" | "All filers">("My funds");
+
+  const mine = useMemo<SectorFlow[]>(() => {
+    if (!funds) return [];
+    const acc = new Map<string, SectorFlow>();
+    const bump = (ticker: string | null, traded: number, held: number) => {
+      const key = (ticker && sectorMap[ticker.toUpperCase()]) || "Unclassified";
+      const e = acc.get(key) ?? { sector: key, bought: 0, sold: 0, net: 0, held: 0 };
+      if (traded > 0) e.bought += traded;
+      else if (traded < 0) e.sold += -traded;
+      e.net += traded;
+      e.held += held;
+      acc.set(key, e);
+    };
+    for (const f of funds) {
+      // A structural change is not trading. Letting one through would put a
+      // whole book's worth of phantom flow into whatever it holds.
+      if (f.missing || f.suppressed) continue;
+      for (const h of f.holdings) {
+        if (h.type !== "" || h.unit !== "SH") continue;
+        const traded =
+          h.action === "NEW"
+            ? h.value
+            : h.dShares != null && h.price != null
+              ? h.dShares * h.price
+              : 0;
+        bump(h.ticker, traded, h.value);
+      }
+      // A position sold out entirely is gone from the holdings table and lives
+      // only in `exits`. Omitting these counts every buy and no complete sale.
+      for (const e of f.exits ?? []) {
+        if (e.unit && e.unit !== "SH") continue;
+        bump(e.ticker, -(e.valuePrior ?? 0), 0);
+      }
+    }
+    return [...acc.values()].sort((a, b) => b.net - a.net);
+  }, [funds, sectorMap]);
+
+  const rows = scope === "My funds" ? mine : universe ?? [];
+  const busy = scope === "All filers" && universeLoading;
+  const peak = Math.max(1, ...rows.map((r) => Math.abs(r.net)));
+  const unclassified = rows.find((r) => r.sector === "Unclassified");
+  const heldTotal = rows.reduce((a, r) => a + r.held, 0);
+
+  return (
+    <WidgetCard
+      refreshing={refreshing}
+      title="Sector flows"
+      subtitle={`Bought and sold in ${periodLabel(period)} — shares that moved, valued at quarter end`}
+      span={2}
+      bodyMinHeight={260}
+      actions={
+        <Hint text="Trading, not price. A position whose value rose while its share count did not move counts as zero here — that is the market, not a decision.">
+          <ViewToggle
+            options={["My funds", "All filers"] as const}
+            value={scope}
+            onChange={setScope}
+          />
+        </Hint>
+      }
+    >
+      {busy ? (
+        <TableSkeleton rows={6} cols={4} />
+      ) : !rows.length ? (
+        <EmptyState
+          icon="◫"
+          message={scope === "All filers" ? "No universe totals for this quarter yet" : "No comparable trading"}
+          hint={
+            scope === "All filers"
+              ? "The monthly universe run publishes these; the current quarter gets them once it has been through one."
+              : "Every fund here is either unfiled or had its changes withheld for this quarter."
+          }
+        />
+      ) : (
+        <div style={{ maxHeight: 420, overflow: "auto" }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Sector</th><th>Bought</th><th>Sold</th><th>Net traded</th><th>Held</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const up = r.net > 0;
+                return (
+                  <tr key={r.sector}>
+                    <td style={{ maxWidth: 220 }}>
+                      <span style={{ fontWeight: 600 }}>{r.sector}</span>
+                      {/* The bar reads direction at a glance without a chart:
+                          it grows from the centre, so buying and selling are
+                          the same length for the same magnitude. */}
+                      <span
+                        style={{
+                          display: "block", height: 3, borderRadius: 2, marginTop: 4,
+                          width: `${Math.max(2, (Math.abs(r.net) / peak) * 100)}%`,
+                          background: up ? ACTION_COLORS.ADDED : ACTION_COLORS.TRIMMED,
+                          opacity: 0.75,
+                        }}
+                      />
+                    </td>
+                    <td style={{ fontVariantNumeric: "tabular-nums" }}>{usd(r.bought)}</td>
+                    <td style={{ fontVariantNumeric: "tabular-nums" }}>{usd(r.sold)}</td>
+                    <td
+                      style={{
+                        fontVariantNumeric: "tabular-nums", fontWeight: 700,
+                        color: up ? "#059669" : r.net < 0 ? "#dc2626" : t.textMuted,
+                      }}
+                    >
+                      {up ? "+" : ""}{usd(r.net)}
+                    </td>
+                    <td style={{ fontVariantNumeric: "tabular-nums", color: t.textMuted }}>{usd(r.held)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {/* Coverage, stated rather than buried. Unclassified is ~4% of value
+              for a concentrated group and ~23% across all filers, which is
+              mostly ETFs and foreign issuers that file no US financials — a
+              number the reader should see before drawing a conclusion. */}
+          {unclassified && heldTotal > 0 && (
+            <div style={{ padding: "8px 14px", fontSize: 11, color: t.textHint, lineHeight: 1.55 }}>
+              {pct((unclassified.held / heldTotal) * 100)} of value held is Unclassified — chiefly ETFs and
+              issuers that file no US financial statements, so no sector can be read from the filing.
+              Sectors are grouped from the SEC's own SIC codes; they are not GICS.
+            </div>
+          )}
+        </div>
+      )}
+    </WidgetCard>
+  );
+}
+
 export function ConsensusView({
   filers, period, mf, longsOnly, refreshing, onFund,
 }: {
@@ -252,6 +413,9 @@ export function ConsensusView({
   // one part of the chip row that was never built.
   const [moveFilter, setMoveFilter] = useState<"" | "new" | "exit" | "buys" | "sells">("");
   const [openIssuer, setOpenIssuer] = useState<string | null>(null);
+  const [sectorMap, setSectorMap] = useState<Record<string, string>>({});
+  const [universeSectors, setUniverseSectors] = useState<SectorFlow[] | null>(null);
+  const [universeLoading, setUniverseLoading] = useState(true);
   // Render a fast default and let the user ask for the rest.
   //
   // Across the full universe there are thousands of consensus names; at 12 fund
@@ -386,6 +550,21 @@ export function ConsensusView({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mf is keyed by buildId on purpose; see below
   }, [filers, period, mf.buildId, longsOnly]);
+
+  // Sector data, loaded beside the matrix rather than in front of it. Both are
+  // OPTIONAL: a build published before sectors existed simply has no files, and
+  // the card says so instead of the page failing.
+  useEffect(() => {
+    let cancelled = false;
+    loadSectorMap(mf).then((m) => { if (!cancelled) setSectorMap(m); });
+    setUniverseLoading(true);
+    loadPeriodSectors(period, mf)
+      .then((rows) => { if (!cancelled) setUniverseSectors(rows); })
+      .catch(() => { if (!cancelled) setUniverseSectors([]); })
+      .finally(() => { if (!cancelled) setUniverseLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period, mf.buildId]);
 
   const present = useMemo(() => (funds ?? []).filter((f) => !f.missing), [funds]);
 
@@ -651,6 +830,15 @@ export function ConsensusView({
             </>
           )}
         </WidgetCard>
+
+        <SectorFlows
+          funds={funds}
+          sectorMap={sectorMap}
+          universe={universeSectors}
+          universeLoading={universeLoading}
+          period={period}
+          refreshing={refreshing}
+        />
 
         {/* THE ANCHOR — both halves visible at once, no toggle: "what are they
             focused on" is a comparison question, and hiding one side behind a
