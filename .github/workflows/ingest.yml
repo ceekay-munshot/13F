@@ -181,8 +181,14 @@ jobs:
           mkdir -p .cache
           if [ -n "${{ github.event.inputs.funds }}" ]; then
             printf '%s' '${{ github.event.inputs.funds }}' > .cache/ciks.txt
-            echo '{"period":null,"blocked":false,"filersKnown":0,"filersPending":0,"filersSelected":0}' > .cache/plan.json
-            echo "Using the funds given on dispatch; the cursor is left alone."
+            # COUNT THEM. Every step below is gated on filersSelected, so
+            # hardcoding 0 meant a hand-dispatched fund list wrote the CIKs out
+            # and then skipped the whole ingest as "nothing to do" — the manual
+            # escape hatch never worked, which was only discovered while trying
+            # to use it to repair a quarter.
+            n=$(tr ',' '\n' < .cache/ciks.txt | grep -c '[0-9]')
+            printf '{"period":null,"blocked":false,"filersKnown":%s,"filersPending":%s,"filersSelected":%s}' "$n" "$n" "$n" > .cache/plan.json
+            echo "Using the $n fund(s) given on dispatch; the cursor is left alone."
             echo "dispatch=true" >> "$GITHUB_OUTPUT"
           else
             node scripts/discover-13f-filers.mjs \
