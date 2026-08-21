@@ -187,3 +187,35 @@ describe("the fund search index — the file this gate was watching around", () 
     expect(regressions.join("\n")).toMatch(/disappeared/);
   });
 });
+
+describe("named expectations", () => {
+  const fp = (funds) => fingerprint(
+    { buildId: "x", counts: { filers: 100 }, periods: [{ period: "2026-06-30", funds, filings: 1 }] },
+    {}, "t", { data: [] },
+  );
+
+  it("a quarter's fund count falling is a regression by default", () => {
+    expect(compareFingerprints(fp(10765), fp(8428)).regressions.join()).toMatch(/fell from 10765 funds to 8428/);
+  });
+
+  it("...and a note when that exact correction is named", () => {
+    // The count was a Math.max ratchet over whatever the feed ever saw. Fixing
+    // it makes the number go DOWN, which is indistinguishable from data loss.
+    const { regressions, notes } = compareFingerprints(fp(10765), fp(8428), { expect: ["period-funds"] });
+    expect(regressions).toEqual([]);
+    expect(notes.join()).toMatch(/expected: the count was a ratchet/);
+  });
+
+  it("naming it relaxes NOTHING else — a fund losing a quarter still fails", () => {
+    const before = fingerprint({ buildId: "x", counts: { filers: 100 }, periods: [] },
+      { "0001279936": { data: { series: [{ period: "2026-03-31" }, { period: "2026-06-30" }] } } }, "t", { data: [] });
+    const after = fingerprint({ buildId: "x", counts: { filers: 100 }, periods: [] },
+      { "0001279936": { data: { series: [{ period: "2026-03-31" }] } } }, "t", { data: [] });
+    const { regressions } = compareFingerprints(before, after, { expect: ["period-funds"] });
+    expect(regressions.join()).toMatch(/lost 1 quarter/);
+  });
+
+  it("an unknown expectation name relaxes nothing", () => {
+    expect(compareFingerprints(fp(10765), fp(8428), { expect: ["something-else"] }).regressions).toHaveLength(1);
+  });
+});

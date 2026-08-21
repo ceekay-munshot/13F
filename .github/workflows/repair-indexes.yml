@@ -119,7 +119,11 @@ jobs:
         if: ${{ !cancelled() && steps.before.outcome == 'success' && github.event.inputs.dry_run != 'true' }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
-        run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
+        # `--expect=period-funds` names the ONE number this run corrects
+        # downward: the per-quarter manager count, which was a Math.max ratchet
+        # over whatever the filings feed ever saw. Every other check stays armed,
+        # including the per-fund ones that would have caught the 20 Aug outage.
+        run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json --expect=period-funds
 
       # The only check that consults something other than ourselves.
       - name: The SEC agrees with our numbers

@@ -56,7 +56,20 @@ export const DEFAULT_TOLERANCE = 0.05; // 5%
  * @param {{tolerance?: number}} [opts]
  * @returns {{regressions: string[], notes: string[]}}
  */
-export function compareFingerprints(before, after, { tolerance = DEFAULT_TOLERANCE } = {}) {
+export function compareFingerprints(before, after, { tolerance = DEFAULT_TOLERANCE, expect = [] } = {}) {
+  // NAMED, NARROW EXPECTATIONS — never a blanket override.
+  //
+  // `periods[].funds` was a Math.max ratchet over whatever the filings feed ever
+  // saw, so it over-stated every quarter (Q2 2026: 10,765 claimed against 8,428
+  // managers actually holding it). Correcting a fabricated number DOWNWARD is
+  // indistinguishable, to this gate, from losing data — which is the gate
+  // working, not failing.
+  //
+  // So the one number being corrected can be named, and ONLY that number is
+  // downgraded to a note. Every other check stays armed: the per-fund checks
+  // below, which are the ones that would have caught the 2026-08-20 outage, are
+  // untouched and still prove no fund lost a quarter.
+  const expected = new Set(Array.isArray(expect) ? expect : [expect]);
   const regressions = [];
   const notes = [];
 
@@ -77,7 +90,9 @@ export function compareFingerprints(before, after, { tolerance = DEFAULT_TOLERAN
       continue;
     }
     if (b.funds > 0 && a.funds < b.funds * (1 - tolerance)) {
-      regressions.push(`quarter ${period} fell from ${b.funds} funds to ${a.funds}`);
+      const msg = `quarter ${period} fell from ${b.funds} funds to ${a.funds}`;
+      if (expected.has("period-funds")) notes.push(`${msg} — expected: the count was a ratchet and is now counted`);
+      else regressions.push(msg);
     }
     if (b.filings > 0 && a.filings < b.filings * (1 - tolerance)) {
       regressions.push(`quarter ${period} fell from ${b.filings} filings to ${a.filings}`);

@@ -27,6 +27,13 @@ const args = Object.fromEntries(
 
 const ORIGIN = String(args.origin || "https://13f-eo2.pages.dev").replace(/\/+$/, "");
 const OUT = args.out || ".cache/fingerprint.json";
+
+// Corrections this run is KNOWN to make, named one at a time. `period-funds`
+// says: the manifest's per-quarter manager count was a Math.max ratchet and is
+// being replaced with a counted value, so it will fall. Nothing else is relaxed
+// — in particular the per-fund checks, which are the ones that would have caught
+// the 2026-08-20 outage, stay fully armed.
+const EXPECT = String(args.expect || "").split(",").map((x) => x.trim()).filter(Boolean);
 const COMPARE = args.compare;
 
 /**
@@ -106,7 +113,7 @@ if (!COMPARE) {
 }
 
 const before = existsSync(COMPARE) ? JSON.parse(readFileSync(COMPARE, "utf8")) : null;
-const { regressions, notes } = compareFingerprints(before, fp);
+const { regressions, notes } = compareFingerprints(before, fp, { expect: EXPECT });
 
 for (const n of notes) console.log(`  ${n}`);
 console.log(
