@@ -35,6 +35,7 @@ import { SecFetcher, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
 import { foldFilings, computeChanges, computeTurnover, summarizeActions, PRIOR_STATE } from "../shared/fold.mjs";
+import { SERIES_FIELDS } from "../shared/series-fields.mjs";
 import { currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel, deraWindowFor } from "../shared/calendar.mjs";
 import { paths, envelope, manifest, encodeHoldings, buildIdFrom, ROWS_PER_PAGE } from "../shared/artifacts.mjs";
 import { ArtifactWriter, writeHeadersFile } from "./_artifact-writer.mjs";
@@ -732,6 +733,9 @@ await runJob(async () => {
           // here — a REVIEW-flagged quarter keeps its deltas — so this file and a
           // fund's own summary.json disagreed about the same quarter.
           x.deltasSuppressed ? 1 : 0,
+          // APPENDED, never inserted — see shared/series-fields.mjs. Tuples
+          // already in the bucket end one element earlier and read this as null.
+          x.valuePrnUsd ?? 0,
         ]),
       });
       const latest = series.at(-1);
@@ -749,11 +753,9 @@ await runJob(async () => {
   writer.write(paths.series(), envelope({
     kind: "series", buildId: null,
     extra: {
-      fields: ["period", "valueLongUsd", "positions", "reportedTotalUsd", "top10WeightPct",
-               "n_new", "n_added", "n_trimmed", "n_exited", "turnover_position_pct",
-               "priorState", "structuralEvent", "confidentialOmitted", "filingLagDays",
-               "valueOptionsUsd", "valuePrnUsd", "positionsLong", "positionsOptions", "hasHoldings",
-               "deltasSuppressed"],
+      // From shared/series-fields.mjs, so this list and the one the dashboard
+      // zips against the tuple cannot drift apart again.
+      fields: SERIES_FIELDS,
     },
     data: allSeries,
   }));

@@ -360,13 +360,9 @@ export async function loadPeriods(mf: Manifest) {
  * quarter and would have multiplied by every quarter added, whereas the same
  * information keyed compactly is a few MB.
  */
-const SERIES_FIELDS = [
-  "period", "valueLongUsd", "positions", "reportedTotalUsd", "top10WeightPct",
-  "n_new", "n_added", "n_trimmed", "n_exited", "turnover_position_pct",
-  "priorState", "structuralEvent", "confidentialOmitted", "filingLagDays",
-  "valueOptionsUsd", "positionsLong", "positionsOptions", "hasHoldings",
-  "deltasSuppressed",
-] as const;
+// The tuple column order, from shared/series-fields.mjs — the single definition
+// the ingest also publishes. Two hand-maintained copies drifted once already.
+import { SERIES_FIELDS } from "../../shared/series-fields.mjs";
 
 interface SeriesRow { cik: string; name: string; state: string | null; hasHoldings: boolean; s: unknown[][] }
 let seriesIndex: Promise<Map<string, SeriesRow>> | null = null;
