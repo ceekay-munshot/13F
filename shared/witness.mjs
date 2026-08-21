@@ -32,6 +32,25 @@ export const FILING_THRESHOLD_USD = 100_000_000;
 export const TOLERANCE_PCT = 0.001;
 
 /**
+ * How far below the cover total our long+options figure may sit when we cannot
+ * account for the difference exactly.
+ *
+ * The cover page totals EVERY row. We exclude principal-amount rows — bonds and
+ * notes, whose "shares" figure is a face value — from the long-equity
+ * denominator by design. Artifacts built before valuePrnUsd existed cannot say
+ * how much that was, so those funds get a band instead of an equality.
+ *
+ * The band is set where it separates the two things that actually happen:
+ * Nuveen's 28 principal rows are 0.1% of a $419B book, while deduplicating rows
+ * that should have been summed understates Cantillon's 2026-Q1 by 38.8%. Two
+ * percent sits far above the first and nowhere near the second.
+ *
+ * It is a weaker check and it is labelled as one in the output, so it cannot
+ * quietly become the normal case.
+ */
+export const UNEXPLAINED_SHORTFALL_PCT = 2;
+
+/**
  * How long after a filing lands on EDGAR before its absence is a fault.
  *
  * During filing season managers file continuously, and the same-day job runs
@@ -142,11 +161,36 @@ export async function judge({ name, period, ours, filings, readCover, asOf = new
   // Our rows come from the DERA quarterly data set; this total is hand-stated on
   // the manager's cover page. Agreement means units, duplicate-row aggregation,
   // the amendment fold and the quarter mapping are all correct at once.
-  const oursSum = (ours.valueLongUsd ?? 0) + (ours.valueOptionsUsd ?? 0);
+  //
+  // The cover page totals EVERY row, so principal-amount rows have to be added
+  // back: we hold them out of the long-equity denominator on purpose, because a
+  // bond's "shares" figure is a face value and summing it with share counts is
+  // meaningless. Nuveen's 2026-06-30 has 28 of them — $433M against a $419B
+  // book — and without this it reads as a 0.1% hole in our aggregation.
+  const exact = ours.valuePrnUsd != null;
+  const oursSum = (ours.valueLongUsd ?? 0) + (ours.valueOptionsUsd ?? 0) + (ours.valuePrnUsd ?? 0);
 
   let matched = null;
   if (near(oursSum, cover.declaredUsd)) matched = cover.declaredUsd;
   else if (near(oursSum, cover.alternateUsd) && cover.declaredIsBelowFilingThreshold) matched = cover.alternateUsd;
+
+  // Artifacts built before valuePrnUsd existed cannot account for those rows, so
+  // they get a band rather than an equality — and are reported as such.
+  let approximate = false;
+  if (matched == null && !exact) {
+    for (const [candidate, below] of [
+      [cover.declaredUsd, false],
+      [cover.alternateUsd, cover.declaredIsBelowFilingThreshold],
+    ]) {
+      if (!candidate || (candidate === cover.alternateUsd && !below)) continue;
+      const shortfallPct = ((candidate - oursSum) / candidate) * 100;
+      if (shortfallPct >= 0 && shortfallPct <= UNEXPLAINED_SHORTFALL_PCT) {
+        matched = candidate;
+        approximate = true;
+        break;
+      }
+    }
+  }
 
   if (matched == null) {
     // Name the SHAPE of the error, not only its size. A factor of exactly 1000
@@ -186,6 +230,11 @@ export async function judge({ name, period, ours, filings, readCover, asOf = new
     value: matched,
     positions: ours.positions,
     entries: cover.entries,
+    // Whether this fund got the exact equality or only the band. Surfaced so a
+    // pipeline that quietly stopped emitting valuePrnUsd would show up as every
+    // fund downgrading to the weaker check, rather than as nothing at all.
+    exact: !approximate,
+    shortfallUsd: approximate ? matched - oursSum : 0,
     // The filer wrote the other unit. Our number is right and theirs is
     // mislabelled — surfaced as a fact about the filing, never as a pass we
     // quietly granted ourselves.

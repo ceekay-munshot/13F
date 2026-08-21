@@ -678,6 +678,14 @@ await runJob(async () => {
         reportedTotalUsd: cur.reported_total_usd,
         valueLongUsd: cur.summary.value_long_usd,
         valueOptionsUsd: cur.summary.value_options_usd,
+      // Principal-amount rows: bonds and notes, whose "shares" figure is a
+      // face value. They are excluded from every share sum and from the
+      // long-equity denominator by design — but the filer's own cover page
+      // totals them in with everything else, so without this the two can
+      // never be reconciled. Nuveen's 2026-06-30 has 28 of them, $433M
+      // against a $419B book, and it read as a 0.1% shortfall in our
+      // aggregation until this field existed.
+      valuePrnUsd: cur.summary.value_prn_usd ?? 0,
         positions: cur.holdings.length,
         positionsLong: cur.summary.positions_long,
         positionsOptions: cur.summary.positions_options,
@@ -744,7 +752,7 @@ await runJob(async () => {
       fields: ["period", "valueLongUsd", "positions", "reportedTotalUsd", "top10WeightPct",
                "n_new", "n_added", "n_trimmed", "n_exited", "turnover_position_pct",
                "priorState", "structuralEvent", "confidentialOmitted", "filingLagDays",
-               "valueOptionsUsd", "positionsLong", "positionsOptions", "hasHoldings",
+               "valueOptionsUsd", "valuePrnUsd", "positionsLong", "positionsOptions", "hasHoldings",
                "deltasSuppressed"],
     },
     data: allSeries,

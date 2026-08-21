@@ -222,3 +222,64 @@ describe("the ingest grace window", () => {
     expect(v.verdict).toBe("disagree");
   });
 });
+
+describe("principal-amount rows", () => {
+  // The cover page totals EVERY row. We hold bonds and notes out of the
+  // long-equity denominator on purpose — a bond's "shares" figure is a face
+  // value, and summing it with share counts is meaningless. Nuveen's 2026-06-30
+  // has 28 of them, $433M against a $419B book, and the witness read that as a
+  // 0.1% hole in our aggregation until the summary carried the figure.
+  const nuveen = (over = {}) => mine({
+    valueLongUsd: 418_734_842_629,
+    valueOptionsUsd: 0,
+    positions: 3735,
+    ...over,
+  });
+  const nuveenCover = async () => cover({
+    declaredUsd: 419_167_842_629,
+    alternateUsd: 419_167_842_629_000,
+    entries: 10263,
+  });
+
+  it("adds bonds back and reconciles to the dollar", async () => {
+    const v = await run({ name: "Nuveen", ours: nuveen({ valuePrnUsd: 433_000_000 }), readCover: nuveenCover });
+    expect(v.verdict).toBe("agree");
+    expect(v.exact).toBe(true);
+  });
+
+  it("falls back to a band on an artifact built before the field existed", async () => {
+    const v = await run({ name: "Nuveen", ours: nuveen(), readCover: nuveenCover });
+    expect(v.verdict).toBe("agree");
+    expect(v.exact).toBe(false);
+    expect(v.shortfallUsd).toBe(433_000_000);
+  });
+
+  it("the band still catches deduping, which is 38.8% not 0.1%", async () => {
+    const v = await run({
+      name: "Nuveen",
+      ours: nuveen({ valueLongUsd: 419_167_842_629 * 0.612 }),
+      readCover: nuveenCover,
+    });
+    expect(v.verdict).toBe("disagree");
+  });
+
+  it("never lets us come out ABOVE their total, band or no band", async () => {
+    // Short is explainable. Over is value we invented.
+    const v = await run({
+      name: "Nuveen",
+      ours: nuveen({ valueLongUsd: 419_167_842_629 * 1.005 }),
+      readCover: nuveenCover,
+    });
+    expect(v.verdict).toBe("disagree");
+  });
+
+  it("the band never applies once the field is present", async () => {
+    // Otherwise adding valuePrnUsd would LOOSEN the check for everyone.
+    const v = await run({
+      name: "Nuveen",
+      ours: nuveen({ valuePrnUsd: 0 }),
+      readCover: nuveenCover,
+    });
+    expect(v.verdict).toBe("disagree");
+  });
+});

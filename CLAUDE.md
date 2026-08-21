@@ -48,6 +48,23 @@ they send to the SEC (the US financial regulator) every three months.
   reached the dashboard, because the pipeline was misreading "the SEC has not
   published today's list yet" as "the SEC has banned us".
 
+- **21 Aug 2026** — three checks added so a repeat of the 20 Aug outage cannot
+  reach the dashboard quietly. In plain terms:
+  1. **Nothing may get smaller.** Before every update we take a snapshot of what
+     the live site is serving, and afterwards we compare. If any fund lost a
+     quarter, or the number of funds dropped, the update is reported as broken.
+     Adding and correcting are fine; taking away is not.
+  2. **A step that did nothing now fails.** The cleanup step had been crashing
+     on its first line since the day it was written, and every run still said
+     "success" because the crash was only a note in the log. Steps like that now
+     finish the useful work first — so the dashboard is never left half-updated
+     — and then end the run in red listing exactly what did not happen.
+  3. **The SEC has to agree with our numbers.** After every update we take the
+     client funds and compare our total for each one against the total that fund
+     wrote on its own filing. It found a real gap on its first run — Nuveen
+     filed on 11 Aug and had not reached us — which is now fixed. Every client
+     fund's total agrees with that fund's own filing to the dollar.
+
 ## Standing promises
 
 - If something is deferred, SCHEDULE IT. The owner should never have to carry a

@@ -176,7 +176,10 @@ await runJob(async () => {
   // --- testimony -------------------------------------------------------------
   const b = (n) => `$${(n / 1e9).toFixed(3)}B`;
   for (const a of agree) {
-    console.log(`  agrees    ${a.name} — ${b(a.value)}, ${a.positions} positions of ${a.entries ?? "?"} rows`);
+    console.log(
+      `  agrees    ${a.name} — ${b(a.value)}, ${a.positions} positions of ${a.entries ?? "?"} rows` +
+      (a.exact ? "" : ` (within ${b(a.shortfallUsd)}; this fund's artifact predates valuePrnUsd, so bonds cannot be added back exactly)`),
+    );
   }
   for (const n of notComparable) console.log(`  no view   ${n.name} — ${n.why}`);
   for (const m of misdeclared) console.log(`  note      ${m}`);
@@ -204,5 +207,9 @@ await runJob(async () => {
     process.exit(1);
   }
 
-  console.log("the SEC's own filings agree with every number we could check.");
+  const approx = agree.filter((a) => !a.exact).length;
+  console.log(
+    `the SEC's own filings agree with every number we could check` +
+    (approx ? ` (${agree.length - approx} to the dollar, ${approx} within a band pending re-ingest).` : ", to the dollar."),
+  );
 });
