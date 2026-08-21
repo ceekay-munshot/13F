@@ -128,3 +128,62 @@ describe("fingerprint", () => {
     expect(f.funds["0001279936"]).toEqual({ quarters: 0, newest: null });
   });
 });
+
+describe("the fund search index — the file this gate was watching around", () => {
+  // It was built to enforce "a publish may add and it may correct, it may not
+  // subtract", and then looked only at the manifest and a sample of fund
+  // summaries. meta/filers.json was subtracting the whole time.
+  const idx = (rows) => ({ data: rows });
+  const mgr = (over = {}) => ({ cik: "0000000001", periods: 4, latestPeriod: "2026-03-31", ...over });
+  const fpOf = (rows) => fingerprint({ buildId: "x", counts: { filers: 1 }, periods: [] }, {}, "t", idx(rows));
+
+  it("catches the regression that was live: managers advertising fewer quarters", () => {
+    // 853 of 987 managers the same-day job touched had their quarter count
+    // replaced by a two-quarter run's.
+    const before = fpOf([mgr({ periods: 4 }), mgr({ cik: "0000000002", periods: 4 })]);
+    const after = fpOf([mgr({ periods: 2 }), mgr({ cik: "0000000002", periods: 2 })]);
+    const { regressions } = compareFingerprints(before, after);
+    expect(regressions.join("\n")).toMatch(/4 fewer quarter\(s\) in total/);
+  });
+
+  it("catches the regression due 3 September: newest quarter moving backwards", () => {
+    const before = fpOf([mgr({ latestPeriod: "2026-06-30" }), mgr({ cik: "0000000002", latestPeriod: "2026-06-30" })]);
+    const after = fpOf([mgr({ latestPeriod: "2026-03-31" }), mgr({ cik: "0000000002", latestPeriod: "2026-03-31" })]);
+    const { regressions } = compareFingerprints(before, after);
+    expect(regressions.join("\n")).toMatch(/2 manager\(s\) no longer report 2026-06-30/);
+    expect(regressions.join("\n")).toMatch(/would say they have not filed/);
+  });
+
+  it("catches managers disappearing from search entirely", () => {
+    const { regressions } = compareFingerprints(fpOf([mgr(), mgr({ cik: "0000000002" })]), fpOf([mgr()]));
+    expect(regressions.join("\n")).toMatch(/lost 1 manager/);
+  });
+
+  it("catches the index vanishing", () => {
+    const { regressions } = compareFingerprints(fpOf([mgr()]), fpOf([]));
+    expect(regressions.join("\n")).toMatch(/search index disappeared/);
+  });
+
+  it("allows the index to GROW — adding and correcting are the point", () => {
+    const before = fpOf([mgr({ periods: 4, latestPeriod: "2026-03-31" })]);
+    const after = fpOf([mgr({ periods: 5, latestPeriod: "2026-06-30" }), mgr({ cik: "0000000009", periods: 1 })]);
+    expect(compareFingerprints(before, after).regressions).toEqual([]);
+  });
+
+  it("an unreadable index is not the same as an empty one", () => {
+    // A failed fetch passes null. Recording that as zero rows would report
+    // "every manager vanished" out of a network blip — so it is a third state.
+    const before = fpOf([mgr()]);
+    const after = fingerprint({ buildId: "x", counts: { filers: 1 }, periods: [] }, {}, "t", null);
+    expect(after.index).toBeNull();
+    const { regressions, notes } = compareFingerprints(before, after);
+    expect(regressions).toEqual([]);
+    expect(notes.join("\n")).toMatch(/not counted as a pass/);
+  });
+
+  it("but a genuinely EMPTY index is still a regression", () => {
+    // Measured-as-empty and not-measured must not collapse into each other.
+    const { regressions } = compareFingerprints(fpOf([mgr()]), fpOf([]));
+    expect(regressions.join("\n")).toMatch(/disappeared/);
+  });
+});

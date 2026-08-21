@@ -111,11 +111,46 @@ export function compareFingerprints(before, after, { tolerance = DEFAULT_TOLERAN
     }
   }
 
+  // ---- the fund search index ----------------------------------------------
+  //
+  // Aggregate, because storing nine thousand rows in every baseline would make
+  // the artifact bigger than what it describes. The two aggregates are chosen so
+  // that the failure which was live cannot hide in them: total quarters
+  // advertised, and how many managers sit at each newest-quarter.
+  const bi = before.index, ai = after.index;
+  if (bi && bi.rows && ai === null) {
+    notes.push("fund search index could not be read this time — not compared, and not counted as a pass");
+  } else if (bi && bi.rows) {
+    if (!ai || !ai.rows) {
+      regressions.push("the fund search index disappeared — no manager can be found by name");
+    } else {
+      if (ai.rows < bi.rows) {
+        regressions.push(`fund search index lost ${bi.rows - ai.rows} manager(s): ${bi.rows} -> ${ai.rows}`);
+      }
+      if (ai.quarterSum < bi.quarterSum) {
+        regressions.push(
+          `fund search index is advertising ${bi.quarterSum - ai.quarterSum} fewer quarter(s) in total ` +
+          `(${bi.quarterSum} -> ${ai.quarterSum}) — managers are claiming less history than they had`,
+        );
+      }
+      for (const [period, count] of Object.entries(bi.byNewest ?? {})) {
+        if (period === "none") continue;
+        const now = ai.byNewest?.[period] ?? 0;
+        if (now < count) {
+          regressions.push(
+            `fund search index: ${count - now} manager(s) no longer report ${period} as their newest ` +
+            `quarter (${count} -> ${now}) — the site would say they have not filed`,
+          );
+        }
+      }
+    }
+  }
+
   return { regressions, notes };
 }
 
 /** Build a fingerprint from a manifest and a set of fund summaries. */
-export function fingerprint(manifest, fundSummaries, takenAt) {
+export function fingerprint(manifest, fundSummaries, takenAt, filerIndex) {
   const periods = {};
   for (const p of manifest?.periods ?? []) {
     periods[p.period] = { funds: p.funds ?? 0, filings: p.filings ?? 0 };
@@ -126,11 +161,36 @@ export function fingerprint(manifest, fundSummaries, takenAt) {
     const sorted = series.map((s) => s.period).filter(Boolean).sort();
     funds[cik] = { quarters: sorted.length, newest: sorted.at(-1) ?? null };
   }
+  // THE FUND SEARCH INDEX, which this gate did not look at and should have.
+  //
+  // It was built to enforce "a publish may add and it may correct, it may not
+  // subtract", and then watched only the manifest and a sample of fund
+  // summaries. meta/filers.json was subtracting the whole time: 853 of the 987
+  // managers the same-day job had touched were advertising fewer quarters in
+  // search than they actually held, because a two-quarter run's row replaced a
+  // four-quarter one wholesale.
+  //
+  // Summarised rather than stored row by row — nine thousand rows in every
+  // baseline would make the artifact larger than the thing it describes.
+  //
+  // NOT MEASURED is a third state, distinct from measured-as-empty. A failed
+  // fetch passes null here, and recording that as zero rows would report "the
+  // fund search index disappeared" — every manager gone — out of a network
+  // blip. The same distinction the baseline itself gets.
+  const index = filerIndex == null ? null : { rows: 0, quarterSum: 0, byNewest: {} };
+  for (const r of (index && filerIndex?.data) || []) {
+    index.rows++;
+    index.quarterSum += Number(r.periods) || 0;
+    const k = r.latestPeriod ?? "none";
+    index.byNewest[k] = (index.byNewest[k] ?? 0) + 1;
+  }
+
   return {
     takenAt,
     buildId: manifest?.buildId ?? null,
     filers: manifest?.counts?.filers ?? 0,
     periods,
     funds,
+    index,
   };
 }

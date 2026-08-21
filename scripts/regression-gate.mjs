@@ -78,7 +78,17 @@ async function takeFingerprint() {
       }
     }),
   );
-  return fingerprint(manifest, summaries, new Date().toISOString());
+  // The fund search index — the file this gate was watching around rather than
+  // at. Unreadable is left as null rather than recorded as empty: an empty index
+  // reads as "every manager vanished", which would cry wolf over a network blip.
+  let filerIndex = null;
+  try {
+    filerIndex = await getJson("/data/meta/filers.json");
+  } catch (err) {
+    console.log(`  (fund search index unreadable: ${err.message} — left out of this fingerprint)`);
+  }
+
+  return fingerprint(manifest, summaries, new Date().toISOString(), filerIndex);
 }
 
 const fp = await takeFingerprint();
@@ -88,7 +98,9 @@ if (!COMPARE) {
   writeFileSync(OUT, JSON.stringify(fp, null, 2));
   console.log(
     `fingerprint taken: ${fp.filers} filers · ${Object.keys(fp.periods).length} quarters · ` +
-      `${Object.keys(fp.funds).length} sampled funds -> ${OUT}`,
+      `${Object.keys(fp.funds).length} sampled funds · ` +
+      `search index ${fp.index?.rows ?? 0} managers / ${fp.index?.quarterSum ?? 0} quarters advertised ` +
+      `-> ${OUT}`,
   );
   process.exit(0);
 }

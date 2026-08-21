@@ -372,6 +372,58 @@ export function mergePeriodFilings(live, incoming, ciks, { cap = FEED_ROWS, know
  * allowlist only permits the key because this function exists (enforced by
  * `npm run guard`).
  */
+/**
+ * Merge one fund's row in the search index under the rule the whole pipeline
+ * runs on: A PUBLISH MAY ADD AND IT MAY CORRECT. IT MAY NOT SUBTRACT.
+ *
+ * The naive `{ ...prev, ...next }` looks right and quietly loses coverage,
+ * because the two writers know different amounts:
+ *
+ *   - the same-day job fetches TWO quarters, so its `periods` is 2 and its row
+ *     replaced counts of 3 and 4. Measured on the live index: 853 of the 987
+ *     funds it had touched were advertising fewer quarters than they held.
+ *   - the monthly job rebuilds every fund from whatever DERA windows exist that
+ *     day. Run before the window covering the current quarter's deadline
+ *     publishes, its row moves `latestPeriod` BACKWARDS — the same shape as the
+ *     2026-08-20 outage, one file over.
+ *
+ * `latestPeriod` and `latestValueUsd` are kept as a PAIR. Taking the newer
+ * period from one side and the value from the other is how a reference site
+ * ends up showing one quarter's headline total under another quarter's label.
+ */
+export function mergeFilerRow(prev, next) {
+  if (!prev) return next;
+  if (!next) return prev;
+  const merged = { ...prev, ...next };
+
+  // Coverage may only grow. Summaries are merged and never shrink, so the count
+  // that describes them must not either.
+  merged.periods = Math.max(Number(prev.periods) || 0, Number(next.periods) || 0);
+
+  // The newest quarter wins, and drags its own value along with it.
+  const pLatest = prev.latestPeriod ?? "";
+  const nLatest = next.latestPeriod ?? "";
+  if (pLatest > nLatest) {
+    merged.latestPeriod = prev.latestPeriod;
+    merged.latestValueUsd = prev.latestValueUsd;
+  }
+
+  // Watchlist membership is known to the universe build and not to a
+  // two-quarter fetch, so it is never cleared by the side that cannot see it.
+  // Whichever value wins keeps its own TYPE — the published index holds booleans
+  // for 9,268 managers and leaves the field undefined for the 14 the same-day
+  // job discovered. Coercing to 1/0 here would rewrite the shape of a file the
+  // dashboard already reads.
+  merged.watch = next.watch || prev.watch;
+
+  // NOT or-ed, deliberately. `hasHoldings` promises that fund/{cik}/{period}
+  // line items exist, and prune deletes those when a rebuild stops storing them.
+  // Carrying a stale `true` would advertise a page that 404s.
+  merged.hasHoldings = next.hasHoldings ?? prev.hasHoldings;
+
+  return merged;
+}
+
 export function mergeFilers(live, incoming, ciks) {
   const liveRows = Array.isArray(live?.data) ? live.data : [];
   const inRows = Array.isArray(incoming?.data) ? incoming.data : [];
@@ -382,11 +434,10 @@ export function mergeFilers(live, incoming, ciks) {
 
   for (const f of inRows) {
     if (!owned.has(f.cik)) continue; // this run only speaks for what it fetched
-    const prev = byCik.get(f.cik);
-    // The universe build knows things a two-quarter fetch does not — whether a
-    // manager is on the watchlist, whether it has stored line items. Keep those
-    // and let the fresher run supply what it actually measured.
-    byCik.set(f.cik, prev ? { ...prev, ...f } : f);
+    // The universe build knows things a two-quarter fetch does not, and the
+    // two-quarter fetch knows a quarter the universe build may not have yet.
+    // mergeFilerRow keeps whichever side has more, per field.
+    byCik.set(f.cik, mergeFilerRow(byCik.get(f.cik), f));
   }
 
   const rows = [...byCik.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));

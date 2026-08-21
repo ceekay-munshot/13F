@@ -20,7 +20,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
-import { mergeSummary, isPrunableKey, periodOfKey, carryForwardPeriods } from "../shared/manifest-merge.mjs";
+import { mergeSummary, mergeFilers, isPrunableKey, periodOfKey, carryForwardPeriods } from "../shared/manifest-merge.mjs";
 import { createRegister } from "../shared/unfinished.mjs";
 import { signRequest } from "./_sigv4.mjs";
 
@@ -243,6 +243,8 @@ async function readJson(key, attempts = 3) {
 }
 
 let mergedSummaries = 0;
+let mergedFilers = 0;
+let keptFilers = null;
 const keptSummaries = [];
 
 await pool(todo, CONCURRENCY, async (f) => {
@@ -267,6 +269,38 @@ await pool(todo, CONCURRENCY, async (f) => {
   // invariant was simply never applied to the other writer, which is the one
   // that rewrites all of them.
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // THE SAME RULE, ONE FILE OVER.
+  //
+  // meta/filers.json is the fund search index — the only way to reach a
+  // manager's page by name. The same-day job has always merged it row by row.
+  // This job did not: it wrote its own copy over the top, so every manager the
+  // same-day job had discovered, and every quarter it had added, was reset to
+  // whatever this run happened to build.
+  //
+  // That is the 2026-08-20 outage exactly, in the file next door. It has not
+  // fired yet only because the monthly job has not run since the same-day job
+  // started reaching Q2 2026. On its next scheduled run — 3 September — it
+  // would have moved 987 managers' newest quarter backwards from Q2 to Q1.
+  // ---------------------------------------------------------------------------
+  if (f === "meta/filers.json") {
+    try {
+      const live = await readJson(f);
+      if (live) {
+        const mine = JSON.parse(body.toString("utf8"));
+        // This run speaks for every fund it built, and for no others.
+        const ciks = (mine.data ?? []).map((r) => r.cik);
+        body = Buffer.from(JSON.stringify(mergeFilers(live, mine, ciks)));
+        mergedFilers = ciks.length;
+      }
+    } catch (err) {
+      // Same contract as the summaries: unable to prove the write is safe, so
+      // leave the published index alone rather than shorten it.
+      keptFilers = err.message;
+      return;
+    }
+  }
+
   if (f.endsWith("/summary.json")) {
     try {
       const live = await readJson(f);
@@ -285,6 +319,14 @@ await pool(todo, CONCURRENCY, async (f) => {
 
   await put(f, body);
 });
+if (mergedFilers) console.log(`  fund search index merged — ${mergedFilers} manager(s) from this run folded into what is published`);
+if (keptFilers) {
+  console.log(`fund search index left as published — could not be read to merge safely (${keptFilers}).`);
+  unfinished.note(
+    `the fund search index was NOT updated (${keptFilers}). Managers this run discovered cannot be found ` +
+    `by name until a later run repairs it. Nothing was lost; nothing was added either.`,
+  );
+}
 if (mergedSummaries) console.log(`  ${mergedSummaries} fund summaries merged with published history`);
 if (keptSummaries.length) {
   console.log(`${keptSummaries.length} summar(y|ies) left as published — could not be read to merge safely.`);
