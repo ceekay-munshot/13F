@@ -97,11 +97,6 @@ jobs:
           R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
         run: node scripts/archive-source.mjs --prune --keep=${{ github.event.inputs.fetch || '4' }}
 
-      # THE CLAIM THIS PHASE MAKES, CHECKED RATHER THAN ASSUMED.
-      #
-      # Downloads an archived window, opens it, and asserts all four tables the
-      # build needs are inside. "It uploaded" would not catch a truncated zip,
-      # and a store of record that cannot be read is not one.
       # Which directly-fetched quarters the bulk windows now cover. Reports and
       # changes nothing unless prune_edgar is asked for.
       - name: Filings held outside the bulk windows
@@ -115,6 +110,11 @@ jobs:
           node scripts/archive-source.mjs --prune-edgar \
             ${{ github.event.inputs.prune_edgar == 'true' && ' ' || '--dry-run' }}
 
+      # THE CLAIM THIS PHASE MAKES, CHECKED RATHER THAN ASSUMED.
+      #
+      # Downloads an archived window, opens it, and asserts all four tables the
+      # build needs are inside. "It uploaded" would not catch a truncated zip,
+      # and a store of record that cannot be read is not one.
       - name: Read a window back out of the archive
         if: ${{ !cancelled() && github.event.inputs.dry_run != 'true' }}
         env:
