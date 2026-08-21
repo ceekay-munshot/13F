@@ -20,6 +20,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
+import { mergeSummary } from "../shared/manifest-merge.mjs";
 import { signRequest } from "./_sigv4.mjs";
 
 const args = Object.fromEntries(
@@ -209,9 +210,75 @@ const todo = candidates.filter((f) => remote.get(f) !== statSync(join(DIR, f)).s
 const skipped = candidates.length - todo.length;
 
 console.log(`\nuploading ${todo.length} artifacts${skipped ? ` (${skipped} already present, skipped)` : ""}…`);
+/**
+ * Read a published object and parse it, retrying request AND body together.
+ *
+ * sendSigned retries the request; the body is streamed and read afterwards, so
+ * a mid-stream failure lands outside its retry entirely. Returns null for 404 —
+ * "not published yet" is an answer, not a failure.
+ */
+async function readJson(key, attempts = 3) {
+  let last;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await sendSigned("GET", key, null, new Set([404]));
+      if (res.status === 404) return null;
+      return JSON.parse(await res.text());
+    } catch (err) {
+      last = err;
+      if (i < attempts) await new Promise((r) => setTimeout(r, i * 400));
+    }
+  }
+  throw last;
+}
+
+let mergedSummaries = 0;
+const keptSummaries = [];
+
 await pool(todo, CONCURRENCY, async (f) => {
-  await put(f, readFileSync(join(DIR, f)));
+  let body = readFileSync(join(DIR, f));
+
+  // ---------------------------------------------------------------------------
+  // A FUND SUMMARY MAY NEVER LOSE A QUARTER, WHOEVER IS WRITING IT.
+  //
+  // This job covers only the quarters whose SEC bulk window has been published.
+  // During a filing season the CURRENT quarter has no window for about a month
+  // after the deadline, so this run legitimately knows nothing about it — while
+  // the same-day job has been publishing it for weeks.
+  //
+  // Writing summaries wholesale therefore deleted the newest quarter from every
+  // fund. Observed: on 2026-08-20 this run dropped Q2 2026 from all 9,268
+  // summaries, and the Fund page — which reads the summary to decide whether a
+  // manager has filed — told a client that Cantillon had not filed for Q2 when
+  // their 27-position filing had been on the site for weeks. The holdings, the
+  // feed and the manifest all still had it; only this file lost it.
+  //
+  // publish-day.mjs has enforced exactly this rule since it was written. The
+  // invariant was simply never applied to the other writer, which is the one
+  // that rewrites all of them.
+  // ---------------------------------------------------------------------------
+  if (f.endsWith("/summary.json")) {
+    try {
+      const live = await readJson(f);
+      if (live) {
+        body = Buffer.from(JSON.stringify(mergeSummary(live, JSON.parse(body.toString("utf8")))));
+        mergedSummaries++;
+      }
+    } catch (err) {
+      // Could not read what is published, so cannot prove the write is safe.
+      // Leave the published summary alone: stale by a quarter beats silently
+      // shorter, and every other artifact for this fund still lands.
+      keptSummaries.push(f);
+      return;
+    }
+  }
+
+  await put(f, body);
 });
+if (mergedSummaries) console.log(`  ${mergedSummaries} fund summaries merged with published history`);
+if (keptSummaries.length) {
+  console.log(`::warning::${keptSummaries.length} summar(y|ies) left as published — could not be read to merge safely.`);
+}
 
 // PUBLISH THE MANIFEST, THEN CLEAN UP. Never the other way round.
 //

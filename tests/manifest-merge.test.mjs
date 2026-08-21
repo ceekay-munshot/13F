@@ -563,3 +563,52 @@ describe("the same-day allowlist", () => {
     expect(isPublishableDayKey("period/2026-06-30/leaderboard.json")).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The rule that BOTH writers have to obey.
+//
+// mergeSummary was written for the same-day job and enforced there from day
+// one. The monthly universe job wrote summaries wholesale, and on 2026-08-20 it
+// dropped Q2 2026 from all 9,268 of them — so the Fund page told a client that
+// Cantillon had not filed for Q2 while their 27-position filing had been on the
+// site for weeks. The holdings, the feed and the manifest all still had it.
+//
+// The direction that bit is the one nobody thought about: the SHORTER history
+// belonged to the bigger, more authoritative job, because the SEC's bulk file
+// for the current quarter does not exist until about a month after the
+// deadline.
+// ---------------------------------------------------------------------------
+describe("a fund summary may never lose a quarter, whichever job writes it", () => {
+  const pt = (period) => ({ period, label: period, valueLongUsd: 1, positions: 1 });
+  const sum = (periods) => ({ kind: "fund-summary", cik: "0001279936", data: { series: periods.map(pt) } });
+
+  it("keeps the newest quarter when the incoming run does not know about it", () => {
+    // Exactly the universe-vs-same-day case.
+    const live = sum(["2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30"]);
+    const incoming = sum(["2025-09-30", "2025-12-31", "2026-03-31"]);
+    const out = mergeSummary(live, incoming);
+    expect(out.data.series.map((s) => s.period)).toContain("2026-06-30");
+    expect(out.data.series).toHaveLength(4);
+  });
+
+  it("keeps OLDER quarters when the incoming run is the shallow one", () => {
+    // The direction the same-day job guards, still guarded.
+    const live = sum(["2024-12-31", "2025-03-31", "2025-06-30", "2025-09-30"]);
+    const incoming = sum(["2025-06-30", "2025-09-30"]);
+    expect(mergeSummary(live, incoming).data.series).toHaveLength(4);
+  });
+
+  it("lets a fresher run UPDATE a quarter both of them have", () => {
+    // Merging must not mean freezing: an amended filing has to be able to
+    // correct the numbers for a quarter already published.
+    const live = { ...sum(["2026-03-31"]), data: { series: [{ ...pt("2026-03-31"), valueLongUsd: 100 }] } };
+    const incoming = { ...sum(["2026-03-31"]), data: { series: [{ ...pt("2026-03-31"), valueLongUsd: 999 }] } };
+    const out = mergeSummary(live, incoming);
+    expect(out.data.series).toHaveLength(1);
+    expect(out.data.series[0].valueLongUsd).toBe(999);
+  });
+
+  it("refuses an empty incoming series rather than publishing it", () => {
+    expect(() => mergeSummary(sum(["2026-03-31"]), sum([]))).toThrow(/no series/);
+  });
+});
