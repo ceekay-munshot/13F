@@ -341,6 +341,56 @@ async function prune() {
   const builtCiks = new Set(
     files.map((f) => (/^fund\/(\d{10})\//.exec(f) ?? [])[1]).filter(Boolean),
   );
+  // -------------------------------------------------------------------------
+  // A QUARTER'S COVERAGE MAY NOT SHRINK.
+  // -------------------------------------------------------------------------
+  // `builtPeriods` asks "did this run produce anything for that quarter?" —
+  // which is far too generous. On 3 September the monthly job runs before the
+  // SEC publishes the bulk window covering the Q2 2026 deadline, so it will hold
+  // Q2 for only the handful of funds the same-day job archived directly. Every
+  // other manager's Q2 came from the repair and lives in artifacts, not in the
+  // source archive. The quarter is therefore "built", and every one of the 8,428
+  // managers holding it would have had that quarter deleted.
+  //
+  // That is the 2026-08-20 outage exactly, rescheduled — and prune works now, so
+  // it would actually have happened.
+  //
+  // Producing three fund-quarters where the site has 8,428 is not a retention
+  // roll-off. It is a partial build, and the difference is measurable: compare
+  // what this run produced for each quarter against what is published, and
+  // refuse to prune any quarter it covers less well.
+  const COVERAGE_FLOOR = 0.98;
+  const countByPeriod = (keys) => {
+    const out = new Map();
+    for (const k of keys) {
+      const p = periodOfKey(k);
+      if (p) out.set(p, (out.get(p) ?? 0) + 1);
+    }
+    return out;
+  };
+  const remoteCounts = countByPeriod(current.keys());
+  const localCounts = countByPeriod(files);
+  const thin = [];
+  for (const [period, remoteN] of remoteCounts) {
+    if (!builtPeriods.has(period)) continue;      // already shielded
+    const localN = localCounts.get(period) ?? 0;
+    if (localN < remoteN * COVERAGE_FLOOR) {
+      builtPeriods.delete(period);
+      thin.push({ period, localN, remoteN });
+    }
+  }
+  for (const t of thin) {
+    console.log(
+      `  not pruning ${t.period}: this run produced ${t.localN} object(s) for it against ` +
+      `${t.remoteN} published. A partial build, not a retention roll-off.`,
+    );
+    unfinished.note(
+      `${t.period} was covered by only ${t.localN} of the ${t.remoteN} objects published for it, so nothing ` +
+      `for that quarter was pruned. Nothing is lost — but the build is missing data it should have had, and ` +
+      `a run that quietly pruned here would have deleted it.`,
+    );
+  }
+
   const stale = [...current.keys()].filter(
     (k) => !local.has(k) && isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES, builtCiks),
   );

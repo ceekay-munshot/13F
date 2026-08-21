@@ -175,3 +175,45 @@ describe("filings fetched directly from EDGAR", () => {
     expect(src.indexOf("writeSourceRecord(period, full);")).toBeLessThan(src.indexOf("delete full.raw;"));
   });
 });
+
+describe("a quarter's coverage may not shrink — the 3 September event", () => {
+  // On 3 Sept the monthly job runs BEFORE the SEC publishes the bulk window
+  // covering the Q2 2026 deadline. It will hold Q2 for only the handful of funds
+  // the same-day job archived directly; every other manager's Q2 came from the
+  // repair and lives in artifacts, not in the source archive.
+  //
+  // `builtPeriods` asks only "did this run produce anything for that quarter?",
+  // so the quarter counts as built and all 8,428 managers holding it would have
+  // had it deleted. That is the 2026-08-20 outage rescheduled — and prune works
+  // now, so it would actually have happened.
+  const src = readFileSync(new URL("../scripts/publish-r2.mjs", import.meta.url), "utf8");
+
+  it("prune compares what the run produced for a quarter against what is published", () => {
+    expect(src).toContain("COVERAGE_FLOOR");
+    expect(src).toContain("builtPeriods.delete(period)");
+  });
+
+  it("the comparison happens BEFORE anything is selected for deletion", () => {
+    expect(src.indexOf("builtPeriods.delete(period)"))
+      .toBeLessThan(src.indexOf("const stale = [...current.keys()].filter("));
+  });
+
+  it("a thin quarter is reported, not silently skipped", () => {
+    // "Nothing was deleted" and "nothing needed deleting" must not look the
+    // same — that is how prune stayed invisible for its whole existence.
+    const at = src.indexOf("not pruning ${t.period}");
+    expect(at).toBeGreaterThan(-1);
+    expect(src.slice(at, at + 900)).toContain("unfinished.note(");
+  });
+
+  it("the floor admits ordinary churn but not a partial build", () => {
+    // 8,428 published against 3 produced is 0.04%. A retention roll-off moves a
+    // whole quarter out at once, which `builtPeriods` already shields.
+    const m = /const COVERAGE_FLOOR = ([\d.]+);/.exec(src);
+    expect(m).toBeTruthy();
+    const floor = Number(m[1]);
+    expect(3 / 8428).toBeLessThan(floor);
+    expect(floor).toBeGreaterThan(0.9);
+    expect(floor).toBeLessThanOrEqual(1);
+  });
+});
