@@ -410,3 +410,92 @@ export function isPublishableDayKey(key) {
   if (/^period\/\d{4}-\d{2}-\d{2}\/filings\.json$/.test(key)) return true;
   return false;                                   // meta/*, leaderboards, anything new
 }
+
+/**
+ * The quarter a key belongs to, or null if it belongs to no quarter.
+ *
+ *   fund/0001067983/2026-06-30.json      -> 2026-06-30
+ *   fund/0001067983/2026-06-30.p2.json   -> 2026-06-30
+ *   period/2026-06-30/filings.json       -> 2026-06-30
+ *   fund/0001067983/summary.json         -> null
+ *   meta/filers.json                     -> null
+ */
+export function periodOfKey(key) {
+  const m =
+    /^fund\/\d{10}\/(\d{4}-\d{2}-\d{2})(?:\.p\d+)?\.json$/.exec(key) ??
+    /^period\/(\d{4}-\d{2}-\d{2})\//.exec(key);
+  return m ? m[1] : null;
+}
+
+/**
+ * May a publish DELETE this key?
+ *
+ * ---------------------------------------------------------------------------
+ * "I HAVE NO DATA FOR THAT QUARTER" IS NOT "THAT QUARTER SHOULD NOT EXIST".
+ * ---------------------------------------------------------------------------
+ * The monthly universe job only covers quarters whose SEC bulk window has been
+ * published, and during a filing season the CURRENT quarter has no window for
+ * about a month after the deadline. Its local tree therefore contains nothing
+ * for that quarter — while the same-day job has been publishing it for weeks.
+ *
+ * Prune deletes whatever is in the bucket and not in the local tree. So the
+ * moment it ran, it would delete the entire current quarter: on 2026-08-20 that
+ * was ~10,765 fund-quarters plus the filings feed. It did not, purely because
+ * prune was crashing on a variable used before its declaration — the data
+ * survived by accident, and fixing that crash on its own would have destroyed
+ * it.
+ *
+ * The 50% safety rail does not help here either: the current quarter is about a
+ * quarter of the bucket, well under the threshold, so the rail would have
+ * watched it happen.
+ *
+ * The rule: a key belonging to a quarter this run did not build is NOT stale,
+ * it is simply outside what this run knows about. Only quarters the run
+ * actually produced may have their leftovers cleaned up.
+ *
+ * @param {string} key                  the object key in the bucket
+ * @param {Set<string>} builtPeriods    quarters this run actually produced
+ * @param {string[]} protectedPrefixes  never-touch prefixes (cursors, state)
+ */
+export function isPrunableKey(key, builtPeriods, protectedPrefixes = []) {
+  if (protectedPrefixes.some((p) => key.startsWith(p))) return false;
+  const period = periodOfKey(key);
+  if (period === null) return true;          // no quarter — ordinary retention
+  return builtPeriods.has(period);           // only quarters we actually built
+}
+
+/**
+ * Carry forward quarters the incoming manifest says nothing about.
+ *
+ * For the MONTHLY job, which is authoritative about everything it covers and
+ * silent about everything it does not. mergeManifest is the same-day tool and
+ * deliberately preserves the global build id; this one does not touch the
+ * incoming manifest except to re-add quarters that would otherwise vanish.
+ *
+ * Why it is needed: the monthly run covers only quarters whose SEC bulk window
+ * exists, so during a filing season the current quarter is missing from its
+ * manifest entirely. Publishing that as-is removes the quarter from the
+ * dashboard's quarter selector — while the data for it is still sitting in the
+ * bucket, published by the same-day job and now shielded from prune. The
+ * dashboard could not reach data it definitely had.
+ *
+ * Same rule as prune and as the fund summaries, in a third place: not knowing
+ * about a quarter is not the same as knowing it should be gone.
+ */
+export function carryForwardPeriods(live, incoming) {
+  const inPeriods = Array.isArray(incoming?.periods) ? incoming.periods : [];
+  if (!inPeriods.length) throw new Error("incoming manifest has no periods — refusing to publish it");
+  const livePeriods = Array.isArray(live?.periods) ? live.periods : [];
+
+  const known = new Set(inPeriods.map((p) => p.period));
+  const carried = livePeriods.filter((p) => !known.has(p.period));
+  if (!carried.length) return { manifest: incoming, carried: [] };
+
+  const periods = [...inPeriods, ...carried].sort((a, b) =>
+    String(b.period).localeCompare(String(a.period)),
+  );
+  return {
+    manifest: { ...incoming, periods },
+    carried: carried.map((p) => p.period),
+  };
+}

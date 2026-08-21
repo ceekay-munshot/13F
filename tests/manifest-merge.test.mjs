@@ -5,7 +5,10 @@
 // from 9,268 funds to twelve. Every test here is a rehearsal of that failure.
 
 import { describe, it, expect } from "vitest";
-import { mergeManifest, mergeSummary, mergePeriodFilings, mergeFilers, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
+import {
+  mergeManifest, mergeSummary, mergePeriodFilings, mergeFilers, verifyMerge,
+  isPublishableDayKey, periodOfKey, isPrunableKey, carryForwardPeriods,
+} from "../shared/manifest-merge.mjs";
 
 /** Shaped like the real published manifest (checked against the live one). */
 const live = () => ({
@@ -610,5 +613,111 @@ describe("a fund summary may never lose a quarter, whichever job writes it", () 
 
   it("refuses an empty incoming series rather than publishing it", () => {
     expect(() => mergeSummary(sum(["2026-03-31"]), sum([]))).toThrow(/no series/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Prune, and the quarter it must not delete.
+//
+// The monthly job covers only quarters whose SEC bulk window exists. During a
+// filing season the CURRENT quarter has no window for about a month after the
+// deadline, so that job's tree holds nothing for it — while the same-day job
+// has been publishing it for weeks.
+//
+// Prune deletes what is in the bucket and not in the tree. On 2026-08-20 that
+// was the whole of Q2 2026: ~10,765 fund-quarters plus the filings feed. It did
+// not happen only because prune was crashing on a const used before its
+// declaration. The data survived by accident, and fixing that crash alone would
+// have destroyed it. The 50% safety rail would not have helped — the current
+// quarter is ~24% of the bucket, comfortably under the threshold.
+// ---------------------------------------------------------------------------
+describe("prune never deletes a quarter the run did not build", () => {
+  const BUILT = new Set(["2026-03-31", "2025-12-31"]);
+
+  it("reads the quarter out of every key shape", () => {
+    expect(periodOfKey("fund/0001067983/2026-06-30.json")).toBe("2026-06-30");
+    expect(periodOfKey("fund/0001067983/2026-06-30.p2.json")).toBe("2026-06-30");
+    expect(periodOfKey("period/2026-06-30/filings.json")).toBe("2026-06-30");
+    expect(periodOfKey("period/2026-06-30/sectors.json")).toBe("2026-06-30");
+    expect(periodOfKey("fund/0001067983/summary.json")).toBeNull();
+    expect(periodOfKey("meta/filers.json")).toBeNull();
+    expect(periodOfKey("manifest.json")).toBeNull();
+  });
+
+  it("SHIELDS the current quarter when this run has no window for it", () => {
+    // THE failure. Every one of these was live and would have been deleted.
+    for (const k of [
+      "fund/0001279936/2026-06-30.json",
+      "fund/0001067983/2026-06-30.p3.json",
+      "period/2026-06-30/filings.json",
+      "period/2026-06-30/sectors.json",
+    ]) {
+      expect(isPrunableKey(k, BUILT)).toBe(false);
+    }
+  });
+
+  it("still cleans up quarters it DID build", () => {
+    // Otherwise retention never rolls off and the bucket grows forever.
+    expect(isPrunableKey("fund/0001067983/2026-03-31.json", BUILT)).toBe(true);
+    expect(isPrunableKey("period/2025-12-31/filings.json", BUILT)).toBe(true);
+  });
+
+  it("still cleans up objects that belong to no quarter", () => {
+    // A fund that stopped filing entirely, a renamed index — ordinary retention.
+    expect(isPrunableKey("fund/0009999999/summary.json", BUILT)).toBe(true);
+    expect(isPrunableKey("meta/some-old-index.json", BUILT)).toBe(true);
+  });
+
+  it("honours the never-touch prefixes", () => {
+    expect(isPrunableKey("state/day-cursor.json", BUILT, ["state/"])).toBe(false);
+  });
+
+  it("shields EVERYTHING when the run built no quarters at all", () => {
+    // A run that produced nothing must not be able to empty the bucket.
+    const nothing = new Set();
+    expect(isPrunableKey("fund/0001067983/2026-03-31.json", nothing)).toBe(false);
+    expect(isPrunableKey("period/2026-03-31/filings.json", nothing)).toBe(false);
+  });
+});
+
+describe("carryForwardPeriods — the monthly manifest keeps quarters it cannot see", () => {
+  const p = (period, funds) => ({ period, label: period, deadline: period, filings: funds, funds });
+
+  it("keeps the current quarter the monthly run has no window for", () => {
+    // THE symptom the client reported: Q2 vanished from the quarter selector
+    // while its data sat in the bucket.
+    const live = { periods: [p("2026-06-30", 10765), p("2026-03-31", 10648)] };
+    const incoming = { buildId: "new", periods: [p("2026-03-31", 10648), p("2025-12-31", 10753)] };
+    const { manifest, carried } = carryForwardPeriods(live, incoming);
+    expect(carried).toEqual(["2026-06-30"]);
+    expect(manifest.periods.map((x) => x.period)).toContain("2026-06-30");
+    expect(manifest.buildId).toBe("new"); // the monthly run IS authoritative otherwise
+  });
+
+  it("newest first, so the quarter selector opens on the right one", () => {
+    const live = { periods: [p("2026-06-30", 1)] };
+    const incoming = { buildId: "b", periods: [p("2025-12-31", 2), p("2026-03-31", 3)] };
+    expect(carryForwardPeriods(live, incoming).manifest.periods.map((x) => x.period))
+      .toEqual(["2026-06-30", "2026-03-31", "2025-12-31"]);
+  });
+
+  it("lets the monthly run OVERWRITE a quarter it does cover", () => {
+    // Carrying forward must not mean freezing: where this run has real coverage
+    // its numbers win, because they are the complete ones.
+    const live = { periods: [p("2026-03-31", 13)] };          // a thin same-day count
+    const incoming = { buildId: "b", periods: [p("2026-03-31", 10648)] };
+    const { manifest, carried } = carryForwardPeriods(live, incoming);
+    expect(carried).toEqual([]);
+    expect(manifest.periods[0].funds).toBe(10648);
+  });
+
+  it("refuses an incoming manifest with no periods at all", () => {
+    expect(() => carryForwardPeriods({ periods: [p("2026-03-31", 1)] }, { periods: [] }))
+      .toThrow(/no periods/);
+  });
+
+  it("works when nothing is published yet", () => {
+    const incoming = { buildId: "b", periods: [p("2026-03-31", 1)] };
+    expect(carryForwardPeriods(null, incoming).manifest.periods).toHaveLength(1);
   });
 });

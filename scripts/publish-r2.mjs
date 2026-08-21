@@ -20,7 +20,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
-import { mergeSummary } from "../shared/manifest-merge.mjs";
+import { mergeSummary, isPrunableKey, periodOfKey, carryForwardPeriods } from "../shared/manifest-merge.mjs";
 import { signRequest } from "./_sigv4.mjs";
 
 const args = Object.fromEntries(
@@ -107,6 +107,11 @@ async function sendSigned(method, key, body, okStatuses = new Set(), query = {})
   }
   throw lastErr ?? new Error(`${method} ${key} failed`);
 }
+
+// Declared HERE, above every use. It previously sat below prune(), so the
+// first thing prune did was read a const still in its temporal dead zone and
+// throw — silently, every single run, for as long as it had existed.
+const PROTECTED_PREFIXES = ["state/"];
 
 const put = (key, body) => sendSigned("PUT", key, body);
 const del = (key) => sendSigned("DELETE", key, null, new Set([404]));
@@ -297,7 +302,30 @@ if (keptSummaries.length) {
 // are NOT in the local tree, and the manifest only ever references keys that
 // ARE, so a reader following the freshly-published manifest cannot be pointed
 // at something prune is about to remove.
-await put("manifest.json", readFileSync(join(DIR, "manifest.json")));
+// THE MANIFEST, WITH QUARTERS THIS RUN DOES NOT KNOW ABOUT LEFT INTACT.
+//
+// This run is authoritative about every quarter it covers and silent about
+// every quarter it does not. Publishing its manifest as-is removed the current
+// quarter from the dashboard's quarter selector during a filing season — while
+// the data for that quarter was still in the bucket, published by the same-day
+// job. The site could not reach data it definitely had.
+let manifestBody = readFileSync(join(DIR, "manifest.json"));
+try {
+  const live = await readJson("manifest.json");
+  if (live) {
+    const { manifest: merged, carried } = carryForwardPeriods(live, JSON.parse(manifestBody.toString("utf8")));
+    if (carried.length) {
+      manifestBody = Buffer.from(JSON.stringify(merged, null, 2));
+      console.log(`  carried forward ${carried.length} quarter(s) this run has no window for: ${carried.join(", ")}`);
+    }
+  }
+} catch (err) {
+  // The manifest MUST be published — without it the dashboard is a dead page,
+  // which is far worse than a quarter briefly missing from the stepper. So
+  // publish what this run built and say what could not be checked.
+  console.log(`::warning::could not read the live manifest to carry quarters forward (${err.message}); publishing this run's own.`);
+}
+await put("manifest.json", manifestBody);
 console.log(`\nmanifest published — build is now live.`);
 
 if (PRUNE) {
@@ -318,16 +346,25 @@ if (PRUNE) {
  * indexes) but it does throw away a filing season's worth of progress and send
  * the ingest back over ten thousand managers it had already done.
  */
-const PROTECTED_PREFIXES = ["state/"];
-
 async function prune() {
   console.log(`\npruning keys no longer in the build…`);
   const current = await listAll();
   const local = new Set(files);
-  const stale = [...current.keys()].filter(
-    (k) => !local.has(k) && !PROTECTED_PREFIXES.some((p) => k.startsWith(p)),
+  // Quarters this run actually produced. Anything belonging to a quarter NOT in
+  // here is outside what this run knows about — see isPrunableKey.
+  const builtPeriods = new Set(
+    files.map((f) => periodOfKey(f)).filter((p) => p !== null),
   );
-  console.log(`  ${current.size} remote, ${stale.length} stale`);
+  const stale = [...current.keys()].filter(
+    (k) => !local.has(k) && XisPrunableKeyX(k, builtPeriods, PROTECTED_PREFIXES),
+  );
+  const shielded = [...current.keys()].filter(
+    (k) => !local.has(k) && !isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES),
+  ).length;
+  console.log(`  ${current.size} remote · ${stale.length} stale · covering ${[...builtPeriods].sort().join(", ") || "no quarters"}`);
+  if (shielded) {
+    console.log(`  ${shielded} object(s) left alone — they belong to quarters this run did not build.`);
+  }
 
   // SAFETY RAIL. Prune decides what to delete by diffing remote keys against
   // local paths, so any mismatch in key FORMAT — a leading slash, a Windows

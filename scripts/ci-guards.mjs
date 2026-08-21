@@ -474,6 +474,54 @@ function guardSameDayPublish() {
 
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// GUARD — "I have no data for that" is not "that should be deleted".
+//
+// Two jobs write this bucket. The monthly one covers only quarters whose SEC
+// bulk window exists, so during a filing season it knows NOTHING about the
+// current quarter — while the same-day job has been publishing it for weeks.
+// Three separate times that ignorance was written over the other job's
+// knowledge:
+//
+//   fund summaries   every one rewritten without the current quarter, so the
+//                    Fund page told a client a manager had not filed when they
+//                    had
+//   the manifest     the quarter vanished from the selector while its data sat
+//                    in the bucket
+//   prune            would have DELETED ~10,765 fund-quarters outright. It only
+//                    did not because it was crashing on a const in its temporal
+//                    dead zone, and the 50% safety rail sits well above the
+//                    ~24% the current quarter represents
+//
+// Same mistake, three places, one of them destructive and masked by a crash.
+// ---------------------------------------------------------------------------
+{
+  const guard = "publish-never-erases-what-it-cannot-see";
+  checks.push(guard);
+  const f = join(ROOT, "scripts/publish-r2.mjs");
+  if (existsSync(f)) {
+    const src = readFileSync(f, "utf8");
+    if (!/mergeSummary\(/.test(src)) {
+      fail(guard, f, "fund summaries written without mergeSummary — this run would delete quarters it has no window for.");
+    }
+    if (!/isPrunableKey\(/.test(src)) {
+      fail(guard, f, "prune does not use isPrunableKey — it would delete every object belonging to a quarter this run did not build.");
+    }
+    if (!/carryForwardPeriods\(/.test(src)) {
+      fail(guard, f, "the manifest is published without carryForwardPeriods — the current quarter would drop out of the quarter selector.");
+    }
+    // The bug that made prune inert for its whole existence: a `const` declared
+    // BELOW the function that reads it. It fails at runtime inside a try/catch,
+    // as a warning, which is how it went unnoticed.
+    const declAt = src.indexOf("const PROTECTED_PREFIXES");
+    const useAt = src.indexOf("await prune()");
+    if (declAt !== -1 && useAt !== -1 && declAt > useAt) {
+      fail(guard, f, "PROTECTED_PREFIXES is declared after prune() is called — it throws from its temporal dead zone on every run, exactly as it did before.");
+    }
+  }
+}
+
 guardSameDayPublish();
 
 if (failures.length) {
