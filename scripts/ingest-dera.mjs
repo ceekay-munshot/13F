@@ -450,6 +450,38 @@ await runJob(async () => {
   const quarantined = [...filings.values()].filter((f) => f.quarantined).length;
   log(`normalized: ${quarantined} quarantined`);
 
+  // ---- fold in the filings fetched directly from EDGAR ---------------------
+  //
+  // The bulk windows are published about a month after their window closes, so
+  // for roughly six weeks after a deadline they do not contain the current
+  // quarter at all. The same-day job archived those filings as they arrived;
+  // this is where they join the build.
+  //
+  // Without this the builder is structurally incapable of producing the quarter
+  // a client is actually looking at, which is why there were two writers in the
+  // first place — and every merge function exists to referee between them.
+  //
+  // Keyed by accession, so a filing BOTH sources hold is replaced by the
+  // directly-fetched one: same content, but a real acceptance timestamp instead
+  // of DERA's synthesised noon. That matters to the amendment fold, where a tie
+  // falls back to accession order — the filing agent's prefix, not anything
+  // chronological — and a restatement can lose to the original it exists to
+  // replace.
+  if (process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY) {
+    const { createR2 } = await import("./_r2.mjs");
+    const { mergeEdgarSource } = await import("./_source-load.mjs");
+    const { EDGAR_PREFIX } = await import("../shared/source-archive.mjs");
+    const r = await mergeEdgarSource(filings, {
+      r2: createR2(), prefix: EDGAR_PREFIX, securities: SECURITIES, log,
+    });
+    if (r.ok) {
+      log(`archived filings: ${r.listed} read · ${r.merged} added · ${r.replaced} superseded a bulk copy` +
+          `${r.unreadable ? ` · ${r.unreadable} unreadable` : ""}`);
+    }
+  } else {
+    log("no R2 credentials — building from the bulk windows alone");
+  }
+
   // ---- group by (cik, period) and fold ------------------------------------
   const byFund = new Map();
   for (const f of filings.values()) {

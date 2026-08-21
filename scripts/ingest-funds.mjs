@@ -182,6 +182,12 @@ async function loadFiling(sec, cik, f) {
     report_type: cover.reportType,
     manager_name: cover.filingManagerName,
     table_value_total: cover.tableValueTotal,
+    // The cover page's DECLARED row count. DERA carries this and the same-day
+    // path did not, so a filing archived from here would have come back with a
+    // zero where the bulk copy has the real number — the two sources have to be
+    // interchangeable or the builder produces different artifacts depending on
+    // which one happened to reach a fund first.
+    table_entry_total: cover.tableEntryTotal ?? null,
     units: units.units,
     unit_source: units.source,
     median_implied_price: units.medianImpliedPrice,
