@@ -266,3 +266,23 @@ export function deraWindowFor(filingDateISO) {
     url: `https://www.sec.gov/files/structureddata/data/form-13f-data-sets/${slug}_form13f.zip`,
   };
 }
+
+/**
+ * The ISO start date of a DERA window, from its slug.
+ *
+ *   "01mar2026-31may2026" -> "2026-03-01"
+ *
+ * Windows are named by month abbreviation, so they do not sort lexically:
+ * "01dec2025-28feb2026" sorts before "01mar2026-31may2026" by luck and
+ * "01sep2025-30nov2025" sorts after both. Retention that kept "the last four
+ * by name" would therefore delete the wrong ones. Parsed once, here, so no
+ * caller has to get it right a second time.
+ */
+export function deraWindowStart(slug) {
+  const m = /^(\d{2})([a-z]{3})(\d{4})-/.exec(String(slug));
+  if (!m) return null;
+  const MON = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const month = MON.indexOf(m[2]);
+  if (month < 0) return null;
+  return `${m[3]}-${String(month + 1).padStart(2, "0")}-${m[1]}`;
+}

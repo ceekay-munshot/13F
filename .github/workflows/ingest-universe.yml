@@ -104,12 +104,44 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '5'
+          # Read-through: the ingest tries the source archive before sec.gov.
+          # These files are immutable, so a copy we hold is as good as a fresh
+          # download and costs the SEC nothing. A missing or unreadable archive
+          # falls through to the SEC exactly as before.
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
         run: |
           node --max-old-space-size=13312 scripts/ingest-dera.mjs \
             --out=public/data \
             --windows=${{ github.event.inputs.windows || '4' }} \
             --top=${{ github.event.inputs.top || '99999' }} \
             --keep=${{ github.event.inputs.keep || '4' }}
+
+      # KEEP WHAT THE SEC GAVE US.
+      #
+      # Until this existed, every run downloaded ~345 MB of bulk data, built the
+      # dashboard from it and discarded it — so the dashboard's own files were
+      # the only copy of the data, and every failure this project has had traces
+      # back to that. Archiving is write-once: these windows are immutable at the
+      # source, so a key already present is never overwritten.
+      #
+      # continue-on-error because a failed archive must not cost a build that has
+      # already done its work. It is reported in the summary instead, and the
+      # next run archives the same window.
+      - name: Keep the SEC's own files
+        id: archive
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: |
+          node scripts/archive-source.mjs --sync=.cache
+          node scripts/archive-source.mjs --prune --keep=${{ github.event.inputs.windows || '4' }}
+          node scripts/archive-source.mjs --list
 
       # A PUBLISH MAY ADD AND IT MAY CORRECT. IT MAY NOT SUBTRACT.
       #
@@ -198,6 +230,11 @@ jobs:
             echo "size: $(du -sh public/data | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "objects: none — ingest did not produce a tree" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${{ steps.archive.outcome }}" = "success" ]; then
+            echo "source archive: kept" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "source archive: **not updated** — the next run will archive the same windows" >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "${{ steps.securities.outcome }}" = "success" ]; then
             echo "ticker map: refreshed" >> "$GITHUB_STEP_SUMMARY"

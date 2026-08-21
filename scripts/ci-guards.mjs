@@ -635,6 +635,40 @@ function guardNoUndefinedNames() {
   }
 }
 
+/**
+ * R2 access goes through _r2.mjs. Nobody hand-rolls a second client.
+ *
+ * There were three copies of the same signed-request loop — publish-r2.mjs,
+ * publish-day.mjs, and very nearly a fourth for the source archive. They were
+ * character-for-character identical when written, which is exactly how this
+ * project ended up with two ingest paths that fold amendments by different
+ * rules, two artifact-row mappings, and two meanings for the same field name.
+ *
+ * One copy also means one place to fix. The backoff in those loops was linear
+ * while the comment above it said exponential; correcting that in _r2.mjs
+ * corrected it everywhere at once.
+ */
+function guardOneR2Client() {
+  const guard = "one-r2-client";
+  checks.push(guard);
+  const ALLOWED = ["scripts/_r2.mjs", "scripts/_sigv4.mjs"];
+  for (const dir of ["scripts", "shared"]) {
+    const d = join(ROOT, dir);
+    if (!existsSync(d)) continue;
+    for (const name of readdirSync(d)) {
+      if (!name.endsWith(".mjs")) continue;
+      const rel = `${dir}/${name}`;
+      if (ALLOWED.includes(rel)) continue;
+      const src = readFileSync(join(d, name), "utf8");
+      if (/from\s+["'][^"']*_sigv4\.mjs["']/.test(src)) {
+        fail(guard, join(d, name), "imports the signer directly. R2 access goes through scripts/_r2.mjs, so there is one client to get right rather than three that drift.");
+      }
+    }
+  }
+}
+
+guardOneR2Client();
+
 guardNoUndefinedNames();
 
 guardNothingFailsQuietly();

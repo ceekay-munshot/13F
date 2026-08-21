@@ -32,7 +32,7 @@ import { join, relative, sep, dirname } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { mergeManifest, mergeSummary, mergePeriodFilings, mergeFilers, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
 import { createRegister } from "../shared/unfinished.mjs";
-import { signRequest } from "./_sigv4.mjs";
+import { createR2 } from "./_r2.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -89,7 +89,6 @@ const ACCOUNT = process.env.R2_ACCOUNT_ID;
 const KEY = process.env.R2_ACCESS_KEY_ID;
 const SECRET = process.env.R2_SECRET_ACCESS_KEY;
 const BUCKET = process.env.R2_BUCKET || "13f";
-const HOST = `${ACCOUNT}.r2.cloudflarestorage.com`;
 
 const fail = (msg) => { console.error(`::error::${msg}`); process.exit(1); };
 
@@ -97,9 +96,6 @@ if (!PULL_STATE && !CIKS.length) fail("--ciks or --ciks-file is required: the fu
 if (!DRY && (!ACCOUNT || !KEY || !SECRET)) {
   fail("R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY must all be set.");
 }
-
-const RETRYABLE = new Set([429, 500, 502, 503, 504]);
-const MAX_ATTEMPTS = 5;
 
 /** Where a dry run reads published artifacts from — the directory holding the manifest. */
 const DRY_BASE = (process.env.LIVE_MANIFEST_URL || "").replace(/\/manifest\.json.*$/, "");
@@ -119,40 +115,19 @@ function liveKeyFor(key) {
   return LIVE_MANIFEST.shared?.[key] || LIVE_MANIFEST.buildId;
 }
 
-async function sendSigned(method, key, body, okStatuses = new Set()) {
-  let lastErr;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const { url, headers } = signRequest({
-      method, host: HOST, bucket: BUCKET, key, query: {}, body,
-      accessKeyId: KEY, secretAccessKey: SECRET, region: "auto",
-    });
-    const extra = method === "PUT"
-      ? {
-          "content-type": "application/json",
-          "content-length": String(body.length),
-          "cache-control": key === "manifest.json" ? CACHE_CONTROL.manifest : CACHE_CONTROL.artifact,
-        }
-      : {};
-    try {
-      const res = await fetch(url, { method, body, headers: { ...headers, ...extra } });
-      if (res.ok || okStatuses.has(res.status)) return res;
-      if (RETRYABLE.has(res.status) && attempt < MAX_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, attempt * 500 + Math.floor(Math.random() * 400)));
-        lastErr = new Error(`${method} ${key} -> ${res.status}`);
-        continue;
-      }
-      throw new Error(`${method} ${key} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
-    } catch (err) {
-      lastErr = err;
-      if (attempt < MAX_ATTEMPTS && !/-> \d{3} /.test(err.message)) {
-        await new Promise((r) => setTimeout(r, attempt * 500 + Math.floor(Math.random() * 400)));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastErr ?? new Error(`${method} ${key} failed`);
-}
+// The one R2 client — signing, retries and backoff live in _r2.mjs. This file
+// used to carry its own copy, character for character identical to the one in
+// publish-r2.mjs, which is how a project ends up with two of everything that
+// then quietly drift apart.
+const r2 = createR2({
+  accountId: ACCOUNT, accessKeyId: KEY, secretAccessKey: SECRET, bucket: BUCKET,
+  headersFor: (key, body) => ({
+    "content-type": "application/json",
+    "content-length": String(body.length),
+    "cache-control": key === "manifest.json" ? CACHE_CONTROL.manifest : CACHE_CONTROL.artifact,
+  }),
+});
+const sendSigned = r2.send;
 
 function walk(dir, base = dir, out = []) {
   if (!existsSync(dir)) return out;

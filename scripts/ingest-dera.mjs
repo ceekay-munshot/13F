@@ -49,6 +49,30 @@ const args = Object.fromEntries(
 
 const OUT = args.out || "public/data";
 const CACHE = args.cache || ".cache";
+
+/**
+ * Read one DERA window out of the source archive in R2.
+ *
+ * Returns null for every failure — no credentials, not archived yet, unreadable
+ * — because the caller's next move is to ask the SEC, which is exactly what it
+ * did before this existed. An archive that is down must never cost a build.
+ */
+async function readArchivedWindow(slug, log) {
+  if (!process.env.R2_ACCOUNT_ID || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
+    return null;
+  }
+  try {
+    const { createR2 } = await import("./_r2.mjs");
+    const r2 = createR2();
+    const buf = await r2.getBuffer(`source/dera/${slug}_form13f.zip`);
+    if (!buf) return null;
+    log(`using archived ${slug} (${(buf.length / 1048576).toFixed(1)} MB) — no SEC request`);
+    return buf;
+  } catch (err) {
+    log(`  archive unreadable for ${slug} (${err.message}) — asking the SEC instead`);
+    return null;
+  }
+}
 const TOP = args.top ? Number(args.top) : Infinity;
 const META_ONLY = Boolean(args["meta-only"]);
 // Retention: how many recent quarters keep line-item holdings. Older
@@ -180,6 +204,22 @@ await runJob(async () => {
       loaded.push({ w, buf: readFileSync(cached) });
       continue;
     }
+    // THE ARCHIVE, BEFORE THE SEC.
+    //
+    // These files are immutable — the SEC publishes a window once and does not
+    // revise it — so a copy we already hold is as good as a fresh download and
+    // costs the SEC nothing. Until now every monthly run re-fetched ~345 MB and
+    // then discarded it, which is why nothing could be rebuilt.
+    //
+    // Failure here is never fatal: it falls through to the SEC exactly as before.
+    const fromArchive = await readArchivedWindow(w.slug, log);
+    if (fromArchive) {
+      mkdirSync(CACHE, { recursive: true });
+      writeFileSync(cached, fromArchive);
+      loaded.push({ w, buf: fromArchive });
+      continue;
+    }
+
     log(`fetching ${w.url}`);
     try {
       const res = await sec.get(w.url, { as: "buffer" });

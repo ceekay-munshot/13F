@@ -22,7 +22,7 @@ import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { mergeSummary, mergeFilers, isPrunableKey, periodOfKey, carryForwardPeriods } from "../shared/manifest-merge.mjs";
 import { createRegister } from "../shared/unfinished.mjs";
-import { signRequest } from "./_sigv4.mjs";
+import { createR2, pool } from "./_r2.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -63,93 +63,31 @@ function headersFor(key, body) {
   };
 }
 
-// R2 (like any S3 service) occasionally returns a 500 InternalError under load —
-// its own body says "Please try again" — plus the usual 429/502/503/504 and
-// transient network drops. Across ~35,000 uploads at least one is near-certain,
-// so a single failure must NOT kill the whole publish. Retry those with
-// exponential backoff. Each attempt is RE-SIGNED, because SigV4 embeds a
-// timestamp that a backed-off retry could otherwise push outside its window.
-//
-// (This is the opposite of the SEC 403 rule, which is terminal and never
-// retried. There a retry harms others; here it is exactly what the service
-// asks for.)
-const RETRYABLE = new Set([429, 500, 502, 503, 504]);
-const MAX_ATTEMPTS = 5;
-
-async function sendSigned(method, key, body, okStatuses = new Set(), query = {}) {
-  let lastErr;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    // Re-sign per attempt: SigV4 embeds a timestamp, and a backed-off retry
-    // could otherwise fall outside its validity window. The URL comes FROM the
-    // signer so it can never drift from what was signed.
-    const { url, headers } = signRequest({
-      method, host: HOST, bucket: BUCKET, key, query, body,
-      accessKeyId: KEY, secretAccessKey: SECRET, region: REGION,
-    });
-    const extra = method === "PUT" ? headersFor(key, body) : {};
-    try {
-      const res = await fetch(url, { method, body, headers: { ...headers, ...extra } });
-      if (res.ok || okStatuses.has(res.status)) return res;
-      if (RETRYABLE.has(res.status) && attempt < MAX_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, attempt * 500 + Math.floor(Math.random() * 400)));
-        lastErr = new Error(`${method} ${key} -> ${res.status}`);
-        continue;
-      }
-      throw new Error(`${method} ${key} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
-    } catch (err) {
-      // Network-level failure (reset, timeout): also retryable.
-      lastErr = err;
-      if (attempt < MAX_ATTEMPTS && !/-> \d{3} /.test(err.message)) {
-        await new Promise((r) => setTimeout(r, attempt * 500 + Math.floor(Math.random() * 400)));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastErr ?? new Error(`${method} ${key} failed`);
-}
+// The one R2 client — signing, retries and paged listing live in _r2.mjs so the
+// source archive cannot end up with a second, subtly different copy of them.
+const r2 = createR2({
+  accountId: ACCOUNT, accessKeyId: KEY, secretAccessKey: SECRET,
+  bucket: BUCKET, region: REGION, headersFor,
+});
+const sendSigned = r2.send;
 
 // Declared HERE, above every use. It previously sat below prune(), so the
 // first thing prune did was read a const still in its temporal dead zone and
 // throw — silently, every single run, for as long as it had existed.
-const PROTECTED_PREFIXES = ["state/"];
+//
+// `source/` holds the SEC's own bulk files — the copy the dashboard is rebuilt
+// from. isPrunableKey treats a key with no quarter in it as ordinary retention,
+// so without this line the monthly prune would delete the entire store of
+// record: 345 MB that costs a day of SEC downloads to replace, and whose whole
+// purpose is to survive a bad publish.
+const PROTECTED_PREFIXES = ["state/", "source/"];
 
 // Work this run was supposed to do and did not. See shared/unfinished.mjs for
 // why this is deferred to the end of the run rather than thrown immediately.
 const unfinished = createRegister();
 
-const put = (key, body) => sendSigned("PUT", key, body);
-const del = (key) => sendSigned("DELETE", key, null, new Set([404]));
-
-/**
- * List every object under a prefix as key -> size, following continuation tokens.
- *
- * Size is captured so an interrupted publish can resume: a re-run skips objects
- * already present at the same size rather than re-uploading tens of thousands of
- * unchanged files. That turns a retry from ~19 minutes into about one, and makes
- * the monthly refresh upload only what actually changed.
- */
-async function listAll(prefix = "") {
-  const found = new Map();
-  let token = null;
-  do {
-    // The query MUST go through the signer — it is part of the canonical
-    // request. Signing the bare bucket and appending the query afterwards is
-    // what produced SignatureDoesNotMatch on every list.
-    const query = { "list-type": "2", "max-keys": "1000" };
-    if (prefix) query.prefix = prefix;
-    if (token) query["continuation-token"] = token;
-    const res = await sendSigned("GET", "", null, new Set(), query);
-    const xml = await res.text();
-    for (const m of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
-      const key = (/<Key>([^<]*)<\/Key>/.exec(m[1]) ?? [])[1];
-      const size = Number((/<Size>(\d+)<\/Size>/.exec(m[1]) ?? [])[1] ?? -1);
-      if (key) found.set(key, size);
-    }
-    token = (/<NextContinuationToken>([^<]+)</.exec(xml) ?? [])[1] ?? null;
-  } while (token);
-  return found;
-}
+const put = r2.put;
+const del = r2.del;
 
 function walk(dir, base = dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -158,20 +96,6 @@ function walk(dir, base = dir, out = []) {
     else out.push(relative(base, p).split(sep).join("/"));
   }
   return out;
-}
-
-/** Run tasks with a bounded worker pool. */
-async function pool(items, n, fn) {
-  let i = 0;
-  let done = 0;
-  const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
-    while (i < items.length) {
-      const idx = i++;
-      await fn(items[idx]);
-      if (++done % 500 === 0) console.log(`  ${done}/${items.length}`);
-    }
-  });
-  await Promise.all(workers);
 }
 
 if (!existsSync(DIR)) {
@@ -207,7 +131,7 @@ if (DRY) {
 // content and the upload can be skipped.
 let remote = new Map();
 try {
-  remote = await listAll();
+  remote = await r2.list();
   if (remote.size) console.log(`${remote.size} objects already in the bucket`);
 } catch (err) {
   console.log(`::warning::could not list the bucket (${err.message}) — uploading everything.`);
@@ -318,7 +242,7 @@ await pool(todo, CONCURRENCY, async (f) => {
   }
 
   await put(f, body);
-});
+}, (d, n) => console.log(`  ${d}/${n}`));
 if (mergedFilers) console.log(`  fund search index merged — ${mergedFilers} manager(s) from this run folded into what is published`);
 if (keptFilers) {
   console.log(`fund search index left as published — could not be read to merge safely (${keptFilers}).`);
@@ -404,7 +328,7 @@ if (PRUNE) {
  */
 async function prune() {
   console.log(`\npruning keys no longer in the build…`);
-  const current = await listAll();
+  const current = await r2.list();
   const local = new Set(files);
   // Quarters this run actually produced. Anything belonging to a quarter NOT in
   // here is outside what this run knows about — see isPrunableKey.
@@ -455,7 +379,7 @@ async function prune() {
     return;
   }
 
-  await pool(stale, CONCURRENCY, del);
+  await pool(stale, CONCURRENCY, del, (d, n) => console.log(`  ${d}/${n}`));
 }
 
 // The verdict. Everything above has already been published, so this cannot cost
