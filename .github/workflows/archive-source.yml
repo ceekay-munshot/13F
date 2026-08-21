@@ -1,0 +1,133 @@
+name: Archive the SEC source files
+
+# ---------------------------------------------------------------------------
+# Fill and check the store of record.
+#
+# Until this existed, every monthly build downloaded ~345 MB of SEC bulk data,
+# built the dashboard from it, and discarded it — so the dashboard's own files
+# were the only copy of the data, and a bad publish was unrecoverable.
+#
+# The monthly job now archives whatever it had to fetch, so in steady state this
+# workflow does nothing. It is here for the one-time fill, and for checking the
+# archive is still readable without waiting a month to find out.
+#
+# In the monthly job's concurrency group so the two can never write at once.
+# ---------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+    inputs:
+      fetch:
+        description: 'Windows to fetch from the SEC if not already archived (one year = 4)'
+        default: '4'
+      dry_run:
+        description: 'Report what would happen without downloading or writing'
+        type: boolean
+        default: true
+
+concurrency:
+  group: 13f-universe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Validate configuration
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          missing=0
+          for v in SEC_USER_AGENT R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::$v is not set"; missing=1; fi
+          done
+          case "$SEC_USER_AGENT" in *@*.*) ;; *) echo "::error::SEC_USER_AGENT needs a contact email"; missing=1 ;; esac
+          [ "$missing" = "0" ] || { echo "::error::See DEPLOY.md."; exit 1; }
+
+      - run: npm ci
+      - name: Correctness gates
+        run: npm run check
+
+      - name: What is archived now
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: node scripts/archive-source.mjs --list
+
+      # Only fetches windows that are NOT already archived, so re-running costs
+      # the SEC nothing. A 404 on the newest window is the calendar, not a fault.
+      - name: Fetch and archive what is missing
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '5'
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: |
+          node scripts/archive-source.mjs \
+            --fetch=${{ github.event.inputs.fetch || '4' }} \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+
+      - name: Drop windows outside retention
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: node scripts/archive-source.mjs --prune --keep=${{ github.event.inputs.fetch || '4' }}
+
+      # THE CLAIM THIS PHASE MAKES, CHECKED RATHER THAN ASSUMED.
+      #
+      # Downloads an archived window, opens it, and asserts all four tables the
+      # build needs are inside. "It uploaded" would not catch a truncated zip,
+      # and a store of record that cannot be read is not one.
+      - name: Read a window back out of the archive
+        if: ${{ !cancelled() && github.event.inputs.dry_run != 'true' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: node scripts/archive-source.mjs --verify
+
+      - name: Summary
+        if: always()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: |
+          echo '### Source archive' >> "$GITHUB_STEP_SUMMARY"
+          node scripts/archive-source.mjs --list >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+
+      - name: Open or update failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const label = '13f-archive-failure';
+            const body = `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const open = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: label });
+            if (open.data.length) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open.data[0].number, body });
+            } else {
+              await github.rest.issues.create({ ...context.repo, title: 'Source archive is failing', body, labels: [label] });
+            }

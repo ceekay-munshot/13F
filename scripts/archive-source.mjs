@@ -41,6 +41,8 @@ import { SOURCE_PREFIX, windowsFrom, windowsToDrop } from "../shared/source-arch
 import { createR2 } from "./_r2.mjs";
 import { createRegister } from "../shared/unfinished.mjs";
 import { listEntries } from "./_unzip.mjs";
+import { SecFetcher } from "./_sec-fetch.mjs";
+import { deraWindowFor } from "../shared/calendar.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -130,6 +132,60 @@ if (args.sync) {
     await r2.put(key, body);
     console.log(`  archived          ${slug}  ${mb(size)}`);
     archived.set(key, size);
+  }
+}
+
+// --- fetch -----------------------------------------------------------------
+//
+// The one-time cost of getting the archive started. After this the monthly build
+// reads these windows from R2 and never asks the SEC for them again.
+//
+// Only windows NOT already archived are downloaded, so re-running is free.
+if (args.fetch) {
+  const want = Number(args.fetch === true ? 4 : args.fetch);
+  const sec = new SecFetcher({
+    userAgent: process.env.SEC_USER_AGENT,
+    rps: Number(process.env.SEC_RATE_LIMIT_RPS || 5),
+    log: (m) => console.log(m),
+  });
+  const pre = await sec.preflight();
+  if (!pre.ok) {
+    // Expected weather on a shared runner, not a failure. The next run gets a
+    // different IP; nothing is lost because nothing was half-written.
+    console.log("\nSEC is not reachable from this runner today — nothing fetched.");
+  } else {
+    // Walk back month by month collecting distinct windows, the same way the
+    // monthly ingest resolves them. Depth is derived: windows are three months
+    // wide, the newest is usually not published yet, and a walk starting
+    // mid-window covers only part of it.
+    const seen = new Map();
+    const d = new Date();
+    for (let i = 0; i < Math.max(15, want * 3 + 6) && seen.size < want + 2; i++) {
+      const w = deraWindowFor(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 15)).toISOString().slice(0, 10));
+      if (w && !seen.has(w.slug)) seen.set(w.slug, w);
+    }
+
+    let got = 0;
+    for (const [slug, w] of seen) {
+      if (got >= want) break;
+      const key = `${SOURCE_PREFIX}${slug}_form13f.zip`;
+      if (archived.has(key)) { console.log(`  already archived  ${slug}`); got++; continue; }
+      if (DRY) { console.log(`  would fetch       ${slug}`); got++; continue; }
+      try {
+        console.log(`  fetching          ${slug}`);
+        const res = await sec.get(w.url, { as: "buffer" });
+        await r2.put(key, res.body);
+        archived.set(key, res.body.length);
+        console.log(`  archived          ${slug}  ${mb(res.body.length)}`);
+        got++;
+      } catch (err) {
+        if (err.name === "SecBlockedError") throw err;
+        // The newest window routinely 404s because the SEC has not published it
+        // yet. That is not a failure; it is the calendar.
+        console.log(`  not published yet ${slug} (${err.status ?? err.message})`);
+      }
+    }
+    console.log(`\n${sec.requestCount} SEC request(s) — and none of these windows needs asking for again.`);
   }
 }
 
