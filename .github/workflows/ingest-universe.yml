@@ -111,6 +111,19 @@ jobs:
             --top=${{ github.event.inputs.top || '99999' }} \
             --keep=${{ github.event.inputs.keep || '4' }}
 
+      # A PUBLISH MAY ADD AND IT MAY CORRECT. IT MAY NOT SUBTRACT.
+      #
+      # Fingerprint the LIVE site first — the served copy, not this tree, since
+      # the question is whether the client ends up with less than they had. On
+      # 2026-08-20 this job passed every check it had while deleting the current
+      # quarter from all 9,268 fund summaries; nothing compared before to after.
+      - name: Fingerprint the live site (before)
+        id: before
+        continue-on-error: true
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: node scripts/regression-gate.mjs --origin="$SITE" --out=.cache/before.json
+
       - name: Publish to R2 (with prune)
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -157,6 +170,15 @@ jobs:
           pcode=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$probe" || echo 000)
           [ "$pcode" = "200" ] || { echo "::error::$probe returned $pcode"; exit 1; }
           echo "artifact probe ok"
+
+      # And compare. A missing baseline is reported as a first run, never as a
+      # pass — that distinction is what stops a broken check from looking clean
+      # for its entire existence, which is exactly how prune stayed inert.
+      - name: Nothing got smaller
+        if: steps.before.outcome == 'success'
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
 
       - name: Summary
         if: always()

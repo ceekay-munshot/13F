@@ -355,6 +355,17 @@ jobs:
             --out-state=.cache/day-cursor.next.json \
             --out-plan=.cache/plan.json
 
+      # Same rule as the monthly job: a publish may add and correct, never
+      # subtract. This one writes fewer files, but it writes SHARED ones — the
+      # manifest, the filer index, the quarter's feed — and a merge that goes
+      # wrong there is exactly as visible.
+      - name: Fingerprint the live site (before)
+        id: before
+        continue-on-error: true
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: node scripts/regression-gate.mjs --origin="$SITE" --out=.cache/before.json
+
       - name: Publish to R2
         if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.rest != '0'
         env:
@@ -397,6 +408,12 @@ jobs:
             tail -25 /tmp/ingest.log 2>/dev/null || echo '(no log)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nothing got smaller
+        if: steps.before.outcome == 'success' && steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
 
       - name: Open or update failure issue
         if: failure()
