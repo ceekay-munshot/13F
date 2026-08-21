@@ -20,7 +20,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
-import { mergeSummary, mergeFilers, isPrunableKey, periodOfKey, carryForwardPeriods } from "../shared/manifest-merge.mjs";
+import { mergeSummary, mergeFilers, mergeSeriesIndex, isPrunableKey, periodOfKey, carryForwardPeriods } from "../shared/manifest-merge.mjs";
 import { createRegister } from "../shared/unfinished.mjs";
 import { createR2, pool } from "./_r2.mjs";
 
@@ -168,6 +168,8 @@ async function readJson(key, attempts = 3) {
 
 let mergedSummaries = 0;
 let mergedFilers = 0;
+let mergedSeries = false;
+let keptSeries = null;
 let keptFilers = null;
 const keptSummaries = [];
 
@@ -207,6 +209,21 @@ await pool(todo, CONCURRENCY, async (f) => {
   // started reaching Q2 2026. On its next scheduled run — 3 September — it
   // would have moved 987 managers' newest quarter backwards from Q2 to Q1.
   // ---------------------------------------------------------------------------
+  // The compact series index — written only by a full build, and until now
+  // replaced outright. See mergeSeriesIndex for why this is temporary.
+  if (f === "meta/series.json") {
+    try {
+      const live = await readJson(f);
+      if (live) {
+        body = Buffer.from(JSON.stringify(mergeSeriesIndex(live, JSON.parse(body.toString("utf8")))));
+        mergedSeries = true;
+      }
+    } catch (err) {
+      keptSeries = err.message;
+      return;
+    }
+  }
+
   if (f === "meta/filers.json") {
     try {
       const live = await readJson(f);
@@ -243,6 +260,14 @@ await pool(todo, CONCURRENCY, async (f) => {
 
   await put(f, body);
 }, (d, n) => console.log(`  ${d}/${n}`));
+if (mergedSeries) console.log(`  series index merged with published quarters`);
+if (keptSeries) {
+  console.log(`series index left as published — could not be read to merge safely (${keptSeries}).`);
+  unfinished.note(
+    `the compact series index was NOT updated (${keptSeries}). Funds without their own summary file keep ` +
+    `whatever it already said. Nothing was lost; nothing was added either.`,
+  );
+}
 if (mergedFilers) console.log(`  fund search index merged — ${mergedFilers} manager(s) from this run folded into what is published`);
 if (keptFilers) {
   console.log(`fund search index left as published — could not be read to merge safely (${keptFilers}).`);

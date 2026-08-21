@@ -204,3 +204,52 @@ describe("both builds actually use it", () => {
     });
   }
 });
+
+describe("the compact series index survives a partial build", () => {
+  // Phase 3 exists to DELETE merge functions, and this adds one. It is here
+  // because the builder is not yet complete: until the SEC publishes the bulk
+  // window covering the Q2 2026 deadline, the archive holds Q2 for only the
+  // funds the same-day job fetched directly. A build run before then has a
+  // genuinely thinner view than the published index.
+  //
+  // Prune is already shielded from exactly this by the coverage floor. This file
+  // had no protection at all — unlike the fund summaries, which have had
+  // mergeSummary since the outage.
+  const t = (period, v) => [period, v];
+  const idx = (rows) => ({ v: 1, kind: "series", data: rows });
+
+  it("keeps a quarter the incoming build does not have", async () => {
+    const { mergeSeriesIndex } = await import("../shared/manifest-merge.mjs");
+    const live = idx([{ cik: "0000000001", s: [t("2026-06-30", 9), t("2026-03-31", 8)] }]);
+    const build = idx([{ cik: "0000000001", s: [t("2026-03-31", 8)] }]);
+    const out = mergeSeriesIndex(live, build);
+    expect(out.data[0].s.map((x) => x[0])).toEqual(["2026-06-30", "2026-03-31"]);
+  });
+
+  it("the incoming build wins on a quarter it DID re-derive", async () => {
+    const { mergeSeriesIndex } = await import("../shared/manifest-merge.mjs");
+    const live = idx([{ cik: "0000000001", s: [t("2026-03-31", 8)] }]);
+    const build = idx([{ cik: "0000000001", s: [t("2026-03-31", 99)] }]);
+    expect(mergeSeriesIndex(live, build).data[0].s[0][1]).toBe(99);
+  });
+
+  it("keeps managers the build never saw", async () => {
+    const { mergeSeriesIndex } = await import("../shared/manifest-merge.mjs");
+    const live = idx([{ cik: "0000000001", s: [t("2026-03-31", 1)] }, { cik: "0000000002", s: [t("2026-03-31", 2)] }]);
+    const out = mergeSeriesIndex(live, idx([{ cik: "0000000001", s: [t("2026-03-31", 1)] }]));
+    expect(out.data).toHaveLength(2);
+  });
+
+  it("refuses an incoming index with no rows", async () => {
+    const { mergeSeriesIndex } = await import("../shared/manifest-merge.mjs");
+    expect(() => mergeSeriesIndex(idx([{ cik: "1", s: [] }]), idx([]))).toThrow(/no rows/);
+  });
+
+  it("quarters come out newest first, as the build emits them", async () => {
+    const { mergeSeriesIndex } = await import("../shared/manifest-merge.mjs");
+    const live = idx([{ cik: "1", s: [t("2025-12-31", 1)] }]);
+    const build = idx([{ cik: "1", s: [t("2026-06-30", 2), t("2026-03-31", 3)] }]);
+    expect(mergeSeriesIndex(live, build).data[0].s.map((x) => x[0]))
+      .toEqual(["2026-06-30", "2026-03-31", "2025-12-31"]);
+  });
+});

@@ -468,6 +468,57 @@ export function mergeFilers(live, incoming, ciks) {
   return { ...incoming, data: rows };
 }
 
+/**
+ * Merge the compact series index, fund by fund and quarter by quarter.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS, AND WHEN IT CAN BE DELETED
+ * ---------------------------------------------------------------------------
+ * The whole point of Phase 3 is to delete merge functions, not add them. This
+ * one is here because the builder is not yet COMPLETE, and it is honest about
+ * the precondition rather than pretending otherwise.
+ *
+ * meta/series.json is written only by the full build, from that build's own
+ * view. Until the SEC publishes the bulk window covering the Q2 2026 deadline —
+ * around 4 September — the archive holds Q2 for only the funds the same-day job
+ * fetched directly. Every other manager's Q2 came from the repair and lives in
+ * artifacts. A build run before then therefore has a genuinely thinner view than
+ * the published index, and publishing it as-is drops those quarters.
+ *
+ * Prune is already shielded from exactly this by the coverage floor. The shared
+ * indexes need the same protection, and unlike the fund summaries — which have
+ * had mergeSummary since the outage — this file had none.
+ *
+ * Once the archive covers every published quarter, the build is complete by
+ * construction and this becomes a no-op. That is a dated, checkable condition,
+ * not a hope: compare the archive's windows against the manifest's quarters.
+ */
+export function mergeSeriesIndex(live, incoming, periodOf = (t) => t[0]) {
+  const liveRows = Array.isArray(live?.data) ? live.data : [];
+  const inRows = Array.isArray(incoming?.data) ? incoming.data : [];
+  if (!inRows.length) throw new Error("incoming series index has no rows — refusing to publish it");
+  if (!liveRows.length) return incoming;
+
+  const byCik = new Map(liveRows.map((r) => [r.cik, r]));
+  for (const row of inRows) {
+    const prev = byCik.get(row.cik);
+    if (!prev) { byCik.set(row.cik, row); continue; }
+
+    // Union the quarters. The incoming build is authoritative about a quarter it
+    // HAS — it re-derived it from source — and silent about one it does not.
+    const tuples = new Map((prev.s ?? []).map((t) => [periodOf(t), t]));
+    for (const t of row.s ?? []) tuples.set(periodOf(t), t);
+    const s = [...tuples.values()].sort((a, b) => String(periodOf(b)).localeCompare(String(periodOf(a))));
+    byCik.set(row.cik, { ...prev, ...row, s });
+  }
+
+  const rows = [...byCik.values()];
+  if (rows.length < liveRows.length) {
+    throw new Error(`merged series index would shrink from ${liveRows.length} to ${rows.length}`);
+  }
+  return { ...incoming, data: rows };
+}
+
 export function isPublishableDayKey(key) {
   if (key === "manifest.json") return true;      // merged, never replaced
   if (key.startsWith("fund/")) return true;      // this run's own funds
