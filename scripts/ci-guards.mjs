@@ -7,6 +7,7 @@
 // Run by `npm run guard`, which `npm run check` and CI both call.
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { undefinedRefsInFile } from "./_undefined-refs.mjs";
 import { join, relative } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -576,6 +577,47 @@ function guardNothingFailsQuietly() {
     }
   }
 }
+
+/**
+ * No module may call a name that does not exist.
+ *
+ * prune() has now shipped broken TWICE on adjacent lines. The second time was
+ * `XisPrunableKeyX(...)` — a mangled identifier that throws ReferenceError the
+ * moment prune runs. It passed `node --check` (syntactically perfect), it passed
+ * the regex guard above (which only asked whether the string "isPrunableKey("
+ * appeared anywhere in the file, and it did, one line further down), and it was
+ * committed and pushed.
+ *
+ * Both times the crash was invisible, because prune throws inside a try/catch
+ * that logged a warning on an otherwise green run.
+ *
+ * Real scope analysis is the only thing that catches this class reliably. It is
+ * exact: a name that resolves to nothing is not a matter of judgement.
+ */
+function guardNoUndefinedNames() {
+  const guard = "no-call-to-a-name-that-does-not-exist";
+  checks.push(guard);
+  for (const dir of ["scripts", "shared", "tests"]) {
+    const d = join(ROOT, dir);
+    if (!existsSync(d)) continue;
+    for (const name of readdirSync(d)) {
+      if (!name.endsWith(".mjs")) continue;
+      const f = join(d, name);
+      let problems;
+      try {
+        problems = undefinedRefsInFile(f);
+      } catch (err) {
+        fail(guard, f, `could not be parsed (${err.message}) — a file this check cannot read is a file it cannot guard.`);
+        continue;
+      }
+      for (const p of problems) {
+        fail(guard, f, `line ${p.line}: \`${p.name}\` is used but never declared, imported, or passed in. It throws ReferenceError the moment this line runs.`);
+      }
+    }
+  }
+}
+
+guardNoUndefinedNames();
 
 guardNothingFailsQuietly();
 

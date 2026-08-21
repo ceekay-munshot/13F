@@ -370,7 +370,7 @@ async function prune() {
     files.map((f) => periodOfKey(f)).filter((p) => p !== null),
   );
   const stale = [...current.keys()].filter(
-    (k) => !local.has(k) && XisPrunableKeyX(k, builtPeriods, PROTECTED_PREFIXES),
+    (k) => !local.has(k) && isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES),
   );
   const shielded = [...current.keys()].filter(
     (k) => !local.has(k) && !isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES),

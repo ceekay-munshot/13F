@@ -409,8 +409,20 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # A FAILING PUBLISH MUST NOT SILENCE THE CHECKS THAT EXAMINE IT.
+      #
+      # The publish step now exits non-zero when a step inside it did not do its
+      # job — which by default makes GitHub skip every later step, including the
+      # regression gate and the witness. That is exactly backwards: the run where
+      # the publish reported trouble is the run whose output most needs
+      # examining. `!cancelled()` keeps them running; the job still ends red
+      # because the publish step itself failed.
+      #
+      # (There is no separate smoke check here as there is on the monthly job.
+      # The regression gate reads the LIVE origin, so an unreadable manifest
+      # fails it — the same signal, one step earlier.)
       - name: Nothing got smaller
-        if: steps.before.outcome == 'success' && steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        if: ${{ !cancelled() && (steps.before.outcome == 'success' && steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0') }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
         run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
@@ -438,7 +450,7 @@ jobs:
       # was missing from the dashboard, and no check looked, because no work had
       # happened. This one asks EDGAR regardless.
       - name: The SEC agrees with our numbers
-        if: steps.plan.outputs.blocked != 'true'
+        if: ${{ !cancelled() && (steps.plan.outputs.blocked != 'true') }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}

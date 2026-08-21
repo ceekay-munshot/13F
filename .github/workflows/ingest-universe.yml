@@ -139,7 +139,16 @@ jobs:
       # first had not landed. Assert the live origin actually serves a usable
       # manifest, and fail loudly if it does not — silent staleness is the worst
       # failure mode this project has.
+      # A FAILING PUBLISH MUST NOT SILENCE THE CHECKS THAT EXAMINE IT.
+      #
+      # The publish step now exits non-zero when a step inside it did not do its
+      # job — which by default makes GitHub skip every later step, including the
+      # smoke check, the regression gate and the witness. That is exactly
+      # backwards: the run where the publish reported trouble is the run whose
+      # output most needs examining. `!cancelled()` keeps them running; the job
+      # still ends red because the publish step itself failed.
       - name: Smoke check the live origin
+        if: ${{ !cancelled() }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
         run: |
@@ -175,7 +184,7 @@ jobs:
       # pass — that distinction is what stops a broken check from looking clean
       # for its entire existence, which is exactly how prune stayed inert.
       - name: Nothing got smaller
-        if: steps.before.outcome == 'success'
+        if: ${{ !cancelled() && (steps.before.outcome == 'success') }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
         run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
@@ -213,6 +222,7 @@ jobs:
       #
       # 2 SEC requests per fund, ~27 in total.
       - name: The SEC agrees with our numbers
+        if: ${{ !cancelled() }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
