@@ -365,8 +365,10 @@ const unfinished = createRegister();
   const fundKeys = uploads.filter((k) => !isFeedKey(k) && k !== "meta/filers.json");
   /** key -> the exact bytes to upload */
   const feedBodies = new Map();
-  /** period -> { filings, funds, known, knownAsOf }, for the manifest */
+  /** period -> { filings, fundsAdded, known, knownAsOf }, for the manifest */
   const periodTotals = {};
+  /** period -> managers this run gave that quarter to, counted while merging. */
+  const fundsAdded = new Map();
   const skippedFeeds = [];
   const repairedFeeds = [];
   let mergedFeeds = 0;
@@ -440,7 +442,8 @@ const unfinished = createRegister();
     const ingested = planned(period) && Number.isFinite(PLAN.filersIngested) ? PLAN.filersIngested : 0;
     periodTotals[period] = {
       filings: Math.max(out.total ?? 0, ingested),
-      funds: Math.max(out.funds ?? 0, ingested),
+      // `funds` is NOT taken from the feed any more — see the note where
+      // fundsAdded is counted. mergeManifest adds this to what is published.
       ...(out.known != null ? { known: out.known, knownAsOf: out.knownAsOf ?? null } : {}),
     };
   }
@@ -478,10 +481,24 @@ const unfinished = createRegister();
           try {
             const liveSummary = await readJson(k);
             const mineSummary = JSON.parse(readFileSync(join(DIR, k), "utf8"));
-            summaryBodies.set(
-              k,
-              Buffer.from(JSON.stringify(liveSummary ? mergeSummary(liveSummary, mineSummary) : mineSummary)),
-            );
+            const merged = liveSummary ? mergeSummary(liveSummary, mineSummary) : mineSummary;
+            summaryBodies.set(k, Buffer.from(JSON.stringify(merged)));
+
+            // HOW MANY MANAGERS THIS RUN GAVE A QUARTER TO.
+            //
+            // The manifest's per-quarter count used to come from the filings
+            // feed's distinct CIKs, ratcheted by Math.max — a feed that is
+            // capped at 2,000 rows and accumulates by accession, so it counted
+            // neither completely nor what we actually hold. That is how the site
+            // came to report "10,765 of 10,765 managers loaded" while 8,295 fund
+            // pages said the manager had not filed.
+            //
+            // Counted here instead, where it is knowable exactly: a quarter the
+            // published summary did not have and the merged one does.
+            const had = new Set((liveSummary?.data?.series ?? []).map((x) => x.period));
+            for (const x of merged?.data?.series ?? []) {
+              if (!had.has(x.period)) fundsAdded.set(x.period, (fundsAdded.get(x.period) ?? 0) + 1);
+            }
           } catch (err) {
             console.log(`::warning::dropping ${cik} from this run — its published summary could not be merged (${err.message}). The next run will fetch it again.`);
             if (cik) droppedFunds.add(cik);
@@ -533,6 +550,21 @@ const unfinished = createRegister();
   }
 
   // --- merge the manifest ----------------------------------------------------
+  //
+  // Fold in the managers this run actually gave a quarter to. Counted during the
+  // summary merge above, which is the only place it is knowable exactly, and
+  // deliberately NOT read off the filings feed.
+  for (const [period, added] of fundsAdded) {
+    if (!added) continue;
+    periodTotals[period] = { ...(periodTotals[period] ?? {}), fundsAdded: added };
+  }
+  if (fundsAdded.size) {
+    console.log(
+      `  managers newly holding a quarter: ` +
+      [...fundsAdded].map(([p, n]) => `${p} +${n}`).join(", "),
+    );
+  }
+
   const buildId = incoming.buildId;
   let merged;
   try {

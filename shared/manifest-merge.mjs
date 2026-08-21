@@ -57,7 +57,7 @@ export const FEED_ROWS = 2000;
  *   also the number the staleness watchdog grades, so it would alert for ever.
  * @returns {{ manifest: object, changed: boolean, newPeriods: string[] }}
  */
-export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {}, sharedKeys = [] }) {
+export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {}, sharedKeys = [], authoritative = false }) {
   if (!live || typeof live !== "object" || !Array.isArray(live.periods)) {
     throw new Error("live manifest is missing or malformed — refusing to merge");
   }
@@ -106,14 +106,35 @@ export function mergeManifest(live, incoming, { buildId, ciks, periodTotals = {}
       newPeriods.push(p.period);
       continue;
     }
-    livePeriods.set(p.period, {
-      ...existing,
-      // Prefer the accumulated total from the merged feed; fall back to the
-      // larger of the two samples when this run could not read the feed.
-      filings: Math.max(existing.filings ?? 0, p.filings ?? 0, totals.filings ?? 0),
-      funds: Math.max(existing.funds ?? 0, p.funds ?? 0, totals.funds ?? 0),
-      ...pick(totals),
-    });
+    // COVERAGE IS CARRIED FORWARD, NOT RATCHETED.
+    //
+    // These two were `Math.max(existing, incoming, totals)` — monotone, so they
+    // could never report a loss and could therefore only ever lie upward. The
+    // dashboard said "10,765 of 10,765 managers loaded" for Q2 2026 while 8,295
+    // fund pages said the manager had not filed, because `funds` had climbed to
+    // whatever the filings feed had ever seen and had no way back down.
+    //
+    // How many managers hold a quarter is a property of the WHOLE TREE, and a
+    // partial run cannot see it: this one refreshed a single fund. So a partial
+    // run carries the published value forward untouched, and only a run that
+    // rebuilt everything is allowed to set it — see `authoritative` below.
+    const row = { ...existing, ...pick(totals) };
+    if (authoritative) {
+      // A run that rebuilt every fund knows exactly how many hold this quarter.
+      row.filings = p.filings ?? existing.filings ?? null;
+      row.funds = p.funds ?? existing.funds ?? null;
+    } else {
+      // A partial run may only ADD the managers it actually gave this quarter
+      // to — counted while merging their summaries, not read off the filings
+      // feed. The feed is capped at 2,000 rows and accumulates by accession, so
+      // its distinct-CIK count is neither complete nor a count of what we hold.
+      //
+      // This still climbs through a filing season, which the freshness notice
+      // needs, without being able to climb past the truth.
+      row.funds = (existing.funds ?? 0) + (totals.fundsAdded ?? 0);
+      row.filings = Math.max(existing.filings ?? 0, totals.filings ?? 0);
+    }
+    livePeriods.set(p.period, row);
   }
   merged.periods = [...livePeriods.values()].sort((a, b) => b.period.localeCompare(a.period));
 

@@ -401,26 +401,52 @@ describe("mergeManifest — period totals from the merged feed", () => {
     periods: [{ period: "2026-06-30", label: "Q2 2026", deadline: "2026-08-14", filings: 450, funds: 450 }],
   };
 
-  it("uses the accumulated total rather than freezing at one run's sample", () => {
-    // Without periodTotals this is max(450, 450) = 450 for ever, however many
-    // runs go by — the exact shape of the bug that hid the Q2-2026 outage.
+  it("a partial run adds the managers it gave a quarter to, and no more", () => {
+    // The count must still CLIMB through a filing season — freezing at one run's
+    // sample was the original bug here. But it may only climb by managers this
+    // run actually gave the quarter to, counted while merging their summaries.
+    //
+    // It used to come from the filings feed's distinct CIKs under Math.max: a
+    // feed capped at 2,000 rows, accumulating by accession, monotone. That is
+    // how the site came to say "10,765 of 10,765 managers loaded" while 8,295
+    // fund pages said the manager had not filed.
     const { manifest } = mergeManifest(live, incoming, {
       buildId: "def5678",
       ciks: ["0001067983"],
-      periodTotals: { "2026-06-30": { filings: 900, funds: 895, known: 10698, knownAsOf: "2026-08-18T05:00:00.000Z" } },
+      periodTotals: { "2026-06-30": { filings: 900, fundsAdded: 12, known: 10698, knownAsOf: "2026-08-18T05:00:00.000Z" } },
     });
     const row = manifest.periods.find((p) => p.period === "2026-06-30");
+    expect(row.funds).toBe(462);      // 450 published + the 12 this run added
     expect(row.filings).toBe(900);
-    expect(row.funds).toBe(895);
     expect(row.known).toBe(10698);
     expect(row.knownAsOf).toBe("2026-08-18T05:00:00.000Z");
   });
 
-  it("never lets a total go backwards, even if the feed read low", () => {
+  it("a partial run that gave nobody a new quarter leaves the count alone", () => {
+    const { manifest } = mergeManifest(live, incoming, {
+      buildId: "def5678", ciks: ["0001067983"],
+      periodTotals: { "2026-06-30": { filings: 900 } },
+    });
+    expect(manifest.periods.find((p) => p.period === "2026-06-30").funds).toBe(450);
+  });
+
+  it("a run that rebuilt everything sets the count outright, including downwards", () => {
+    // Only something that has seen the whole tree may do this. It is how the
+    // fabricated 10,765 was replaced with the 8,428 managers who actually hold
+    // Q2 2026 — a correction the ratchet made structurally impossible.
+    const { manifest } = mergeManifest(
+      { ...live, periods: [{ period: "2026-06-30", filings: 10765, funds: 10765 }] },
+      { ...incoming, periods: [{ period: "2026-06-30", filings: 1271, funds: 8428 }] },
+      { buildId: "def5678", ciks: ["0001067983"], authoritative: true },
+    );
+    expect(manifest.periods.find((p) => p.period === "2026-06-30").funds).toBe(8428);
+  });
+
+  it("never lets a total go backwards on a PARTIAL run, even if the feed read low", () => {
     const { manifest } = mergeManifest(live, incoming, {
       buildId: "def5678",
       ciks: ["0001067983"],
-      periodTotals: { "2026-06-30": { filings: 3, funds: 3 } },
+      periodTotals: { "2026-06-30": { filings: 3, fundsAdded: 0 } },
     });
     const row = manifest.periods.find((p) => p.period === "2026-06-30");
     expect(row.filings).toBe(450);
