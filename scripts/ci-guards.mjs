@@ -383,9 +383,24 @@ function guardSameDayPublish() {
   checks.push(guard);
   const AUTHORISED = "ingest-universe.yml";
 
+  // The invariant is ONE WRITER AT A TIME, not one filename. A second workflow
+  // may publish if it cannot race the first and cannot fire on its own:
+  //
+  //   - it shares the `13f-universe` concurrency group, so GitHub serialises
+  //     the two rather than letting both upload at once, and
+  //   - it has no `schedule:` trigger, so it runs only when a person asks.
+  //
+  // That is what repair-indexes.yml is: a hand-run job that DERIVES the shared
+  // indexes from the complete published tree, which is the opposite of the
+  // failure this guard was written for — a narrow run overwriting the indexes
+  // with its own partial view.
+  const isSerialisedManualWriter = (src) =>
+    /^\s*group:\s*13f-universe\s*$/m.test(src) && !/^\s*schedule:\s*$/m.test(src);
+
   for (const f of walk(join(ROOT, ".github/workflows"), [".yml", ".yaml"])) {
-    const lines = readFileSync(f, "utf8").split(/\r?\n/);
-    const authorised = f.endsWith(AUTHORISED);
+    const src = readFileSync(f, "utf8");
+    const lines = src.split(/\r?\n/);
+    const authorised = f.endsWith(AUTHORISED) || isSerialisedManualWriter(src);
     lines.forEach((line, i) => {
       if (/^\s*#/.test(line)) return; // the explanation of what was removed
       if (/\baws\s+s3\b|\bs3:\/\//.test(line)) {
@@ -395,7 +410,10 @@ function guardSameDayPublish() {
         fail(
           guard,
           f,
-          `line ${i + 1}: publishes to R2, but only ${AUTHORISED} may. This workflow ingests a narrower set of funds and would overwrite the shared indexes (manifest.json, meta/filers.json) with its own.\n      ${line.trim()}`,
+          `line ${i + 1}: publishes to R2, but only ${AUTHORISED} may — or a workflow that shares its ` +
+            `\`concurrency.group: 13f-universe\` and has no \`schedule:\`, so it can neither race it nor fire on ` +
+            `its own. Without that, a run holding a narrower view of the universe overwrites the shared indexes ` +
+            `(manifest.json, meta/filers.json) with its own.\n      ${line.trim()}`,
         );
       }
     });

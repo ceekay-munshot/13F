@@ -1,0 +1,145 @@
+name: Repair the shared indexes
+
+# ---------------------------------------------------------------------------
+# Rebuild every shared index from the per-fund artifacts already published.
+#
+# On 2026-08-20 the monthly run wrote its own fund summaries over the live ones
+# and every fund lost the current quarter. mergeSummary stops that recurring; it
+# never repaired the damage. 8,295 managers' pages still say "has not filed for
+# Q2 2026" while their Q2 book sits in the bucket with nothing pointing at it.
+#
+# This reads the per-fund artifacts and DERIVES the summaries, the compact series
+# index, the fund search index and the manifest's per-quarter counts from them.
+# Zero SEC requests — everything it needs is already stored.
+#
+# HAND-RUN ONLY, and in the monthly job's concurrency group, so it can neither
+# fire on its own nor upload at the same time as the job it is repairing after.
+# That pairing is what the `single-r2-writer` guard checks for.
+# ---------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Managers to examine (blank = all; a number samples, and skips the shared indexes)'
+        default: ''
+      dry_run:
+        description: 'Report what would change without uploading anything'
+        type: boolean
+        default: true
+
+concurrency:
+  group: 13f-universe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Validate configuration
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          missing=0
+          for v in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!v}" ]; then echo "::error::$v is not set"; missing=1; fi
+          done
+          [ "$missing" = "0" ] || { echo "::error::See DEPLOY.md for the required GitHub secrets."; exit 1; }
+
+      - run: npm ci
+      - name: Correctness gates
+        run: npm run check
+
+      # A PUBLISH MAY ADD AND IT MAY CORRECT. IT MAY NOT SUBTRACT.
+      # Photograph the live site before touching it, and compare after.
+      - name: Fingerprint the live site (before)
+        id: before
+        continue-on-error: true
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: node scripts/regression-gate.mjs --origin="$SITE" --out=.cache/before.json
+
+      - name: Derive the indexes
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: |
+          mkdir -p .build/data
+          node --max-old-space-size=6144 scripts/rebuild-indexes.mjs \
+            --origin="$SITE" \
+            --out=.build/data \
+            ${{ github.event.inputs.limit && format('--limit={0}', github.event.inputs.limit) || '' }} \
+            ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+
+      # Writes ONLY the files it derived — no --prune, and nothing it did not
+      # produce is touched. publish-r2.mjs still merges each summary against the
+      # published copy, so even here a write can only add.
+      - name: Publish the repaired indexes
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: node scripts/publish-r2.mjs --dir=.build/data
+
+      - name: Smoke check the live origin
+        if: ${{ !cancelled() && github.event.inputs.dry_run != 'true' }}
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: |
+          url="$SITE/data/manifest.json?smoke=$GITHUB_RUN_ID"
+          code=$(curl -sS -o /tmp/manifest.json -w '%{http_code}' --max-time 30 "$url" || echo 000)
+          [ "$code" = "200" ] || { echo "::error::$url returned $code — the dashboard cannot load."; exit 1; }
+          node -e '
+            const m = JSON.parse(require("fs").readFileSync("/tmp/manifest.json", "utf8"));
+            const filers = m.counts?.filers ?? 0;
+            const periods = m.periods?.length ?? 0;
+            if (!m.buildId || filers < 1000 || periods < 1) {
+              console.log("::error::live manifest is unusable — buildId=" + m.buildId +
+                          " filers=" + filers + " periods=" + periods);
+              process.exit(1);
+            }
+            console.log("live manifest ok — build " + m.buildId + ", " + filers + " filers");
+            for (const p of m.periods) console.log("  " + p.label + ": " + p.funds + " managers held");
+          '
+
+      - name: Nothing got smaller
+        if: ${{ !cancelled() && steps.before.outcome == 'success' && github.event.inputs.dry_run != 'true' }}
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
+
+      # The only check that consults something other than ourselves.
+      - name: The SEC agrees with our numbers
+        if: ${{ !cancelled() && github.event.inputs.dry_run != 'true' }}
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '5'
+        run: node scripts/witness.mjs --origin="$SITE"
+
+      - name: Open or update failure issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const label = '13f-repair-failure';
+            const body = `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const open = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: label });
+            if (open.data.length) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open.data[0].number, body });
+            } else {
+              await github.rest.issues.create({ ...context.repo, title: 'Index repair is failing', body, labels: [label] });
+            }
