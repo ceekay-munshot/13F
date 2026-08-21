@@ -415,6 +415,30 @@ jobs:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
         run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
 
+
+      # AND AGREE WITH AN INDEPENDENT WITNESS.
+      #
+      # Every other check in this pipeline asks a question about ourselves, and
+      # all of them passed on the day the dashboard told a client their fund had
+      # not filed when it had. The regression gate now catches the class where
+      # something got SMALLER. It cannot catch the other class: numbers that are
+      # simply wrong and were always that wrong.
+      #
+      # So compare our sum of a manager's rows against the total that manager
+      # hand-stated on the cover page of their own filing. Different file,
+      # different producer, different transport. If they agree, then our units,
+      # our aggregation of duplicate rows, our amendment fold and our quarter
+      # mapping are all correct at once.
+      #
+      # 2 SEC requests per fund, ~27 in total.
+      - name: The SEC agrees with our numbers
+        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '5'
+        run: node scripts/witness.mjs --origin="$SITE"
+
       - name: Open or update failure issue
         if: failure()
         uses: actions/github-script@v7
