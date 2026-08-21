@@ -26,6 +26,12 @@ on:
       keep:
         description: 'Quarters of holdings to retain'
         default: '4'
+      expect:
+        description: >-
+          Corrections this run is KNOWN to make, so the shrink gate reports them
+          instead of failing. Name them one at a time; `period-funds` is the
+          per-quarter manager count. Everything else stays armed.
+        default: ''
 
 concurrency:
   group: 13f-universe
@@ -219,7 +225,9 @@ jobs:
         if: ${{ !cancelled() && (steps.before.outcome == 'success') }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
-        run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
+        run: |
+          node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json \
+            ${{ github.event.inputs.expect && format('--expect={0}', github.event.inputs.expect) || '' }}
 
       - name: Summary
         if: always()
