@@ -31,6 +31,7 @@ import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSy
 import { join, relative, sep, dirname } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { mergeManifest, mergeSummary, mergePeriodFilings, mergeFilers, verifyMerge, isPublishableDayKey } from "../shared/manifest-merge.mjs";
+import { createRegister } from "../shared/unfinished.mjs";
 import { signRequest } from "./_sigv4.mjs";
 
 const args = Object.fromEntries(
@@ -232,6 +233,10 @@ async function readJson(key, attempts = 4) {
   throw last;
 }
 
+// Work this run was supposed to do and did not. See shared/unfinished.mjs for
+// why this is deferred to the end of the run rather than thrown immediately.
+const unfinished = createRegister();
+
 (async () => {
   // --- pull the ingest cursor and stop ---------------------------------------
   //
@@ -424,6 +429,10 @@ async function readJson(key, attempts = 4) {
             `${liveCount} published, so the feed is left alone rather than shortened.`,
         );
         skippedFeeds.push(k);
+        unfinished.note(
+          `the ${period} filings feed was NOT updated (${err.message}). The published copy is intact, but ` +
+          `filings this run ingested will not appear in the latest-filings list until a run merges it.`,
+        );
         continue;
       }
     }
@@ -540,7 +549,11 @@ async function readJson(key, attempts = 4) {
       // The index is an aid to navigation, not the data. A run that cannot merge
       // it should still publish the holdings it fetched — and say plainly that
       // those managers will not be searchable until the next run repairs it.
-      console.log(`::warning::could not merge ${FILERS_KEY} (${err.message}); this run's funds will not appear in fund search until a later run repairs it.`);
+      console.log(`could not merge ${FILERS_KEY} (${err.message}); this run's funds will not appear in fund search until a later run repairs it.`);
+      unfinished.note(
+        `the fund index was NOT updated (${err.message}), so the ${publishing.length} manager(s) this run ` +
+        `ingested cannot be found by name in fund search. Their holdings are published and reachable by link.`,
+      );
     }
   }
 
@@ -639,7 +652,12 @@ async function readJson(key, attempts = 4) {
   // never did — and nothing would ever go back for it.
   if (PUSH_STATE) {
     if (!existsSync(PUSH_STATE)) {
-      console.log(`::warning::${PUSH_STATE} does not exist — the cursor was not advanced, so the next run re-offers these filers.`);
+      console.log(`${PUSH_STATE} does not exist — the cursor was not advanced, so the next run re-offers these filers.`);
+      unfinished.note(
+        `the ingest cursor was NOT advanced — ${PUSH_STATE} does not exist. Nothing is lost, but this run ` +
+        `banked no progress, and if the path is wrong every future run re-does the same managers forever ` +
+        `while reporting success. That is exactly how prune stayed inert.`,
+      );
     } else {
       // REQUEUE ONLY THE FUNDS THIS PUBLISH DROPPED — bank the rest.
       //
@@ -680,4 +698,8 @@ async function readJson(key, attempts = 4) {
       );
     }
   }
+
+  // The verdict. Everything above is already published, so this cannot cost a
+  // build — it only decides what colour the run is.
+  process.exit(unfinished.report("The same-day publish"));
 })().catch((err) => fail(err.stack || err.message));

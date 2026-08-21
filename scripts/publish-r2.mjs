@@ -21,6 +21,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { mergeSummary, isPrunableKey, periodOfKey, carryForwardPeriods } from "../shared/manifest-merge.mjs";
+import { createRegister } from "../shared/unfinished.mjs";
 import { signRequest } from "./_sigv4.mjs";
 
 const args = Object.fromEntries(
@@ -112,6 +113,10 @@ async function sendSigned(method, key, body, okStatuses = new Set(), query = {})
 // first thing prune did was read a const still in its temporal dead zone and
 // throw — silently, every single run, for as long as it had existed.
 const PROTECTED_PREFIXES = ["state/"];
+
+// Work this run was supposed to do and did not. See shared/unfinished.mjs for
+// why this is deferred to the end of the run rather than thrown immediately.
+const unfinished = createRegister();
 
 const put = (key, body) => sendSigned("PUT", key, body);
 const del = (key) => sendSigned("DELETE", key, null, new Set([404]));
@@ -282,7 +287,11 @@ await pool(todo, CONCURRENCY, async (f) => {
 });
 if (mergedSummaries) console.log(`  ${mergedSummaries} fund summaries merged with published history`);
 if (keptSummaries.length) {
-  console.log(`::warning::${keptSummaries.length} summar(y|ies) left as published — could not be read to merge safely.`);
+  console.log(`${keptSummaries.length} summar(y|ies) left as published — could not be read to merge safely.`);
+  unfinished.note(
+    `${keptSummaries.length} fund summar(y|ies) were NOT updated because the published copy could not be read: ` +
+    `${keptSummaries.slice(0, 5).join(", ")}${keptSummaries.length > 5 ? " …" : ""}. Those funds are stale, not wrong.`,
+  );
 }
 
 // PUBLISH THE MANIFEST, THEN CLEAN UP. Never the other way round.
@@ -323,7 +332,11 @@ try {
   // The manifest MUST be published — without it the dashboard is a dead page,
   // which is far worse than a quarter briefly missing from the stepper. So
   // publish what this run built and say what could not be checked.
-  console.log(`::warning::could not read the live manifest to carry quarters forward (${err.message}); publishing this run's own.`);
+  console.log(`could not read the live manifest to carry quarters forward (${err.message}); publishing this run's own.`);
+  unfinished.note(
+    `the live manifest could not be read (${err.message}), so quarters this run has no window for may have dropped ` +
+    `out of the quarter selector. The data is still in the bucket; the index is what lost them.`,
+  );
 }
 await put("manifest.json", manifestBody);
 console.log(`\nmanifest published — build is now live.`);
@@ -332,7 +345,8 @@ if (PRUNE) {
   try {
     await prune();
   } catch (err) {
-    console.log(`::warning::prune failed (${err.message}) — the build is already live; stale objects remain.`);
+    console.log(`prune failed (${err.message}) — the build is already live; stale objects remain.`);
+    unfinished.note(`prune did not run (${err.message}). Nothing was deleted, so nothing is lost — but retention is not being applied and the failure would go unnoticed on a green run.`);
   }
 }
 
@@ -380,14 +394,22 @@ async function prune() {
   const MAX_PRUNE_RATIO = 0.5;
   if (stale.length > 100 && ratio > MAX_PRUNE_RATIO) {
     console.log(
-      `::warning::refusing to prune — ${stale.length} of ${current.size} ` +
+      `refusing to prune — ${stale.length} of ${current.size} ` +
       `(${(ratio * 100).toFixed(0)}%) look stale, which suggests a key-format ` +
       `mismatch rather than a retention roll-off. Nothing deleted.`,
     );
     console.log(`  sample remote: ${[...current.keys()].slice(0, 3).join(", ")}`);
     console.log(`  sample local : ${files.slice(0, 3).join(", ")}`);
+    unfinished.note(
+      `prune refused: ${stale.length} of ${current.size} objects looked stale, which is far more than a ` +
+      `retention roll-off. Nothing was deleted. Something about the key format or the build is wrong.`,
+    );
     return;
   }
 
   await pool(stale, CONCURRENCY, del);
 }
+
+// The verdict. Everything above has already been published, so this cannot cost
+// a build — it only decides what colour the run is.
+process.exit(unfinished.report("The publish"));

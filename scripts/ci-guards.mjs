@@ -522,6 +522,63 @@ function guardSameDayPublish() {
   }
 }
 
+/**
+ * A step that did nothing must fail, not warn.
+ *
+ * prune threw on its first line — a const read from its temporal dead zone —
+ * every run for its entire existence, and every one of those runs was GREEN,
+ * because the throw was caught and logged as a warning. Nobody reads a warning
+ * on a green run. It was found only on the day it would finally have worked, at
+ * which point it would have deleted 10,765 fund-quarters.
+ *
+ * The rule that replaced it: finish the work, then fail. Publication must never
+ * be blocked by cleanup (an early exit once left the site with no manifest at
+ * all), but the run must end red with a list of what did not happen.
+ *
+ * This guard pins the shape. The verdict must be the LAST thing each publish
+ * script does, so no later code can swallow it.
+ */
+function guardNothingFailsQuietly() {
+  const guard = "a-step-that-did-nothing-must-fail";
+  checks.push(guard);
+  for (const rel of ["scripts/publish-r2.mjs", "scripts/publish-day.mjs"]) {
+    const f = join(ROOT, rel);
+    if (!existsSync(f)) continue;
+    const src = readFileSync(f, "utf8");
+    if (!/createRegister\(\)/.test(src)) {
+      fail(guard, f, "no unfinished-work register — a step that silently did nothing would leave this run green.");
+      continue;
+    }
+    if (!/process\.exit\(unfinished\.report\(/.test(src)) {
+      fail(guard, f, "the register is never reported — recording a failure and then exiting 0 is the same green run as before.");
+      continue;
+    }
+    // Nothing may do WORK after the verdict. A `slice(-4)` window was the first
+    // attempt and it passed happily with two extra lines appended — the same
+    // "looks checked, checks nothing" shape this whole guard exists to stop.
+    // Closing an IIFE and attaching .catch is fine; logging or awaiting is not.
+    const after = src.slice(src.indexOf("process.exit(unfinished.report(")).split("\n").slice(1);
+    const working = after.find((l) => /\bawait\b|console\.log|unfinished\.note\(/.test(l));
+    if (working) {
+      fail(guard, f, `work happens after the verdict (${working.trim().slice(0, 60)}) — it can throw or return first, and the run ends green.`);
+    }
+  }
+  // And the specific failure with a history: prune must register, not just log.
+  const f = join(ROOT, "scripts/publish-r2.mjs");
+  if (existsSync(f)) {
+    const src = readFileSync(f, "utf8");
+    // Match forward from the message by a bounded window rather than to the
+    // next `}` — the catch body interpolates ${err.message}, whose brace ends a
+    // naive [^}]* match before it ever reaches the register.
+    const at = src.indexOf("prune failed");
+    if (at !== -1 && !/unfinished\.note\(/.test(src.slice(at, at + 600))) {
+      fail(guard, f, "prune failure is logged but not registered — this is the exact bug that hid for the life of the script.");
+    }
+  }
+}
+
+guardNothingFailsQuietly();
+
 guardSameDayPublish();
 
 if (failures.length) {
