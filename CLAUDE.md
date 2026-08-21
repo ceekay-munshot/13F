@@ -96,9 +96,18 @@ they send to the SEC (the US financial regulator) every three months.
   than assumed, and all four other quarters turned out to be over-stated by about
   2,100 each. All 14 client funds still agree with their own SEC filings.
 
-  **Still to do:** start keeping the SEC files (1 day), move to a single build
-  step so the two pipelines cannot disagree (3 days), and a monthly drill that
-  deletes the dashboard and rebuilds it to prove it can be (1 day).
+  **Also done today:** we now keep the SEC's own files instead of downloading
+  them and throwing them away — four of them, 345 MB, about a third of what the
+  dashboard itself costs. Checked by downloading one back and opening it, not
+  just by seeing the upload succeed. The monthly build now reads from that copy
+  instead of asking the SEC, so it stops re-downloading a third of a gigabyte
+  every month.
+
+  **Still to do:** move to a single build step so the two pipelines cannot
+  disagree (3 days), and a monthly drill that deletes the dashboard and rebuilds
+  it from the kept files, to prove it can be (1 day). That last one is the point
+  of the whole exercise: "it cannot lose data" stops being a promise and becomes
+  a test that runs every month.
 
 ## Standing promises
 
