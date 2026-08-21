@@ -19,6 +19,10 @@ on:
       fetch:
         description: 'Windows to fetch from the SEC if not already archived (one year = 4)'
         default: '4'
+      prune_edgar:
+        description: 'Drop directly-fetched filings whose bulk window is now archived'
+        type: boolean
+        default: false
       dry_run:
         description: 'Report what would happen without downloading or writing'
         type: boolean
@@ -98,6 +102,19 @@ jobs:
       # Downloads an archived window, opens it, and asserts all four tables the
       # build needs are inside. "It uploaded" would not catch a truncated zip,
       # and a store of record that cannot be read is not one.
+      # Which directly-fetched quarters the bulk windows now cover. Reports and
+      # changes nothing unless prune_edgar is asked for.
+      - name: Filings held outside the bulk windows
+        if: ${{ !cancelled() }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: |
+          node scripts/archive-source.mjs --prune-edgar \
+            ${{ github.event.inputs.prune_edgar == 'true' && ' ' || '--dry-run' }}
+
       - name: Read a window back out of the archive
         if: ${{ !cancelled() && github.event.inputs.dry_run != 'true' }}
         env:
