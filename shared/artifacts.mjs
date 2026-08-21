@@ -90,6 +90,27 @@ export const ROWS_PER_PAGE = 2000;
  * actually received the filing) travel WITH the data so no widget can render a
  * number without being able to say when it was true.
  */
+/**
+ * ---------------------------------------------------------------------------
+ * ARTIFACTS CARRY NO TIMESTAMP. THE MANIFEST DOES.
+ * ---------------------------------------------------------------------------
+ * Every artifact used to be stamped `generatedAt: new Date().toISOString()`, so
+ * two builds of identical data produced ~44,000 files that differed in nothing
+ * but the clock. That makes the claim this project is being rebuilt around —
+ * "the dashboard can be thrown away and rebuilt from the archived SEC files" —
+ * impossible to CHECK, because a rebuild can never be shown to have reproduced
+ * anything when every byte of it is stamped with the moment it ran.
+ *
+ * Nothing reads it. The dashboard reads `asOf` and `acceptedAt` for provenance
+ * and gets the build identity from the manifest's `buildId`, which is already
+ * derived from the data.
+ *
+ * The MANIFEST keeps its `generatedAt`, and it must stay the wall clock: it
+ * means "when did we last build", and scripts/freshness-check.mjs grades the
+ * site's staleness by subtracting it from today. Making that one data-derived
+ * would report a healthy build as a week stale the moment filings stopped
+ * arriving, which is exactly backwards.
+ */
 export function envelope({ kind, period, cik, asOf, acceptedAt, buildId, data, extra = {} }) {
   return {
     v: ARTIFACT_VERSION,
@@ -99,7 +120,6 @@ export function envelope({ kind, period, cik, asOf, acceptedAt, buildId, data, e
     ...(cik ? { cik } : {}),
     ...(asOf ? { asOf } : {}),
     ...(acceptedAt ? { acceptedAt } : {}),
-    generatedAt: new Date().toISOString(),
     ...extra,
     data,
   };
