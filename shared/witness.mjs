@@ -79,6 +79,58 @@ const near = (a, b) => (b ? (Math.abs(a - b) / b) * 100 : Infinity) <= TOLERANCE
 const fmt = (n) => (n == null ? "—" : `$${(n / 1e9).toFixed(3)}B`);
 
 /**
+ * Decide which quarter to compare for one fund, and whether a quarter is missing.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS PER-FUND AND NOT ONE GLOBAL QUARTER
+ * ---------------------------------------------------------------------------
+ * The first version took the newest quarter in the manifest and asked every fund
+ * about it. That works only while the newest quarter is one the watchlist has
+ * actually filed for, and it stops working the moment ANY of the 9,268 funds
+ * files early for the next one — the manifest gains that quarter, the witness
+ * asks fourteen managers about a period none of them has reached, every one
+ * comes back not-comparable, and the run exits 1 for having compared nothing.
+ *
+ * Concretely: Q3 2026 ends 30 September and is not due until 14 November. From
+ * the first early filer in October until the watchlist files in November, the
+ * ingest would have gone red every two hours for six weeks — while being
+ * completely healthy.
+ *
+ * So each fund is asked about ITS OWN newest quarter, and the two questions the
+ * witness actually cares about are separated:
+ *
+ *   1. Is a quarter MISSING? — decided against EDGAR's newest holdings report
+ *      for that fund, whatever quarter that is.
+ *   2. Do the NUMBERS agree? — decided on the newest quarter both sides have,
+ *      because a quarter only one side has cannot be compared.
+ *
+ * Neither question needs a global period, and neither breaks when the calendar
+ * turns over.
+ */
+export function chooseComparisonPeriod(ourPeriods, filings, asOf = new Date()) {
+  const hrPeriods = [...new Set(filings.filter((f) => f.form.startsWith("13F-HR")).map((f) => f.period))].sort();
+  const ours = [...new Set(ourPeriods)].sort();
+  const theirNewest = hrPeriods.at(-1) ?? null;
+  const ourNewest = ours.at(-1) ?? null;
+
+  // 1. A quarter EDGAR has and we do not, older than the ingest window.
+  let missing = null;
+  if (theirNewest && (!ourNewest || theirNewest > ourNewest)) {
+    const accepted = filings
+      .filter((f) => f.period === theirNewest && f.form.startsWith("13F-HR"))
+      .map((f) => f.accepted)
+      .sort()
+      .at(-1);
+    const daysOld = (asOf - new Date(accepted)) / 86_400_000;
+    if (daysOld > INGEST_GRACE_DAYS) missing = { period: theirNewest, accepted, daysOld };
+  }
+
+  // 2. The newest quarter both sides hold.
+  const shared = hrPeriods.filter((p) => ours.includes(p));
+  return { compare: shared.at(-1) ?? null, missing, theirNewest, ourNewest };
+}
+
+/**
  * Compare one fund-quarter against the SEC's own filings.
  *
  * @param {object}   ours      our published series entry for the period, or null
@@ -227,6 +279,7 @@ export async function judge({ name, period, ours, filings, readCover, asOf = new
   return {
     verdict: "agree",
     name,
+    period,
     value: matched,
     positions: ours.positions,
     entries: cover.entries,

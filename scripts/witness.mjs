@@ -56,7 +56,7 @@
 import { XMLParser } from "fast-xml-parser";
 import { SecFetcher, SEC_URLS, padCik, runJob } from "./_sec-fetch.mjs";
 import { WATCHLIST_CIKS } from "../shared/watchlist.mjs";
-import { judge, coverReadings } from "../shared/witness.mjs";
+import { judge, coverReadings, chooseComparisonPeriod } from "../shared/witness.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -85,15 +85,15 @@ async function ours(cik) {
  * inside that, and a fund that was not would surface here as "no filing found",
  * which the witness reports rather than passing over.
  */
-function filingsForPeriod(subs, period) {
+function allFilings(subs) {
   const r = subs.filings?.recent ?? {};
   const out = [];
   for (let i = 0; i < (r.accessionNumber?.length ?? 0); i++) {
     if (!String(r.form[i]).startsWith("13F")) continue;
-    if (r.reportDate[i] !== period) continue;
     out.push({
       accession: r.accessionNumber[i],
       form: r.form[i],
+      period: r.reportDate[i],
       accepted: r.acceptanceDateTime?.[i] ?? r.filingDate[i],
     });
   }
@@ -129,14 +129,14 @@ await runJob(async () => {
     return;
   }
 
-  // Which quarter to examine: by default the newest the live site publishes,
-  // because that is the one a client is looking at.
-  let period = args.period;
-  if (!period) {
-    const mf = await (await fetch(`${ORIGIN}/data/manifest.json?witness=${process.pid}`)).json();
-    period = [...(mf.periods ?? [])].map((p) => p.period ?? p).sort().at(-1);
-  }
-  console.log(`witness · ${period} · ${CIKS.length} fund(s) · reading ${ORIGIN} against sec.gov\n`);
+  // No global quarter. Each fund is asked about its own newest — see
+  // chooseComparisonPeriod for why a single manifest-wide period breaks every
+  // October. --period still forces one, for investigating a specific quarter.
+  const forced = args.period || null;
+  console.log(
+    `witness · ${forced || "each fund's newest quarter"} · ${CIKS.length} fund(s) · ` +
+    `reading ${ORIGIN} against sec.gov\n`,
+  );
 
   const agree = [], disagree = [], notComparable = [], misdeclared = [];
 
@@ -145,21 +145,50 @@ await runJob(async () => {
     // — "we have no file for them" and "they never filed" are different answers,
     // and only EDGAR can tell them apart. Carry on with nothing on our side and
     // let the judgement see it.
-    let mine, name = cik, unreadable = null;
+    let series = [], name = cik, unreadable = null;
     try {
       const s = await ours(cik);
       name = s.name || cik;
-      mine = s.series.find((x) => x.period === period);
+      series = s.series ?? [];
     } catch (err) {
       unreadable = err.message;
     }
 
     const { body: subs } = await sec.get(SEC_URLS.submissions(cik), { as: "json" });
+    const filings = allFilings(subs);
+    const choice = chooseComparisonPeriod(series.map((x) => x.period), filings, new Date());
+
+    // A quarter EDGAR has, we do not, and the ingest window has passed. Reported
+    // whether or not there is anything left to compare — this is the Nuveen
+    // case, and it is the finding a client notices first.
+    if (choice.missing) {
+      disagree.push({
+        name,
+        what: `EDGAR has a 13F-HR for ${choice.missing.period} (accepted ` +
+              `${String(choice.missing.accepted).slice(0, 10)}, ${Math.floor(choice.missing.daysOld)} days ago), ` +
+              `but our newest for this manager is ${choice.ourNewest ?? "nothing at all"}.` +
+              (unreadable ? ` (our summary does not exist: ${unreadable})` : ""),
+      });
+    }
+
+    const period = forced || choice.compare;
+    if (!period) {
+      if (!choice.missing) {
+        notComparable.push({
+          name,
+          why: choice.theirNewest
+            ? `no quarter in common yet — EDGAR's newest is ${choice.theirNewest}, ours is ${choice.ourNewest ?? "none"}`
+            : "EDGAR has no 13F-HR for this manager at all",
+        });
+      }
+      continue;
+    }
+
     const verdict = await judge({
       name,
       period,
-      ours: mine,
-      filings: filingsForPeriod(subs, period),
+      ours: series.find((x) => x.period === period),
+      filings: filings.filter((f) => f.period === period),
       readCover: (accession) => readCover(sec, cik, accession),
     });
 
@@ -177,7 +206,7 @@ await runJob(async () => {
   const b = (n) => `$${(n / 1e9).toFixed(3)}B`;
   for (const a of agree) {
     console.log(
-      `  agrees    ${a.name} — ${b(a.value)}, ${a.positions} positions of ${a.entries ?? "?"} rows` +
+      `  agrees    ${a.period}  ${a.name} — ${b(a.value)}, ${a.positions} positions of ${a.entries ?? "?"} rows` +
       (a.exact ? "" : ` (within ${b(a.shortfallUsd)}; this fund's artifact predates valuePrnUsd, so bonds cannot be added back exactly)`),
     );
   }

@@ -283,3 +283,85 @@ describe("principal-amount rows", () => {
     expect(v.verdict).toBe("disagree");
   });
 });
+
+describe("which quarter to compare — the bug that would have started on 1 October", () => {
+  // The first version took the newest quarter in the MANIFEST and asked every
+  // fund about it. That holds only while the newest quarter is one the watchlist
+  // has actually filed for, and breaks the moment any of 9,268 funds files early
+  // for the next one: the manifest gains that quarter, fourteen managers are
+  // asked about a period none of them has reached, all come back not-comparable,
+  // and the run exits 1 for having compared nothing.
+  //
+  // Q3 2026 ends 30 Sept and is not due until 14 Nov. The ingest would have gone
+  // red every two hours for six weeks while being completely healthy.
+  const f = (period, form, accepted) => ({ period, form, accepted, accession: `x-${period}-${form}` });
+
+  it("compares the newest quarter BOTH sides have, not the newest that exists", async () => {
+    const { chooseComparisonPeriod } = await import("../shared/witness.mjs");
+    const c = chooseComparisonPeriod(
+      ["2026-03-31", "2026-06-30"],
+      [f("2026-03-31", "13F-HR", "2026-05-15"), f("2026-06-30", "13F-HR", "2026-07-29")],
+      new Date("2026-10-01T12:00:00Z"),
+    );
+    expect(c.compare).toBe("2026-06-30");
+    expect(c.missing).toBeNull();
+  });
+
+  it("an early Q3 filer elsewhere in the universe does not drag this fund into a quarter it has not filed", async () => {
+    const { chooseComparisonPeriod } = await import("../shared/witness.mjs");
+    // This manager's own newest is Q2 on both sides; Q3 exists in the world but
+    // not for them, and must not become the comparison quarter.
+    const c = chooseComparisonPeriod(
+      ["2026-03-31", "2026-06-30"],
+      [f("2026-06-30", "13F-HR", "2026-07-29")],
+      new Date("2026-10-01T12:00:00Z"),
+    );
+    expect(c.compare).toBe("2026-06-30");
+    expect(c.missing).toBeNull();
+  });
+
+  it("still catches the missing quarter, which is the whole point", async () => {
+    const { chooseComparisonPeriod } = await import("../shared/witness.mjs");
+    // Nuveen: filed Q2 on 11 Aug, we still had only Q1 ten days later.
+    const c = chooseComparisonPeriod(
+      ["2026-03-31"],
+      [f("2026-03-31", "13F-HR", "2026-04-30"), f("2026-06-30", "13F-HR", "2026-08-11")],
+      new Date("2026-08-21T12:00:00Z"),
+    );
+    expect(c.missing).toMatchObject({ period: "2026-06-30" });
+    expect(Math.floor(c.missing.daysOld)).toBe(10);
+    // ...and it still compares the quarter both sides do have.
+    expect(c.compare).toBe("2026-03-31");
+  });
+
+  it("a filing from this morning is not yet a missing quarter", async () => {
+    const { chooseComparisonPeriod } = await import("../shared/witness.mjs");
+    const c = chooseComparisonPeriod(
+      ["2026-03-31"],
+      [f("2026-03-31", "13F-HR", "2026-04-30"), f("2026-06-30", "13F-HR", "2026-08-21T06:00:00Z")],
+      new Date("2026-08-21T12:00:00Z"),
+    );
+    expect(c.missing).toBeNull();
+  });
+
+  it("a fund we have never ingested, whose filing is old, is a missing quarter", async () => {
+    const { chooseComparisonPeriod } = await import("../shared/witness.mjs");
+    const c = chooseComparisonPeriod([], [f("2026-06-30", "13F-HR", "2026-07-29")], new Date("2026-08-21T12:00:00Z"));
+    expect(c.missing).toMatchObject({ period: "2026-06-30" });
+    expect(c.compare).toBeNull();
+    expect(c.ourNewest).toBeNull();
+  });
+
+  it("a notice-only quarter is not a holdings quarter", async () => {
+    const { chooseComparisonPeriod } = await import("../shared/witness.mjs");
+    // Pershing Square filed 13F-NT for Q2. There is no holdings table, so Q2 is
+    // neither missing nor comparable — Q1 is the quarter to compare.
+    const c = chooseComparisonPeriod(
+      ["2026-03-31"],
+      [f("2026-03-31", "13F-HR", "2026-05-15"), f("2026-06-30", "13F-NT", "2026-08-14")],
+      new Date("2026-10-01T12:00:00Z"),
+    );
+    expect(c.compare).toBe("2026-03-31");
+    expect(c.missing).toBeNull();
+  });
+});
