@@ -20,9 +20,8 @@ import {
   parseIndexHeaders, parsePrimaryDoc, parseInfoTable, parseSubmissions,
   decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor,
 } from "./_sec-parse.mjs";
-import {
-  foldFilings, computeChanges, computeTurnover, summarizeActions, PRIOR_STATE,
-} from "../shared/fold.mjs";
+import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
+import { fundQuarter, seriesEntry } from "../shared/emit.mjs";
 import {
   currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel,
 } from "../shared/calendar.mjs";
@@ -458,75 +457,13 @@ await runJob(async () => {
         else if (!prior.summary) priorState = PRIOR_STATE.MISSING;
         else priorState = PRIOR_STATE.OK;
 
-        const { changes, suppressed, reason, structuralEvent, structural, exitsWithheld } = computeChanges(
-          { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },
-          priorState === PRIOR_STATE.OK
-            ? {
-                period_end: priorP,
-                accession: prior.accessions?.[prior.accessions.length - 1] ?? null,
-                holdings: prior.holdings,
-                value_long_usd: prior.value_long_usd,
-              }
-            : null,
-          priorState,
-          // The filer declared this book incomplete, so an absent position is not
-          // evidence of a sale. Exits are withheld and counted, not fabricated.
-          { confidentialOmitted: cur.filings?.some((f) => f.is_confidential_omitted) },
-        );
-
-        const changeByKey = new Map(changes.map((c) => [`${c.cusip}|${c.put_call}`, c]));
-        const rows = cur.holdings
-          .map((h) => toArtifactRow(h, changeByKey.get(`${h.cusip}|${h.put_call}`)))
-          .sort((a, b) => b.value - a.value);
-
-        const exits = changes
-          .filter((c) => c.action === "EXITED")
-          .map((c) => ({
-            ticker: SECURITIES[c.cusip]?.ticker ?? null,
-            name: c.name_of_issuer,
-            issuerId: SECURITIES[c.cusip]?.issuerId ?? issuerIdFor(c.cusip),
-            type: c.put_call,
-            // SH or PRN. Without it a client filtering to long equity cannot tell
-            // an exited share position from an exited bond.
-            unit: c.ssh_prnamt_type ?? "SH",
-            valuePrior: c.value_prior, weightPrior: c.weight_prior,
-          }))
-          .sort((a, b) => (b.valuePrior ?? 0) - (a.valuePrior ?? 0));
-
-        const acts = summarizeActions(changes);
-        // NO TURNOVER FOR A QUARTER WHOSE DELTAS ARE WITHHELD.
-        //
-        // Turnover is a delta measure — (entries + exits) over positions, and
-        // traded value over average book — so a quarter where per-row changes are
-        // too misleading to publish cannot have a meaningful one either. It was
-        // computed anyway: Cantillon's Q2-2026 card reported "TURNOVER 33.8%" a
-        // few inches above an Activity widget refusing to draw the same
-        // comparison, and a value turnover of 183% derived entirely from the one
-        // redemption. Withheld, not zeroed — zero would be a confident wrong
-        // answer where a dash is the true one.
-        const turnover = priorState === PRIOR_STATE.OK && !suppressed
-          ? computeTurnover(changes, { holdings: cur.holdings, value_long_usd: cur.value_long_usd },
-              { holdings: prior.holdings, value_long_usd: prior.value_long_usd })
-          : { turnover_position_pct: null, turnover_value_pct: null };
-
-        const meta = {
-          priorState,
-          priorPeriod: priorState === PRIOR_STATE.OK ? priorP : null,
-          deltasSuppressed: suppressed,
-          structuralEvent,
-          structuralDetail: structural?.detail ?? null,
-          confidentialOmitted: Boolean(cur.confidentialOmitted),
-          foldWarnings: cur.warnings ?? [],
-          // How many exits were NOT emitted because the filer withheld positions.
-          // Shown, not swallowed: a shorter list with no explanation reads as
-          // 'they sold nothing', which is a different wrong answer.
-          exitsWithheld,
-          accessions: cur.accessions ?? [],
-          ...cur.summary,
-          reportedTotalUsd: cur.reported_total_usd,
-          ...acts,
-          ...turnover,
-        };
+        // ONE EMIT LAYER, shared with the monthly build. This block used to be
+        // the other copy of it — same computation, same comments, drifted in
+        // four ways that reach the screen. See shared/emit.mjs.
+        const { changes, suppressed, structuralEvent, rows, exits, meta } = fundQuarter({
+          period, priorPeriod: priorP, cur, prior, priorState,
+          securities: SECURITIES, issuerIdFor,
+        });
 
         // Page only what needs paging. Citadel aggregates to ~12,900 positions;
         // the rest of the universe fits comfortably in one file.
@@ -544,48 +481,19 @@ await runJob(async () => {
           );
         }
 
-        series.push({
-          period,
-          label: periodLabel(period),
-          reportedTotalUsd: cur.reported_total_usd,
-          valueLongUsd: cur.summary.value_long_usd,
-          valueOptionsUsd: cur.summary.value_options_usd,
-        // Principal-amount rows: bonds and notes, whose "shares" figure is a
-        // face value. They are excluded from every share sum and from the
-        // long-equity denominator by design — but the filer's own cover page
-        // totals them in with everything else, so without this the two can
-        // never be reconciled. Nuveen's 2026-06-30 has 28 of them, $433M
-        // against a $419B book, and it read as a 0.1% shortfall in our
-        // aggregation until this field existed.
-        valuePrnUsd: cur.summary.value_prn_usd ?? 0,
+        series.push(seriesEntry({
+          period, cur, meta,
+          pages: Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE)),
+          hasHoldings: true,
           positions: rows.length,
-          positionsLong: cur.summary.positions_long,
-          positionsOptions: cur.summary.positions_options,
-          top10WeightPct: cur.summary.top10_weight_pct,
-          ...acts,
-          ...turnover,
-          priorState,
-          deltasSuppressed: suppressed,
-          structuralEvent,
-          confidentialOmitted: Boolean(cur.confidentialOmitted),
-          pages,
-          acceptedAt: cur.acceptance,
-          // Calendar days, not a timestamp difference: a filing accepted at
-          // 20:06 on day 45 is on day 45, and rounding the fraction up made every
-          // punctual filer look one day late against the 45-day deadline.
-          filingLagDays: cur.acceptance
-            ? Math.round(
-                (Date.parse(`${cur.acceptance.slice(0, 10)}T00:00:00Z`) - Date.parse(`${period}T00:00:00Z`)) / 86400000,
-              )
-            : null,
-        });
+        }));
 
-        const flagNote = suppressed ? `  [${reason}]` : "";
+        const flagNote = suppressed ? `  [${meta.structuralEvent ?? meta.priorState}]` : "";
         if (VERBOSE) {
           log(
             `  ${periodLabel(period)}  ${String(rows.length).padStart(5)} pos  ` +
             `$${(cur.summary.value_long_usd / 1e9).toFixed(2)}B long  ` +
-            `new ${acts.n_new} exit ${acts.n_exited}${flagNote}`,
+            `new ${meta.n_new} exit ${meta.n_exited}${flagNote}`,
           );
         }
       }

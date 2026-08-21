@@ -34,8 +34,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "no
 import { SecFetcher, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
-import { foldFilings, computeChanges, computeTurnover, summarizeActions, PRIOR_STATE } from "../shared/fold.mjs";
+import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
 import { SERIES_FIELDS } from "../shared/series-fields.mjs";
+import { fundQuarter, seriesEntry } from "../shared/emit.mjs";
 import { currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel, deraWindowFor } from "../shared/calendar.mjs";
 import { paths, envelope, manifest, encodeHoldings, buildIdFrom, ROWS_PER_PAGE } from "../shared/artifacts.mjs";
 import { ArtifactWriter, writeHeadersFile } from "./_artifact-writer.mjs";
@@ -603,48 +604,20 @@ await runJob(async () => {
         : prior.noticeOnly ? PRIOR_STATE.IS_NT
         : PRIOR_STATE.MISSING;
 
-      const { changes, suppressed, reason, structuralEvent, structural, exitsWithheld } = computeChanges(
-        { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },
-        priorState === PRIOR_STATE.OK
-          ? { period_end: pp, accession: prior.accessions?.at(-1) ?? null, holdings: prior.holdings, value_long_usd: prior.value_long_usd }
-          : null,
-        priorState,
-        // The filer declared this book incomplete, so an absent position is not
-        // evidence of a sale. Exits are withheld and counted, not fabricated.
-        { confidentialOmitted: cur.confidentialOmitted },
-      );
-      const acts = summarizeActions(changes);
-      const turnover = priorState === PRIOR_STATE.OK
-        ? computeTurnover(changes, { holdings: cur.holdings, value_long_usd: cur.value_long_usd },
-            { holdings: prior.holdings, value_long_usd: prior.value_long_usd })
-        : { turnover_position_pct: null, turnover_value_pct: null };
+      // ONE EMIT LAYER, shared with the same-day build. This block used to be a
+      // second copy of it, and the copies had drifted: turnover was published
+      // here on quarters whose deltas were withheld, and the confidential-
+      // omission flag was computed over a different population than the one
+      // stored in the artifact.
+      const q = fundQuarter({
+        period, priorPeriod: pp, cur, prior, priorState,
+        securities: SECURITIES, issuerIdFor,
+      });
+      const { changes, suppressed, structuralEvent, acts, turnover, rows: allRows, exits: allExits, meta } = q;
 
       if (wantHoldings) {
-        const changeByKey = new Map(changes.map((c) => [`${c.cusip}|${c.put_call}`, c]));
-        const rows = cur.holdings.map((h) => {
-          const ch = changeByKey.get(`${h.cusip}|${h.put_call}`);
-          return {
-            ticker: h.ticker ?? null, name: h.name_of_issuer, issuerId: h.issuerId,
-            cls: h.title_of_class, type: h.put_call, unit: h.ssh_prnamt_type,
-            value: h.value_usd, shares: h.ssh_prnamt,
-            weight: h.weight_pct == null ? null : Number(h.weight_pct.toFixed(4)),
-            price: h.implied_price == null ? null : Number(h.implied_price.toFixed(4)),
-            action: ch?.action ?? null, dShares: ch?.d_shares ?? null,
-            dSharesPct: ch?.d_shares_pct == null ? null : Number(ch.d_shares_pct.toFixed(3)),
-            dValue: ch?.d_value ?? null,
-            dValuePct: ch?.d_value_pct == null ? null : Number(ch.d_value_pct.toFixed(3)),
-            dWeightPp: ch?.d_weight_pp == null ? null : Number(ch.d_weight_pp.toFixed(4)),
-            flags: ch?.flags ?? null,
-          };
-        }).sort((a, b) => b.value - a.value);
-
-        const exits = changes.filter((c) => c.action === "EXITED").map((c) => ({
-          ticker: SECURITIES[c.cusip]?.ticker ?? null, name: c.name_of_issuer,
-          issuerId: SECURITIES[c.cusip]?.issuerId ?? issuerIdFor(c.cusip), type: c.put_call,
-          // SH or PRN — see the note in shared/fold.mjs's exit loop.
-          unit: c.ssh_prnamt_type ?? "SH",
-          valuePrior: c.value_prior, weightPrior: c.weight_prior,
-        })).sort((a, b) => (b.valuePrior ?? 0) - (a.valuePrior ?? 0));
+        const rows = allRows;
+        const exits = allExits;
 
         // ---- universe-wide sector flows ---------------------------------
         //
@@ -690,18 +663,6 @@ await runJob(async () => {
           }
         }
         
-        const meta = {
-          priorState, priorPeriod: priorState === PRIOR_STATE.OK ? pp : null,
-          deltasSuppressed: suppressed, structuralEvent,
-          structuralDetail: structural?.detail ?? null,
-          confidentialOmitted: Boolean(cur.confidentialOmitted),
-          foldWarnings: cur.warnings ?? [], accessions: cur.accessions ?? [],
-          // How many exits were NOT emitted because the filer withheld positions.
-          // Shown, not swallowed: a shorter list with no explanation reads as
-          // 'they sold nothing', which is a different wrong answer.
-          exitsWithheld,
-          ...cur.summary, reportedTotalUsd: cur.reported_total_usd, ...acts, ...turnover,
-        };
         const pages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
         for (let p = 0; p < pages; p++) {
           writer.write(paths.fundPeriod(fund.cik, period, p), envelope({
@@ -714,33 +675,12 @@ await runJob(async () => {
         holdingsWritten++;
       }
 
-      series.push({
-        period, label: periodLabel(period),
-        reportedTotalUsd: cur.reported_total_usd,
-        valueLongUsd: cur.summary.value_long_usd,
-        valueOptionsUsd: cur.summary.value_options_usd,
-      // Principal-amount rows: bonds and notes, whose "shares" figure is a
-      // face value. They are excluded from every share sum and from the
-      // long-equity denominator by design — but the filer's own cover page
-      // totals them in with everything else, so without this the two can
-      // never be reconciled. Nuveen's 2026-06-30 has 28 of them, $433M
-      // against a $419B book, and it read as a 0.1% shortfall in our
-      // aggregation until this field existed.
-      valuePrnUsd: cur.summary.value_prn_usd ?? 0,
-        positions: cur.holdings.length,
-        positionsLong: cur.summary.positions_long,
-        positionsOptions: cur.summary.positions_options,
-        top10WeightPct: cur.summary.top10_weight_pct,
-        ...acts, ...turnover, priorState,
-        deltasSuppressed: suppressed, structuralEvent,
-        confidentialOmitted: Boolean(cur.confidentialOmitted),
+      series.push(seriesEntry({
+        period, cur, meta,
         pages: wantHoldings ? Math.max(1, Math.ceil(cur.holdings.length / ROWS_PER_PAGE)) : 0,
-        acceptedAt: cur.acceptance,
-        filingLagDays: cur.acceptance
-          ? Math.round((Date.parse(cur.acceptance.slice(0, 10) + "T00:00:00Z") - Date.parse(`${period}T00:00:00Z`)) / 86400000)
-          : null,
         hasHoldings: wantHoldings,
-      });
+        positions: cur.holdings.length,
+      }));
 
     }
 
