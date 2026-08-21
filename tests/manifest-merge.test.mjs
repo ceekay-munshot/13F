@@ -721,3 +721,55 @@ describe("carryForwardPeriods — the monthly manifest keeps quarters it cannot 
     expect(carryForwardPeriods(null, incoming).manifest.periods).toHaveLength(1);
   });
 });
+
+describe("prune must not delete a manager it never built", () => {
+  // The monthly job builds from the SEC's bulk windows. A manager who filed for
+  // the first time this season has no window yet, so the same-day job is the
+  // only thing that has ever heard of them. Their fund/{cik}/summary.json
+  // carries no quarter in its key, so it fell through to "no quarter, ordinary
+  // retention" and was deleted outright — leaving a 404 Fund page while their
+  // holdings sat in the bucket with nothing pointing at them.
+  //
+  // It never fired, because prune has never once completed: first a temporal
+  // dead zone, then an undefined name. Repairing prune is what made it
+  // reachable, which is exactly when it needed the rule.
+  const BUILT = new Set(["2026-03-31"]);
+  const MINE = new Set(["0000000001"]);          // the only manager this run built
+  const NEWCOMER = "fund/0000000002/summary.json"; // discovered by the same-day job
+
+  it("leaves the summary of a manager this run never built", () => {
+    expect(isPrunableKey(NEWCOMER, BUILT, ["state/"], MINE)).toBe(false);
+  });
+
+  it("leaves that manager's holdings too, not just their summary", () => {
+    expect(isPrunableKey("fund/0000000002/2026-03-31.json", BUILT, ["state/"], MINE)).toBe(false);
+    expect(isPrunableKey("fund/0000000002/2026-03-31.p2.json", BUILT, ["state/"], MINE)).toBe(false);
+  });
+
+  it("still prunes a manager this run DID build, when the run no longer produces the file", () => {
+    // Retention has to keep working. Only the unknown are protected.
+    expect(isPrunableKey("fund/0000000001/summary.json", BUILT, ["state/"], MINE)).toBe(true);
+    expect(isPrunableKey("fund/0000000001/2026-03-31.json", BUILT, ["state/"], MINE)).toBe(true);
+  });
+
+  it("still refuses a quarter this run has no window for, however the CIK reads", () => {
+    expect(isPrunableKey("fund/0000000001/2025-06-30.json", BUILT, ["state/"], MINE)).toBe(false);
+  });
+
+  it("the cursor stays protected regardless", () => {
+    expect(isPrunableKey("state/ingest-cursor.json", BUILT, ["state/"], MINE)).toBe(false);
+    expect(isPrunableKey("state/ingest-cursor.json", BUILT, ["state/"], null)).toBe(false);
+  });
+
+  it("without a CIK set the old behaviour is unchanged", () => {
+    // The same-day job calls this with three arguments and must not shift.
+    expect(isPrunableKey(NEWCOMER, BUILT, ["state/"])).toBe(true);
+  });
+
+  it("the monthly publish passes the CIK set", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../scripts/publish-r2.mjs", import.meta.url), "utf8");
+    expect(src).toContain("const builtCiks = new Set(");
+    expect(src).toContain("isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES, builtCiks)");
+  });
+});

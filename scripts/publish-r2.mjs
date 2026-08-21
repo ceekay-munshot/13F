@@ -411,11 +411,17 @@ async function prune() {
   const builtPeriods = new Set(
     files.map((f) => periodOfKey(f)).filter((p) => p !== null),
   );
+  // Managers this run actually built. Anything under fund/{cik}/ for a manager
+  // NOT in here belongs to a first-time filer the same-day job discovered and
+  // the bulk windows have never seen — see isPrunableKey.
+  const builtCiks = new Set(
+    files.map((f) => (/^fund\/(\d{10})\//.exec(f) ?? [])[1]).filter(Boolean),
+  );
   const stale = [...current.keys()].filter(
-    (k) => !local.has(k) && isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES),
+    (k) => !local.has(k) && isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES, builtCiks),
   );
   const shielded = [...current.keys()].filter(
-    (k) => !local.has(k) && !isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES),
+    (k) => !local.has(k) && !isPrunableKey(k, builtPeriods, PROTECTED_PREFIXES, builtCiks),
   ).length;
   console.log(`  ${current.size} remote · ${stale.length} stale · covering ${[...builtPeriods].sort().join(", ") || "no quarters"}`);
   if (shielded) {

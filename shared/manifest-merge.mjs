@@ -508,8 +508,27 @@ export function periodOfKey(key) {
  * @param {Set<string>} builtPeriods    quarters this run actually produced
  * @param {string[]} protectedPrefixes  never-touch prefixes (cursors, state)
  */
-export function isPrunableKey(key, builtPeriods, protectedPrefixes = []) {
+export function isPrunableKey(key, builtPeriods, protectedPrefixes = [], builtCiks = null) {
   if (protectedPrefixes.some((p) => key.startsWith(p))) return false;
+
+  // A MANAGER THIS RUN NEVER BUILT IS NOT A MANAGER THIS RUN MAY DELETE.
+  //
+  // The monthly job builds from the SEC's bulk windows. A manager who filed for
+  // the first time this season has no window yet, so the same-day job is the
+  // only thing that has ever heard of them — and their fund/{cik}/summary.json
+  // carries no quarter in its key, which fell through to "no quarter, ordinary
+  // retention" below and was deleted outright. Their Fund page then 404s while
+  // their holdings sit in the bucket with nothing pointing at them.
+  //
+  // This never fired, because prune has never once completed: it threw from a
+  // temporal dead zone, and then on an undefined name. Repairing prune is what
+  // made this reachable, so the rule the rest of the pipeline runs on has to
+  // apply here too — not knowing about something is not knowing it should go.
+  if (builtCiks) {
+    const m = /^fund\/(\d{10})\//.exec(key);
+    if (m && !builtCiks.has(m[1])) return false;
+  }
+
   const period = periodOfKey(key);
   if (period === null) return true;          // no quarter — ordinary retention
   return builtPeriods.has(period);           // only quarters we actually built
