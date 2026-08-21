@@ -103,11 +103,31 @@ they send to the SEC (the US financial regulator) every three months.
   instead of asking the SEC, so it stops re-downloading a third of a gigabyte
   every month.
 
-  **Still to do:** move to a single build step so the two pipelines cannot
-  disagree (3 days), and a monthly drill that deletes the dashboard and rebuilds
-  it from the kept files, to prove it can be (1 day). That last one is the point
-  of the whole exercise: "it cannot lose data" stops being a promise and becomes
-  a test that runs every month.
+  **21 Aug, later still — the two pipelines now share one set of instructions.**
+  They each had their own copy of the code that turns filings into what you see,
+  and the copies had drifted apart in four ways you could see on screen. One
+  number in particular: the site said "10,648 managers" for a quarter that only
+  8,472 actually had, so 2,176 fund pages said the manager had not filed while
+  the site insisted everything was loaded. Now counted from the data.
+
+  Two things were caught only by running it for real, which is worth recording:
+
+  1. **A repeat of the 20 August outage was scheduled for 3 September.** The
+     monthly job runs the day before the SEC publishes the file covering
+     April–June, so it would have rebuilt the dashboard without that quarter and
+     then deleted it for 8,866 managers. A new rule — "a quarter may not shrink"
+     — stopped it, and we watched it stop it.
+  2. **The dashboard was serving a year-old copy of one fund's page.** The
+     stored data was correct; the name we give each new version had gone
+     backwards to one used before Wednesday's repair, so browsers kept the old
+     copy. The name is now derived from the data itself, so it cannot repeat.
+
+  **Still to do:** the same-day job still writes to the dashboard directly. It
+  can stop once the SEC publishes the April–June file (about 4 Sept), after
+  which the single build has everything and the old "don't lose anything" code
+  can be deleted. Then the monthly drill that deletes the dashboard and rebuilds
+  it from the kept files, to prove it can be. That last one is the point of the
+  whole exercise: "it cannot lose data" stops being a promise and becomes a test.
 
 ## Standing promises
 
