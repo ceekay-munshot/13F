@@ -146,11 +146,20 @@ describe("the fund search index — the file this gate was watching around", () 
     expect(regressions.join("\n")).toMatch(/4 fewer quarter\(s\) in total/);
   });
 
+  it("does NOT fire when managers move FORWARD a quarter", () => {
+    // The repair that fixed 7,449 managers tripped the first version of this
+    // check: "7,250 no longer report 2026-03-31 as their newest" — because they
+    // now report 2026-06-30. Moving forward is the point, not a regression.
+    const before = fpOf([mgr({ latestPeriod: "2026-03-31" }), mgr({ cik: "0000000002", latestPeriod: "2026-03-31" })]);
+    const after = fpOf([mgr({ latestPeriod: "2026-06-30" }), mgr({ cik: "0000000002", latestPeriod: "2026-06-30" })]);
+    expect(compareFingerprints(before, after).regressions).toEqual([]);
+  });
+
   it("catches the regression due 3 September: newest quarter moving backwards", () => {
     const before = fpOf([mgr({ latestPeriod: "2026-06-30" }), mgr({ cik: "0000000002", latestPeriod: "2026-06-30" })]);
     const after = fpOf([mgr({ latestPeriod: "2026-03-31" }), mgr({ cik: "0000000002", latestPeriod: "2026-03-31" })]);
     const { regressions } = compareFingerprints(before, after);
-    expect(regressions.join("\n")).toMatch(/2 manager\(s\) no longer report 2026-06-30/);
+    expect(regressions.join("\n")).toMatch(/2 manager\(s\) whose newest quarter was 2026-06-30 or later/);
     expect(regressions.join("\n")).toMatch(/would say they have not filed/);
   });
 

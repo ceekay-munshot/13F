@@ -148,13 +148,30 @@ export function compareFingerprints(before, after, { tolerance = DEFAULT_TOLERAN
           `(${bi.quarterSum} -> ${ai.quarterSum}) — managers are claiming less history than they had`,
         );
       }
-      for (const [period, count] of Object.entries(bi.byNewest ?? {})) {
+      // COUNT MANAGERS AT OR AFTER EACH QUARTER, NOT EXACTLY AT IT.
+      //
+      // The first version bucketed by exact newest-quarter and flagged any
+      // bucket shrinking. It fired on the repair that fixed 7,449 managers:
+      // "7,250 no longer report 2026-03-31 as their newest" — because they now
+      // report 2026-06-30. They moved FORWARD, which is the whole point, and the
+      // check read it as loss.
+      //
+      // Cumulative is the measure that means what was intended. A manager moving
+      // Q1 -> Q2 leaves "at least Q1" unchanged and raises "at least Q2". Only a
+      // genuine move BACKWARDS lowers any bucket.
+      const atLeast = (buckets, from) =>
+        Object.entries(buckets ?? {})
+          .filter(([p]) => p !== "none" && p >= from)
+          .reduce((a, [, n]) => a + n, 0);
+
+      for (const period of Object.keys(bi.byNewest ?? {})) {
         if (period === "none") continue;
-        const now = ai.byNewest?.[period] ?? 0;
-        if (now < count) {
+        const was = atLeast(bi.byNewest, period);
+        const now = atLeast(ai.byNewest, period);
+        if (now < was) {
           regressions.push(
-            `fund search index: ${count - now} manager(s) no longer report ${period} as their newest ` +
-            `quarter (${count} -> ${now}) — the site would say they have not filed`,
+            `fund search index: ${was - now} manager(s) whose newest quarter was ${period} or later now ` +
+            `report an older one (${was} -> ${now}) — the site would say they have not filed`,
           );
         }
       }
