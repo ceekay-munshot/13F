@@ -31,13 +31,25 @@ they send to the SEC (the US financial regulator) every three months.
 
 ## Booked in
 
-- **Saturday 22 Aug 2026** — the "one big withdrawal, not 27 separate sales"
-  detector needs a second piece of evidence. Right now it compares two quarters
-  and spots that every holding moved by the same percentage. That is the right
-  answer for Cantillon — their own filing confirms it — but the check cannot
-  tell a real withdrawal apart from a fund simply changing how it splits its
-  holdings across two managers on the form. Both look identical to it. Nobody
-  needs to do anything; it is scheduled to run on its own.
+- **The "one big withdrawal, not 27 separate sales" detector needs a second
+  piece of evidence.** It compares two quarters and spots that every holding
+  moved by the same percentage. That is the right answer for Cantillon — their
+  own filing confirms it — but it cannot tell a real withdrawal apart from a
+  fund changing how it splits its holdings across two managers on the form.
+
+  This was written down as "scheduled to run on its own" for Sat 22 Aug. **It
+  was not scheduled anywhere**, and reminders of that kind do not survive
+  between sessions, so nothing would have happened. Saying so here rather than
+  quietly rescheduling, because the promise in "Standing promises" below was
+  broken once and the way it broke matters.
+
+  Measured on 21 Aug against the SEC's own bulk data, two quarter transitions,
+  ~8,500 funds each: of 79 funds flagged, **one** was really a manager-split
+  change (a Mitsubishi UFJ entity that consolidated two managers onto its form
+  and appeared to grow every position by 114%). Cantillon is correctly read as
+  a genuine withdrawal. So the gap is real but rare — about 1 in 79 — and the
+  evidence needed is already in the SEC files we download: the cover-page list
+  of included managers, which is stable across quarters. **Not yet built.**
 
 ### Done
 
