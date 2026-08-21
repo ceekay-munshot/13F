@@ -123,3 +123,55 @@ describe("the monthly build reads the archive before asking the SEC", () => {
     expect(fn.slice(0, fn.indexOf("\n}\n"))).toMatch(/catch \(err\)[\s\S]*return null/);
   });
 });
+
+describe("filings fetched directly from EDGAR", () => {
+  it("are keyed by quarter and accession", async () => {
+    const { edgarSourceKey } = await import("../shared/source-archive.mjs");
+    expect(edgarSourceKey("2026-06-30", "0001279936-26-000005"))
+      .toBe("source/edgar/2026-06-30/0001279936-26-000005.json.gz");
+  });
+
+  it("a quarter is superseded only once a window covering its DEADLINE is archived", async () => {
+    const { edgarQuartersSupersededBy } = await import("../shared/source-archive.mjs");
+    // A DERA window is keyed by FILING date, and a quarter's filings land in the
+    // window containing its deadline — Q2 2026 is due 14 Aug, so it is covered
+    // by 01jun2026-31aug2026 and by nothing earlier. Getting this wrong in the
+    // permissive direction deletes the only copy of a quarter.
+    const deadlines = { "2026-03-31": "2026-05-15", "2026-06-30": "2026-08-14", "2026-09-30": "2026-11-16" };
+    const covered = edgarQuartersSupersededBy(
+      new Map([["01mar2026-31may2026", { start: "2026-03-01" }], ["01jun2026-31aug2026", { start: "2026-06-01" }]]),
+      deadlines,
+    );
+    expect([...covered].sort()).toEqual(["2026-03-31", "2026-06-30"]);
+  });
+
+  it("the CURRENT quarter is not superseded before its window is published", async () => {
+    const { edgarQuartersSupersededBy } = await import("../shared/source-archive.mjs");
+    // This is the case that matters: for about six weeks after a deadline, the
+    // directly-fetched records are the only copy of the quarter that exists.
+    const covered = edgarQuartersSupersededBy(
+      new Map([["01mar2026-31may2026", { start: "2026-03-01" }]]),
+      { "2026-06-30": "2026-08-14" },
+    );
+    expect(covered.has("2026-06-30")).toBe(false);
+  });
+
+  it("nothing archived supersedes nothing", async () => {
+    const { edgarQuartersSupersededBy } = await import("../shared/source-archive.mjs");
+    expect(edgarQuartersSupersededBy(new Map(), { "2026-06-30": "2026-08-14" }).size).toBe(0);
+  });
+
+  it("the same-day ingest keeps the as-filed rows for the archive, then releases them", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../scripts/ingest-funds.mjs", import.meta.url), "utf8");
+    // Aggregation drops other_manager, per-row class, voting authority and FIGI.
+    // A store of record holding only the aggregate could not survive a parser
+    // fix — it could only be re-downloaded.
+    expect(src).toContain("raw: rows,");
+    expect(src).toContain("writeSourceRecord(period, full);");
+    // ...and then lets them go, or the monthly build would hold every filer's
+    // raw table in memory at once.
+    expect(src).toContain("delete full.raw;");
+    expect(src.indexOf("writeSourceRecord(period, full);")).toBeLessThan(src.indexOf("delete full.raw;"));
+  });
+});

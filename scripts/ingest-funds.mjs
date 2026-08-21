@@ -14,7 +14,8 @@
 // request per quarter rather than three per filing.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { gzipSync } from "node:zlib";
+import { dirname, join } from "node:path";
 import { SecFetcher, SEC_URLS, runJob, padCik } from "./_sec-fetch.mjs";
 import {
   parseIndexHeaders, parsePrimaryDoc, parseInfoTable, parseSubmissions,
@@ -53,6 +54,8 @@ const args = Object.fromEntries(
 );
 
 const OUT = args.out || "public/data";
+/** Where as-filed source records land, for scripts/archive-source.mjs to upload. */
+const SOURCE_OUT = args["source-out"] || null;
 const N_PERIODS = Number(args.periods || 8);
 
 /**
@@ -185,7 +188,45 @@ async function loadFiling(sec, cik, f) {
     reconciles: recon.ok,
     rawRowCount: rows.length,
     rows: held,
+    // THE AS-FILED ROWS, kept for the source archive and nothing else.
+    //
+    // aggregateHoldings collapses rows that share a CUSIP — 18.8% of keys
+    // universe-wide, because a filer may split one position across managers —
+    // and in doing so drops other_manager, per-row title of class, voting
+    // authority, FIGI, and the as-filed ordering. None of that is recoverable
+    // afterwards, so a store of record that held only the aggregate could not
+    // survive a parser fix; it could only be re-downloaded.
+    //
+    // Dropped again before the artifact is written: see where `raw` is deleted.
+    raw: rows,
   };
+}
+
+
+/**
+ * One filing, as filed, written where the archive step can pick it up.
+ *
+ * The SEC's bulk windows are keyed by FILING date and publish about a month
+ * after the window closes, so for roughly six weeks after a deadline the
+ * directly-fetched filings are the ONLY copy of that quarter. These records
+ * close that gap. Once the covering window is archived they are a duplicate of
+ * something we already hold — and a worse one, since DERA carries every filer
+ * and this carries only the funds this job reached — so they are prunable then.
+ *
+ * Gzipped: this is never served to anyone, so there is no double-encoding
+ * hazard, and JSON of this shape compresses about five to one.
+ */
+function writeSourceRecord(period, filing) {
+  if (!SOURCE_OUT) return;
+  try {
+    const dir = join(SOURCE_OUT, period);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${filing.accession_number}.json.gz`), gzipSync(JSON.stringify(filing)));
+  } catch (err) {
+    // Never costs an ingest. The bulk window will carry this filing within
+    // weeks regardless, and the run's real work is unaffected.
+    log(`  could not archive source for ${filing.accession_number}: ${err.message}`);
+  }
 }
 
 /** Shape one aggregated holding + its QoQ change into an artifact row. */
@@ -320,6 +361,11 @@ await runJob(async () => {
         for (const f of filings) {
           try {
             const full = await loadFiling(sec, cik, f);
+            // Archive the as-filed record BEFORE anything is derived from it,
+            // then let the rows go: holding every filer's raw table in memory is
+            // what forces --max-old-space-size on the monthly build.
+            writeSourceRecord(period, full);
+            delete full.raw;
             parsed.push(full);
             if (full.acceptance_datetime > latestAcceptance) latestAcceptance = full.acceptance_datetime;
             if (full.quarantined) {

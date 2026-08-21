@@ -258,6 +258,7 @@ jobs:
           SEC_RATE_LIMIT_RPS: '3'
         run: |
           node scripts/ingest-funds.mjs \
+            --source-out=.build/source \
             --periods=${{ github.event.inputs.periods || '2' }} \
             --funds-file=.cache/priority.txt \
             --budget-seconds=600 \
@@ -319,6 +320,7 @@ jobs:
         # and whatever it did not reach stays queued in the cursor.
         run: |
           node scripts/ingest-funds.mjs \
+            --source-out=.build/source \
             --periods=${{ github.event.inputs.periods || '2' }} \
             --funds-file=.cache/rest.txt \
             --budget-seconds=2100 \
@@ -365,6 +367,27 @@ jobs:
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
         run: node scripts/regression-gate.mjs --origin="$SITE" --out=.cache/before.json
+
+      # KEEP THE FILINGS THIS RUN FETCHED.
+      #
+      # The SEC's bulk windows are keyed by FILING date and publish about a month
+      # after the window closes, so for roughly six weeks after a deadline these
+      # directly-fetched filings are the ONLY copy of that quarter. Archived as
+      # filed, before anything is derived from them.
+      #
+      # continue-on-error: the bulk window will carry these filings within weeks
+      # regardless, so a failed archive must never cost an ingest.
+      - name: Keep the filings this run fetched
+        if: steps.plan.outputs.blocked != 'true'
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+        run: |
+          [ -d .build/source ] || { echo "nothing fetched this run"; exit 0; }
+          node scripts/archive-source.mjs --sync-edgar=.build/source
 
       - name: Publish to R2
         if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.rest != '0'

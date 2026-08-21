@@ -37,12 +37,12 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { SOURCE_PREFIX, windowsFrom, windowsToDrop } from "../shared/source-archive.mjs";
+import { SOURCE_PREFIX, EDGAR_PREFIX, windowsFrom, windowsToDrop, edgarSourceKey, edgarQuartersSupersededBy } from "../shared/source-archive.mjs";
 import { createR2 } from "./_r2.mjs";
 import { createRegister } from "../shared/unfinished.mjs";
 import { listEntries } from "./_unzip.mjs";
 import { SecFetcher } from "./_sec-fetch.mjs";
-import { deraWindowFor } from "../shared/calendar.mjs";
+import { deraWindowFor, filingDeadline } from "../shared/calendar.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -78,7 +78,7 @@ const archived = await r2.list(SOURCE_PREFIX);
 const windows = windowsFrom(archived);
 
 // --- list ------------------------------------------------------------------
-if (args.list || (!args.sync && !args.verify && !args.prune)) {
+if (args.list || (!args.sync && !args["sync-edgar"] && !args.fetch && !args.verify && !args.prune && !args["prune-edgar"])) {
   if (!windows.size) {
     console.log(`nothing archived yet under ${SOURCE_PREFIX}`);
   } else {
@@ -226,6 +226,66 @@ if (args.verify) {
   }
   console.log(`  all four tables the build needs are present.`);
   console.log(`\nthe dashboard could be rebuilt from this without asking the SEC for anything.`);
+}
+
+// --- sync-edgar -------------------------------------------------------------
+//
+// The directly-fetched filings the same-day job archived to disk. These close
+// the six-week gap between a filing deadline and the SEC publishing the bulk
+// window that covers it — for that stretch they are the ONLY copy of the
+// quarter.
+if (args["sync-edgar"]) {
+  const dir = String(args["sync-edgar"]);
+  let sent = 0, already = 0, bytes = 0;
+  const periods = existsSync(dir) ? readdirSync(dir) : [];
+  for (const period of periods) {
+    const pdir = join(dir, period);
+    if (!statSync(pdir).isDirectory()) continue;
+    for (const file of readdirSync(pdir)) {
+      const accession = file.replace(/\.json\.gz$/, "");
+      const key = edgarSourceKey(period, accession);
+      const size = statSync(join(pdir, file)).size;
+      if (archived.get(key) === size) { already++; continue; }
+      if (DRY) { console.log(`  would archive filing ${period}/${accession}`); sent++; continue; }
+      await r2.put(key, readFileSync(join(pdir, file)));
+      sent++; bytes += size;
+    }
+  }
+  console.log(`\n${sent} filing record(s) archived${already ? `, ${already} already held` : ""}` +
+              `${bytes ? ` · ${mb(bytes)}` : ""}`);
+}
+
+// --- prune-edgar ------------------------------------------------------------
+//
+// Drop a quarter's directly-fetched records ONLY once the bulk window covering
+// it is archived. At that point they duplicate something we already hold, and a
+// worse copy of it: DERA carries every filer, these carry only the funds the
+// same-day job reached.
+//
+// A DERA window is keyed by FILING date and a quarter's filings land in the
+// window containing its DEADLINE, so getting this wrong in the permissive
+// direction deletes the only copy of a quarter.
+if (args["prune-edgar"]) {
+  const held = await r2.list(EDGAR_PREFIX);
+  const quarters = new Set();
+  for (const key of held.keys()) {
+    const m = new RegExp(`^${EDGAR_PREFIX}(\\d{4}-\\d{2}-\\d{2})/`).exec(key);
+    if (m) quarters.add(m[1]);
+  }
+  const deadlines = {};
+  for (const q of quarters) deadlines[q] = filingDeadline(q);
+  const superseded = edgarQuartersSupersededBy(windowsFrom(archived), deadlines);
+
+  for (const q of [...quarters].sort()) {
+    const keys = [...held.keys()].filter((k) => k.startsWith(`${EDGAR_PREFIX}${q}/`));
+    if (!superseded.has(q)) {
+      console.log(`  keeping ${q}: ${keys.length} filing(s) — no archived bulk window covers its ${deadlines[q]} deadline yet`);
+      continue;
+    }
+    if (DRY) { console.log(`  would drop ${q}: ${keys.length} filing(s), now covered by an archived window`); continue; }
+    for (const k of keys) await r2.del(k);
+    console.log(`  dropped ${q}: ${keys.length} filing(s) — the bulk window covering it is archived`);
+  }
 }
 
 // --- prune -----------------------------------------------------------------
