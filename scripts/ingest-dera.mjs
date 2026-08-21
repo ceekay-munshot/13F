@@ -36,7 +36,7 @@ import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
 import { SERIES_FIELDS } from "../shared/series-fields.mjs";
-import { fundQuarter, seriesEntry } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow } from "../shared/emit.mjs";
 import { currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel, deraWindowFor } from "../shared/calendar.mjs";
 import { paths, envelope, manifest, encodeHoldings, buildIdFrom, ROWS_PER_PAGE } from "../shared/artifacts.mjs";
 import { ArtifactWriter, writeHeadersFile } from "./_artifact-writer.mjs";
@@ -571,15 +571,18 @@ await runJob(async () => {
       if (rawFilings.length) {
         if (!filingsByPeriod.has(period)) filingsByPeriod.set(period, []);
         for (const f of rawFilings) {
-          filingsByPeriod.get(period).push({
-            cik: fund.cik, fund: fund.name, code: null, accession: f.accession,
-            form: f.form, filed: f.filing_date, accepted: f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
-            positions: f.held?.length ?? 0, rawRows: f.table_entry_total ?? 0,
-            value: f.summary?.value_long_usd ?? null,
-            amendment: f.is_amendment ? (f.amendment_type || "AMENDED") : null,
-            amendmentNo: f.amendment_no, confidentialOmitted: Boolean(f.is_confidential_omitted),
-            reconciles: f.reconciles ?? null, quarantined: Boolean(f.quarantined), notice: Boolean(f.notice),
-          });
+          filingsByPeriod.get(period).push(filingRow({
+            cik: fund.cik, name: fund.name,
+            filing: f,
+            summary: f.summary,
+            // DERA's SUBMISSION.tsv carries a filing DATE and no acceptance
+            // time, so this is noon UTC on that date — a stand-in, not a fact.
+            // It is why every filing a fund made on one day ties in the fold and
+            // the ordering falls back to accession, which is the filing agent's
+            // prefix rather than anything chronological. The same-day path has
+            // the real timestamp; where both have seen a filing, that one wins.
+            acceptedAt: f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
+          }));
         }
       }
 

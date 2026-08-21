@@ -21,7 +21,7 @@ import {
   decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor,
 } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
-import { fundQuarter, seriesEntry } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow } from "../shared/emit.mjs";
 import {
   currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel,
 } from "../shared/calendar.mjs";
@@ -340,19 +340,13 @@ await runJob(async () => {
         for (const p of parsed) {
           const bucket = filingsByPeriod.get(period);
           if (!bucket) continue;
-          bucket.push({
-            cik, fund: displayName, code: fund.code,
-            accession: p.accession_number, form: p.form_type,
-            filed: p.filing_date, accepted: p.acceptance_datetime,
-            positions: p.notice ? 0 : p.rows.length, rawRows: p.rawRowCount ?? 0,
-            value: p.notice ? null : p.rows.reduce((a, h) => a + h.value_usd, 0),
-            amendment: p.is_amendment ? (p.amendment_type || "AMENDED") : null,
-            amendmentNo: p.amendment_no ?? null,
-            confidentialOmitted: Boolean(p.is_confidential_omitted),
-            reconciles: p.reconciles ?? null,
-            quarantined: Boolean(p.quarantined),
-            notice: p.notice,
-          });
+          bucket.push(filingRow({
+            cik, name: displayName, code: fund.code,
+            filing: { ...p, form: p.form_type, accession: p.accession_number,
+                      table_entry_total: p.rawRowCount, rows: p.rows },
+            summary: p.notice ? null : { value_long_usd: p.rows.reduce((a, h) => a + h.value_usd, 0) },
+            acceptedAt: p.acceptance_datetime,
+          }));
         }
 
         if (!foldable.length) {

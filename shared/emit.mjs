@@ -172,11 +172,24 @@ export function fundQuarter({
     structuralDetail: structural?.detail ?? null,
     confidentialOmitted: Boolean(cur.confidentialOmitted),
     foldWarnings: cur.warnings ?? [],
+    // KEY ORDER IS PART OF THE CONTRACT, and this pair is why.
+    //
+    // JSON.stringify emits keys in insertion order, so reordering these two
+    // rewrites every fund-period artifact byte-for-byte while changing nothing.
+    // The two ingest paths had them in OPPOSITE orders — another way the copies
+    // had drifted — so artifacts were never byte-comparable depending on which
+    // wrote them. The monthly build's order is kept because it wrote 33,935 of
+    // the 44,000 objects; matching it makes this refactor a true no-op.
+    //
+    // It happens not to cost an upload here — the publish skips by size and the
+    // sizes are equal to the byte — but Phase 4 asserts a rebuild reproduces the
+    // site exactly, and that assertion is only meaningful if field order is
+    // stable. Do not reorder these to taste.
+    accessions: cur.accessions ?? [],
     // How many exits were NOT emitted because the filer withheld positions.
     // Shown, not swallowed: a shorter list with no explanation reads as "they
     // sold nothing", which is a different wrong answer.
     exitsWithheld,
-    accessions: cur.accessions ?? [],
     ...cur.summary,
     reportedTotalUsd: cur.reported_total_usd,
     ...acts,
@@ -247,23 +260,26 @@ export function seriesEntry({ period, cur, meta, pages, hasHoldings, positions }
  * filer declared, because the point of showing it is to compare against what we
  * parsed.
  */
-export function filingRow({ cik, name, filing, summary, acceptedAt }) {
+export function filingRow({ cik, name, code = null, filing, summary, acceptedAt }) {
+  const notice = Boolean(filing.notice);
   return {
     cik,
     fund: name,
-    code: null,
+    code,
     accession: filing.accession ?? filing.accession_number,
     form: filing.form,
     filed: filing.filing_date ?? null,
     accepted: acceptedAt ?? null,
-    positions: filing.held?.length ?? filing.rows?.length ?? 0,
-    rawRows: filing.table_entry_total ?? 0,
-    value: summary?.value_long_usd ?? null,
+    // A notice carries no information table at all, so both are zero rather
+    // than absent — "0 positions" is the true answer, not a missing one.
+    positions: notice ? 0 : (filing.held?.length ?? filing.rows?.length ?? 0),
+    rawRows: filing.table_entry_total ?? filing.rawRowCount ?? 0,
+    value: notice ? null : (summary?.value_long_usd ?? null),
     amendment: filing.is_amendment ? (filing.amendment_type || "AMENDED") : null,
     amendmentNo: filing.amendment_no ?? null,
     confidentialOmitted: Boolean(filing.is_confidential_omitted),
     reconciles: filing.reconciles ?? null,
     quarantined: Boolean(filing.quarantined),
-    notice: Boolean(filing.notice),
+    notice,
   };
 }
