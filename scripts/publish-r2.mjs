@@ -404,15 +404,49 @@ async function prune() {
       thin.push({ period, localN, remoteN });
     }
   }
+  // A THIN QUARTER IS ONLY A FAULT IF THE SOURCE FOR IT EXISTS.
+  //
+  // The SEC publishes a bulk window about a month after it closes, and a
+  // quarter's filings land in the window containing its DEADLINE. So for roughly
+  // six weeks after each deadline the archive genuinely cannot cover that
+  // quarter, and a thin build is the calendar rather than a fault.
+  //
+  // Reported either way — nothing is pruned either way — but only the case where
+  // the source SHOULD have been there ends the run red. An alarm that fires for
+  // six weeks out of every thirteen is one nobody reads by December.
+  let archivedWindows = new Map();
+  if (thin.length) {
+    try {
+      const { windowsFrom } = await import("../shared/source-archive.mjs");
+      archivedWindows = windowsFrom(await r2.list("source/dera/"));
+    } catch (err) {
+      console.log(`  could not read the source archive to explain thin quarters (${err.message})`);
+    }
+  }
+  const { edgarQuartersSupersededBy } = thin.length
+    ? await import("../shared/source-archive.mjs")
+    : { edgarQuartersSupersededBy: () => new Set() };
+  const { filingDeadline } = thin.length
+    ? await import("../shared/calendar.mjs")
+    : { filingDeadline: () => null };
+
+  const deadlines = Object.fromEntries(thin.map((t) => [t.period, filingDeadline(t.period)]));
+  const sourced = edgarQuartersSupersededBy(archivedWindows, deadlines);
+
   for (const t of thin) {
+    const expected = !sourced.has(t.period);
     console.log(
       `  not pruning ${t.period}: this run produced ${t.localN} object(s) for it against ` +
-      `${t.remoteN} published. A partial build, not a retention roll-off.`,
+      `${t.remoteN} published. ` +
+      (expected
+        ? `No archived bulk window covers its ${deadlines[t.period]} deadline yet, so a thin build is the calendar.`
+        : `A partial build, not a retention roll-off.`),
     );
+    if (expected) continue;
     unfinished.note(
-      `${t.period} was covered by only ${t.localN} of the ${t.remoteN} objects published for it, so nothing ` +
-      `for that quarter was pruned. Nothing is lost — but the build is missing data it should have had, and ` +
-      `a run that quietly pruned here would have deleted it.`,
+      `${t.period} was covered by only ${t.localN} of the ${t.remoteN} objects published for it, and the bulk ` +
+      `window covering its ${deadlines[t.period]} deadline IS archived — so the build should have had this data ` +
+      `and did not. Nothing was pruned, so nothing is lost, but a run that pruned here would have deleted it.`,
     );
   }
 

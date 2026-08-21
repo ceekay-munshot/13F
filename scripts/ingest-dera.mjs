@@ -808,10 +808,34 @@ await runJob(async () => {
   }));
 
   const reported = [...filingsByPeriod.keys()].sort().reverse();
+
+  // HOW MANY MANAGERS WE HOLD THAT QUARTER FOR — not how many filed.
+  //
+  // This counted distinct CIKs in the filings FEED, which is the number of
+  // managers who filed. That is what `known` means, and the dashboard compares
+  // the two to decide whether a quarter is still loading: `known > funds` shows
+  // "still being read", `known === funds` shows "has not filed" on any manager
+  // without data.
+  //
+  // Measured on the live site the day this was found: the feed-derived count
+  // said 10,648 managers held Q1 2026 while 8,531 actually had it. Every fund
+  // page for the other 2,117 said the manager had not filed, and the site
+  // agreed with itself that everything was loaded.
+  //
+  // Counted from the series each fund actually got, which is the only place the
+  // answer exists.
+  const heldByPeriod = new Map();
+  for (const row of allSeries) {
+    for (const t of row.s ?? []) {
+      const period = t[0];
+      if (period) heldByPeriod.set(period, (heldByPeriod.get(period) ?? 0) + 1);
+    }
+  }
+
   const periodMeta = reported.map((p) => ({
     period: p, label: periodLabel(p), deadline: filingDeadline(p),
     filings: filingsByPeriod.get(p).length,
-    funds: new Set(filingsByPeriod.get(p).map((f) => f.cik)).size,
+    funds: heldByPeriod.get(p) ?? 0,
   }));
   writer.write(paths.periods(), envelope({ kind: "periods", buildId: null, data: periodMeta }));
 

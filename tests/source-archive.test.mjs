@@ -217,3 +217,35 @@ describe("a quarter's coverage may not shrink — the 3 September event", () => 
     expect(floor).toBeLessThanOrEqual(1);
   });
 });
+
+describe("a thin quarter is only a fault if the source exists", () => {
+  const src = readFileSync(new URL("../scripts/publish-r2.mjs", import.meta.url), "utf8");
+
+  it("nothing is pruned either way", () => {
+    // The rail is unconditional. What is conditional is only whether the run
+    // ends red, and the two must not be confused.
+    const at = src.indexOf("A THIN QUARTER IS ONLY A FAULT");
+    expect(at).toBeGreaterThan(-1);
+    expect(src.indexOf("builtPeriods.delete(period)")).toBeLessThan(at);
+  });
+
+  it("an unsourced quarter is reported but does not end the run red", () => {
+    const at = src.indexOf("if (expected) continue;");
+    expect(at).toBeGreaterThan(-1);
+    // ...and the note it skips is the one that would have made it red.
+    expect(src.slice(at, at + 400)).toContain("unfinished.note(");
+  });
+
+  it("a quarter whose window IS archived still ends the run red", () => {
+    const at = src.indexOf("and the bulk ");
+    expect(src.slice(at - 400, at + 300)).toContain("should have had this data");
+  });
+
+  it("the calendar decides, using the quarter's deadline", () => {
+    // The SEC publishes a window about a month after it closes, and a quarter's
+    // filings land in the window containing its DEADLINE. An alarm that fires
+    // for six weeks out of every thirteen is one nobody reads by December.
+    expect(src).toContain("edgarQuartersSupersededBy");
+    expect(src).toContain("filingDeadline(t.period)");
+  });
+});
