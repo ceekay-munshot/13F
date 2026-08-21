@@ -77,6 +77,29 @@ they send to the SEC (the US financial regulator) every three months.
      filed on 11 Aug and had not reached us — which is now fixed. Every client
      fund's total agrees with that fund's own filing to the dollar.
 
+- **21 Aug 2026 (later)** — **why it kept breaking, and the fix for it.** There
+  was no copy of the SEC's files anywhere. Every month the pipeline downloaded
+  them, built the dashboard, and threw the source away — so the dashboard's own
+  files were the only copy of the data. That is why every update had to
+  hand-preserve what was already there, why one missed case on 20 Aug wiped a
+  quarter from every fund, and why nothing could be repaired without
+  re-downloading. It is also why the site said "10,765 of 10,765 managers" while
+  8,295 pages said the manager had not filed: counts could only ever be allowed
+  to go up, and a number that can only go up can only lie upward.
+
+  The agreed fix is to keep the SEC's files and rebuild the dashboard from them,
+  so it can be thrown away and remade at will. Four steps; the first is done.
+
+  **Done today:** 7,449 fund pages that wrongly said "has not filed for Q2 2026"
+  now show it. Rebuilt from data already in storage — no SEC downloads. Q2 2026
+  went from 987 managers to 8,428. Every quarter's count is now counted rather
+  than assumed, and all four other quarters turned out to be over-stated by about
+  2,100 each. All 14 client funds still agree with their own SEC filings.
+
+  **Still to do:** start keeping the SEC files (1 day), move to a single build
+  step so the two pipelines cannot disagree (3 days), and a monthly drill that
+  deletes the dashboard and rebuilds it to prove it can be (1 day).
+
 ## Standing promises
 
 - If something is deferred, SCHEDULE IT. The owner should never have to carry a
