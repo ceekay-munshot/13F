@@ -879,7 +879,10 @@ await runJob(async () => {
     }));
   }
 
-  const buildId = buildIdFrom(latestAcceptance, used.slug);
+  // Derived from what was BUILT — see ArtifactWriter.contentId. Deriving it
+  // from the input meant a rebuild reused cache keys, and a returning visitor
+  // kept whatever had been cached under that key a year earlier.
+  const buildId = buildIdFrom(writer.contentId(), used.slug);
   writeFileSync(`${OUT}/manifest.json`, JSON.stringify(manifest({
     buildId, periods: periodMeta, funds: {},
     coverage: { from: reported.at(-1), to: reported[0], holdingsFrom: reported.at(-1) },

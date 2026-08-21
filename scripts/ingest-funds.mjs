@@ -609,7 +609,10 @@ await runJob(async () => {
   // DIFFERENT funds must not produce the SAME id — otherwise a fund republished
   // by the second run keeps serving the first run's copy from cache forever.
   // Counting alone collided exactly like that once the run size stopped varying.
-  const buildId = buildIdFrom(latestAcceptance, `${completed.length}|${completed.join(",")}`);
+  // Derived from what was BUILT — see ArtifactWriter.contentId. Deriving it
+  // from the input meant a rebuild reused cache keys, and a returning visitor
+  // kept whatever had been cached under that key a year earlier.
+  const buildId = buildIdFrom(writer.contentId(), `${completed.length}`);
   const mf = manifest({
     buildId,
     periods: periodMeta,

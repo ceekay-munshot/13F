@@ -6,6 +6,7 @@
 
 import { mkdirSync, writeFileSync, existsSync, rmSync, statSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 
 export class ArtifactWriter {
@@ -14,6 +15,8 @@ export class ArtifactWriter {
     this.quiet = quiet;
     this.written = [];
     this.bytes = 0;
+    /** path -> digest, for contentId(). */
+    this.digests = new Map();
   }
 
   /**
@@ -27,12 +30,45 @@ export class ArtifactWriter {
     const json = JSON.stringify(obj);
     const body = Buffer.from(json);
     writeFileSync(full, body);
+    this.digests.set(path, createHash("sha256").update(body).digest("hex"));
     this.written.push({ path, bytes: body.length, raw: json.length });
     this.bytes += body.length;
     if (!this.quiet && body.length > 512 * 1024) {
       console.log(`    large artifact ${path}: ${(body.length / 1024).toFixed(0)}KB`);
     }
     return body.length;
+  }
+
+  /**
+   * A build id derived from what was BUILT, not from what was read.
+   *
+   * -------------------------------------------------------------------------
+   * THE CACHE KEY MUST CHANGE WHEN THE CONTENT DOES
+   * -------------------------------------------------------------------------
+   * buildId was `buildIdFrom(latestAcceptance, windowSlug)` — a function of the
+   * INPUT. Rebuilding the same windows therefore produced the same id, and since
+   * artifacts are served `immutable, max-age=31536000` and busted only by the
+   * `?b={buildId}` the manifest hands out, every returning visitor was served
+   * whatever had been cached at that key a year earlier.
+   *
+   * Caught in production: a build ran after the 8,295-fund repair, the id went
+   * BACKWARDS to a value used before it, and a fund whose R2 object correctly
+   * held five quarters was served the four-quarter copy cached under the old id.
+   * The data was right and the dashboard was wrong.
+   *
+   * Hashing the output keeps both properties: the same input still produces the
+   * same tree and so the same id — which is what lets a rebuild be checked — but
+   * any change in content, from any cause, produces a new one.
+   *
+   * Sorted before hashing, so write ORDER cannot change the id while the bytes
+   * stay the same.
+   */
+  contentId() {
+    const h = createHash("sha256");
+    for (const path of [...this.digests.keys()].sort()) {
+      h.update(path).update("\0").update(this.digests.get(path)).update("\n");
+    }
+    return h.digest("hex");
   }
 
   clear(subdir = "") {
