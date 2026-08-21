@@ -431,8 +431,14 @@ jobs:
       # mapping are all correct at once.
       #
       # 2 SEC requests per fund, ~27 in total.
+      #
+      # Deliberately NOT gated on this run having ingested anything. A run that
+      # decides it has nothing to do is exactly the run that hides a gap: the
+      # cursor said it was finished for ten days while Nuveen's 11 Aug filing
+      # was missing from the dashboard, and no check looked, because no work had
+      # happened. This one asks EDGAR regardless.
       - name: The SEC agrees with our numbers
-        if: steps.plan.outputs.blocked != 'true' && steps.plan.outputs.selected != '0'
+        if: steps.plan.outputs.blocked != 'true'
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
