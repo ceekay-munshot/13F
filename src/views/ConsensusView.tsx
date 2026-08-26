@@ -15,7 +15,7 @@ import { buildConsensus, sortConsensus, buildAnchor, type ConsensusRow, type Fun
 import { TickerDrawer } from "../components/TickerDrawer";
 import { downloadCsv, type CsvColumn } from "../lib/csv";
 import {
-  loadFundPeriodAll, loadSectorMap, loadPeriodSectors, MissingArtifactError,
+  loadFundPeriodAll, loadFundSummary, loadSectorMap, loadPeriodSectors, MissingArtifactError,
   type Manifest, type Filer, type SectorFlow,
 } from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
@@ -473,7 +473,30 @@ export function ConsensusView({
             // sentence about the manager that was actually about our network.
             const notFiled = e instanceof MissingArtifactError;
             if (!notFiled) failed.push(f.name);
-            inputs[i] = { ...blank, missing: true, failed: !notFiled };
+            // A THIRD REASON THE COLUMN IS BLANK, and it is the manager's own
+            // statement rather than our inference.
+            //
+            // There is no fund-period artifact for a quarter answered with a
+            // notice — correctly, since a notice reports no positions — so it
+            // arrives here as an ordinary missing artifact and was described as
+            // "filed but not read yet". Pershing Square filed on the deadline and
+            // the matrix said we had not got to it.
+            //
+            // Only for funds that are ALREADY absent, so the common path costs
+            // nothing: this is one extra read for none of the funds on a normal
+            // quarter and one or two during a corporate change.
+            let notice = null;
+            if (notFiled) {
+              try {
+                const sum = await loadFundSummary(f.cik, mf);
+                const n = sum.notices?.find((x) => x.period === period);
+                if (n) notice = { managers: n.managers.map((m) => m.name || m.cik || "").filter(Boolean) };
+              } catch {
+                // Best-effort. Failing to find out WHY a column is blank must
+                // never make it blank for a second reason.
+              }
+            }
+            inputs[i] = { ...blank, missing: true, failed: !notFiled, notice };
           }
         }),
       );
@@ -639,7 +662,12 @@ export function ConsensusView({
   // manager and the sentence has to say so.
   const periodRow = mf.periods.find((p) => p.period === period);
   const stillIngesting = (periodRow?.known ?? 0) > (periodRow?.funds ?? 0);
-  const absent = (funds ?? []).filter((f) => f.missing && !f.failed);
+  const allAbsent = (funds ?? []).filter((f) => f.missing && !f.failed);
+  // Notices come out first: they are a fact from the filing, and the two buckets
+  // below are guesses from a backlog count. A guess must not describe a fund we
+  // have the manager's own answer for.
+  const noticed = allAbsent.filter((f) => f.notice);
+  const absent = allAbsent.filter((f) => !f.notice);
   const notFiled = stillIngesting ? [] : absent;
   const notRead = stillIngesting ? absent : [];
   const suppressed = (funds ?? []).filter((f) => f.suppressed);
@@ -652,12 +680,14 @@ export function ConsensusView({
           value={loading ? "…" : `${present.length} of ${funds?.length ?? 0}`}
           scope={
             failedFunds.length
-              ? `${failedFunds.length} could not be loaded${absent.length ? `, ${absent.length} absent` : ""}`
+              ? `${failedFunds.length} could not be loaded${allAbsent.length ? `, ${allAbsent.length} absent` : ""}`
               : notRead.length
                 ? `${notRead.length} filed but not read yet`
                 : notFiled.length
                   ? `${notFiled.length} not yet filed`
-                  : "All tracked funds"
+                  : noticed.length
+                    ? `${noticed.length} reported by another manager`
+                    : "All tracked funds"
           }
         />
         <Kpi
@@ -775,11 +805,12 @@ export function ConsensusView({
             // funds than the column headers imply — the only one of the three
             // that makes the numbers themselves suspect, and the one that used
             // to live at the bottom of the page in the provenance card.
-            notFiled.length || notRead.length || suppressed.length || failedFunds.length ? (
+            notFiled.length || notRead.length || noticed.length || suppressed.length || failedFunds.length ? (
               <CaveatStrip>
                 {failedFunds.length > 0 && `${failedFunds.join(", ")} could not be loaded — every figure here is computed over the ${present.length} funds that did. Refresh to try again. `}
                 {notFiled.length > 0 && `${notFiled.map((f) => f.name).join(", ")} ${notFiled.length === 1 ? "has" : "have"} not filed for ${periodLabel(period)}. `}
                 {notRead.length > 0 && `${notRead.map((f) => f.name).join(", ")} ${notRead.length === 1 ? "has" : "have"} filed for ${periodLabel(period)} but ${notRead.length === 1 ? "is" : "are"} still queued to be read — the column fills in shortly, and ${notRead.length === 1 ? "it is" : "they are"} not counted in the consensus until then. `}
+                {noticed.length > 0 && `${noticed.map((f) => f.name).join(", ")} filed a notice for ${periodLabel(period)}: ${noticed.length === 1 ? "its" : "their"} positions are reported by ${noticed.flatMap((f) => f.notice?.managers ?? []).join(", ") || "another manager"}, so ${noticed.length === 1 ? "the column is" : "those columns are"} blank here. Open ${noticed.length === 1 ? "that manager" : "those managers"} in the Fund view to see the holdings. `}
                 {suppressed.length > 0 && `${suppressed.map((f) => f.name).join(", ")} filed a structural change, so ${suppressed.length === 1 ? "its" : "their"} moves are excluded from group totals.`}
               </CaveatStrip>
             ) : undefined

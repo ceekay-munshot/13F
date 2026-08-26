@@ -23,6 +23,19 @@ export interface FundInput {
   /** True when this fund contributes no holdings to the period, for any reason. */
   missing: boolean;
   /**
+   * `missing` because the manager filed a NOTICE — another manager reports these
+   * positions for this quarter.
+   *
+   * The third reason a column is blank, and the only one that is a statement the
+   * manager made rather than one we inferred. Without it a notice is reported as
+   * "filed but not read yet" (when a backlog exists) or "has not filed" (when it
+   * does not), and both are wrong about a fund that filed on the deadline.
+   *
+   * Carries the successor's name where the filing gave one, so the caveat can
+   * say where the holdings went rather than only that they are elsewhere.
+   */
+  notice?: { managers: string[] } | null;
+  /**
    * `missing` because the LOAD FAILED, not because the manager did not file.
    *
    * These are two completely different statements — "they have not filed yet",
