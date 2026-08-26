@@ -83,6 +83,95 @@ export function EmptyState({ icon = "▦", message, hint }: { icon?: string; mes
   );
 }
 
+/**
+ * A quarter the manager answered with a NOTICE.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS ITS OWN STATE AND NOT AN EmptyState WITH DIFFERENT WORDS
+ * ---------------------------------------------------------------------------
+ * Because it is not empty. The manager filed, on time, and the filing says
+ * something specific: another manager reports this book now. The page used to
+ * have only two explanations for a quarter with no positions — "they have not
+ * filed" and "we have not read it yet" — and for a notice both are false. A
+ * client asked why Pershing Square was missing for 2026-Q2; it was not missing,
+ * it had moved to its parent company, and the filing had said so since the day
+ * it was filed.
+ *
+ * So this state's job is to answer the question the reader actually has, which
+ * is "where did it go" — and then to take them there in one click. The successor
+ * is the only action, and it is a real button rather than a line of text,
+ * because the alternative is asking a non-technical reader to search a
+ * ten-thousand-manager list for a name they have just been shown.
+ *
+ * Informational blue, never amber or red. Nothing here is wrong.
+ */
+export function NoticeState({
+  message, hint, note, managers = [], onFund,
+}: {
+  message: string;
+  hint?: string;
+  /** The filer's own words from the cover page, quoted rather than paraphrased. */
+  note?: string | null;
+  managers?: { cik: string | null; name: string | null }[];
+  onFund?: (cik: string) => void;
+}) {
+  return (
+    <div style={centered}>
+      <div
+        style={{
+          width: 36, height: 36, borderRadius: 10, background: t.primaryLight,
+          color: t.primary, display: "grid", placeItems: "center", fontSize: 16,
+        }}
+      >
+        ⇢
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: t.textSecondary }}>{message}</div>
+      {hint && <div style={{ fontSize: 12, color: t.textHint, maxWidth: 360, lineHeight: 1.5 }}>{hint}</div>}
+      {note && (
+        /* The filer's sentence, marked as theirs. Paraphrasing it would put our
+           words in their mouth about a corporate change we did not witness. */
+        <div
+          style={{
+            fontSize: 11.5, color: t.textMuted, maxWidth: 360, lineHeight: 1.5,
+            fontStyle: "italic", borderLeft: `2px solid ${t.primaryBorder}`,
+            paddingLeft: 10, textAlign: "left",
+          }}
+        >
+          “{note}” — from the filing
+        </div>
+      )}
+      {managers.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginTop: 2 }}>
+          {managers.map((m, i) => {
+            const label = m.name || m.cik || "";
+            // Without a CIK there is no page to send them to, so it renders as
+            // the plain fact it is rather than a button that does nothing.
+            if (!m.cik || !onFund) {
+              return (
+                <span key={m.cik ?? `${label}-${i}`} style={{ fontSize: 12.5, fontWeight: 600, color: t.textSecondary }}>
+                  {label}
+                </span>
+              );
+            }
+            return (
+              <button
+                key={m.cik}
+                type="button"
+                className="pressable notice-jump"
+                onClick={() => onFund(m.cik!)}
+                title={`Open ${label}`}
+              >
+                <span>{label}</span>
+                <span className="notice-jump-arrow" aria-hidden="true">→</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ErrorState({ message = "Couldn't load this widget." }: { message?: string }) {
   return (
     <div style={centered}>

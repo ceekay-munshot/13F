@@ -283,3 +283,64 @@ export function filingRow({ cik, name, code = null, filing, summary, acceptedAt 
     notice,
   };
 }
+
+/**
+ * A quarter in which the manager filed only a NOTICE, as the fund page reads it.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NOT A SERIES ENTRY
+ * ---------------------------------------------------------------------------
+ * A notice has no positions, no value and no deltas, so it has nothing to put in
+ * the 23 fields of a series entry and no business in the value chart, the
+ * consensus matrix or any count of managers holding a quarter. It stays out of
+ * `series` for exactly that reason.
+ *
+ * But leaving it out of the artifact ALTOGETHER is what caused the bug this
+ * exists to fix. The fund page had two explanations for an absent quarter —
+ * "they have not filed" and "we have not read it yet" — and a notice is neither.
+ * It is the third thing: THEY FILED, WE READ IT, AND IT SAYS SOMEONE ELSE
+ * REPORTS THESE HOLDINGS. With no record of it the page picked whichever of the
+ * two wrong answers the ingest backlog happened to imply.
+ *
+ * So it goes in its own list, alongside the series and not inside it. Nothing
+ * that counts or charts quarters can pick it up by accident, and the one screen
+ * that needs to explain the gap can.
+ *
+ * `managers` is the cover page's list, which on a notice means "these report my
+ * holdings instead". Empty is normal and must stay renderable: plenty of notices
+ * name nobody, and older archived filings predate the parser reading this at all.
+ */
+export function noticeEntry({ period, filings = [] }) {
+  const nts = filings.filter((f) => f.notice);
+  // The two paths timestamp differently and both land here: the same-day path
+  // has a real acceptance time, the bulk path has only a filing DATE, which it
+  // renders as noon UTC everywhere else. Resolved the same way here so the
+  // ordering below means the same thing whichever source wrote the quarter.
+  const stamp = (f) =>
+    f.acceptance_datetime ?? (f.filing_date ? `${f.filing_date}T12:00:00.000Z` : "");
+  // Latest wins, so a manager who filed a notice and then amended it is
+  // described by the amendment — the most recent statement of where the
+  // holdings went.
+  const latest = nts
+    .slice()
+    .sort((a, b) => String(stamp(a)).localeCompare(String(stamp(b))))
+    .pop();
+  const managers = [];
+  const seen = new Set();
+  for (const m of latest?.cover_managers ?? []) {
+    // A manager with neither a CIK nor a name is not something to render.
+    if (!m || (!m.cik && !m.name)) continue;
+    const key = m.cik ?? m.name;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    managers.push({ cik: m.cik ?? null, name: m.name ?? null });
+  }
+  return {
+    period,
+    label: periodLabel(period),
+    form: latest?.form_type ?? latest?.form ?? "13F-NT",
+    acceptedAt: latest ? (stamp(latest) || null) : null,
+    managers,
+    note: latest?.additional_information ?? null,
+  };
+}

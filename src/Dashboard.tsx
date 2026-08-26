@@ -383,6 +383,7 @@ export default function Dashboard() {
                 refreshing={refreshing}
                 group={consensusFunds}
                 onPeriod={setPeriod}
+                onFund={setCik}
               />
             ) : view === "consensus" ? (
               <ConsensusView

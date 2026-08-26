@@ -13,7 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { artifactRow, exitRow, turnoverFor, fundQuarter, seriesEntry, filingRow } from "../shared/emit.mjs";
+import { artifactRow, exitRow, turnoverFor, fundQuarter, seriesEntry, filingRow, noticeEntry } from "../shared/emit.mjs";
 import { PRIOR_STATE } from "../shared/fold.mjs";
 
 const holding = (over = {}) => ({
@@ -251,5 +251,106 @@ describe("the compact series index survives a partial build", () => {
     const build = idx([{ cik: "1", s: [t("2026-06-30", 2), t("2026-03-31", 3)] }]);
     expect(mergeSeriesIndex(live, build).data[0].s.map((x) => x[0]))
       .toEqual(["2026-06-30", "2026-03-31", "2025-12-31"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A NOTICE QUARTER
+// ---------------------------------------------------------------------------
+//
+// The absence that is not an absence. A 13F-NT means "another manager reports
+// these positions" — the manager filed, on time, and said something specific.
+//
+// It was dropped from the artifact entirely, because it has no positions and no
+// value and so nothing to put in a series entry. That left the fund page with
+// two explanations for the gap — "they have not filed" and "we have not read it
+// yet" — and a notice is neither. Pershing Square Capital Management filed one
+// for 2026-Q2 naming its parent company; the page said we had not read it.
+//
+// So it is emitted BESIDE the series, never inside it: nothing that counts or
+// charts quarters can pick it up, and the one screen that must explain the gap
+// can.
+describe("a notice quarter", () => {
+  const nt = (over = {}) => ({
+    notice: true,
+    form_type: "13F-NT",
+    acceptance_datetime: "2026-08-14T16:05:00.000Z",
+    cover_managers: [{ cik: "0002026053", fileNumber: "028-25746", name: "PERSHING SQUARE INC." }],
+    additional_information: "Holdings of this reporting manager are now included in the report of its public parent company.",
+    ...over,
+  });
+
+  it("names the manager who reports the holdings instead", () => {
+    const e = noticeEntry({ period: "2026-06-30", filings: [nt()] });
+    expect(e.period).toBe("2026-06-30");
+    expect(e.label).toBe("Q2 2026");
+    expect(e.managers).toEqual([{ cik: "0002026053", name: "PERSHING SQUARE INC." }]);
+    expect(e.note).toMatch(/public parent company/);
+  });
+
+  it("ignores the holdings reports filed alongside it", () => {
+    // A quarter can hold both — a manager may file a notice and an amended
+    // holdings report. Only the notices describe a notice.
+    const e = noticeEntry({
+      period: "2026-06-30",
+      filings: [{ notice: false, form_type: "13F-HR", cover_managers: [{ cik: "0000000001", name: "WRONG" }] }, nt()],
+    });
+    expect(e.managers).toEqual([{ cik: "0002026053", name: "PERSHING SQUARE INC." }]);
+  });
+
+  it("lets the LATEST notice win, so an amended one describes the quarter", () => {
+    const e = noticeEntry({
+      period: "2026-06-30",
+      filings: [
+        nt({ acceptance_datetime: "2026-08-14T16:05:00.000Z", cover_managers: [{ cik: "0000000009", name: "FIRST ANSWER" }] }),
+        nt({ acceptance_datetime: "2026-08-20T10:00:00.000Z", cover_managers: [{ cik: "0002026053", name: "PERSHING SQUARE INC." }] }),
+      ],
+    });
+    expect(e.managers).toEqual([{ cik: "0002026053", name: "PERSHING SQUARE INC." }]);
+    expect(e.acceptedAt).toBe("2026-08-20T10:00:00.000Z");
+  });
+
+  it("orders by filing date when there is no acceptance time, as the bulk path has", () => {
+    // DERA carries a filing DATE and no acceptance timestamp. Both paths reach
+    // this function, so both have to order the same way or the same quarter is
+    // described differently depending on which build wrote it.
+    const e = noticeEntry({
+      period: "2026-06-30",
+      filings: [
+        { notice: true, form: "13F-NT", filing_date: "2026-08-20", cover_managers: [{ cik: "0002026053", name: "PERSHING SQUARE INC." }] },
+        { notice: true, form: "13F-NT", filing_date: "2026-08-14", cover_managers: [{ cik: "0000000009", name: "FIRST ANSWER" }] },
+      ],
+    });
+    expect(e.managers).toEqual([{ cik: "0002026053", name: "PERSHING SQUARE INC." }]);
+    expect(e.acceptedAt).toBe("2026-08-20T12:00:00.000Z");
+  });
+
+  it("survives a notice that names nobody", () => {
+    // Common, and it must still render: "they filed a notice" is useful on its
+    // own even when the filing does not say where the holdings went.
+    const e = noticeEntry({ period: "2026-06-30", filings: [nt({ cover_managers: [], additional_information: null })] });
+    expect(e.managers).toEqual([]);
+    expect(e.note).toBeNull();
+    expect(e.form).toBe("13F-NT");
+  });
+
+  it("survives an archived filing written before the cover page was parsed", () => {
+    // Records in the source archive predate cover_managers entirely. Empty is
+    // the honest answer; undefined would crash the map in the fund view.
+    const e = noticeEntry({ period: "2026-06-30", filings: [{ notice: true }] });
+    expect(e.managers).toEqual([]);
+    expect(e.acceptedAt).toBeNull();
+  });
+
+  it("drops a manager entry that identifies nobody, and de-duplicates the rest", () => {
+    const e = noticeEntry({
+      period: "2026-06-30",
+      filings: [nt({ cover_managers: [
+        { cik: null, name: null },
+        { cik: "0002026053", name: "PERSHING SQUARE INC." },
+        { cik: "0002026053", name: "PERSHING SQUARE INC." },
+      ] })],
+    });
+    expect(e.managers).toEqual([{ cik: "0002026053", name: "PERSHING SQUARE INC." }]);
   });
 });

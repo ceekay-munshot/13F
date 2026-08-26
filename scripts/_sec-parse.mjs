@@ -226,7 +226,7 @@ export function parsePrimaryDoc(xml) {
   const isAmendment = String(cover.isAmendment ?? "").toLowerCase() === "true";
   const amendmentType = amendInfo.amendmentType ? String(amendInfo.amendmentType).toUpperCase() : null;
 
-  // otherManagers2Info is the COVER-PAGE list of included managers, each with
+  // otherManagers2Info is the SUMMARY-PAGE list of included managers, each with
   // its own cik / form13FFileNumber / name. Distinct from the holding-level
   // `otherManager` element, which is only an INDEX STRING into this list.
   const om2 = summary.otherManagers2Info?.otherManager2;
@@ -236,6 +236,30 @@ export function parsePrimaryDoc(xml) {
     fileNumber: x.otherManager?.form13FFileNumber ?? null,
     name: x.otherManager?.name ?? null,
   }));
+
+  // ---------------------------------------------------------------------------
+  // THE COVER PAGE'S OWN LIST, WHICH IS A DIFFERENT LIST.
+  // ---------------------------------------------------------------------------
+  // `coverPage.otherManagersInfo` and `summaryPage.otherManagers2Info` are two
+  // separate elements and only the second was being read. On a 13F-HR that was
+  // survivable — the summary page is the fuller list there.
+  //
+  // On a 13F-NT it is the whole filing. A notice has NO summary page at all
+  // (Pershing Square's 2026-Q2 notice carries `<tableEntryTotal/>` empty), so
+  // `otherManagers` came back `[]` and the one fact the document exists to state
+  // — WHO REPORTS THESE HOLDINGS INSTEAD — was parsed into nothing.
+  //
+  // That is why a fund could file on time, be read correctly, and still leave the
+  // dashboard with no way to say anything about the quarter except "we have not
+  // read it yet", which was false.
+  const om1 = cover.otherManagersInfo?.otherManager;
+  const coverManagers = (Array.isArray(om1) ? om1 : om1 ? [om1] : []).map((x) => ({
+    // A cover-page entry is sometimes the bare manager and sometimes wrapped in
+    // another `otherManager` level, depending on schema version. Accept both.
+    cik: (x.cik ?? x.otherManager?.cik) ? String(x.cik ?? x.otherManager?.cik).padStart(10, "0") : null,
+    fileNumber: x.form13FFileNumber ?? x.otherManager?.form13FFileNumber ?? null,
+    name: x.name ?? x.otherManager?.name ?? null,
+  })).filter((x) => x.cik || x.name);
 
   return {
     // Present from EDGAR release 22.4.1 (2023-01-03) onward. The PRIMARY value-
@@ -264,6 +288,15 @@ export function parsePrimaryDoc(xml) {
     tableValueTotal: asInt(summary.tableValueTotal),
     otherIncludedManagersCount: asInt(summary.otherIncludedManagersCount),
     otherManagers,
+    coverManagers,
+    // Free text the filer writes on the cover page. Usually empty; on a notice it
+    // is where the reason lives ("Holdings of this reporting manager are now
+    // included in the report of its public parent company"). Trimmed and capped
+    // so a filer pasting an essay cannot bloat every artifact that carries it.
+    additionalInformation:
+      typeof cover.additionalInformation === "string" && cover.additionalInformation.trim()
+        ? cover.additionalInformation.trim().slice(0, 500)
+        : null,
   };
 }
 

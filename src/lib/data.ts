@@ -190,6 +190,25 @@ export interface FundSeriesPoint {
   hasHoldings?: boolean;
 }
 
+/**
+ * A quarter the manager answered with a NOTICE rather than a holdings report.
+ *
+ * Carried beside the series, not in it, because a notice has no positions and no
+ * value — it is a statement that somebody else reports this book. Without it the
+ * Fund view has only two ways to explain a missing quarter, "they have not
+ * filed" and "we have not read it yet", and for a notice both are wrong.
+ */
+export interface FundNotice {
+  period: string;
+  label: string;
+  form: string;
+  acceptedAt: string | null;
+  /** Who reports the holdings instead. Empty is normal — plenty name nobody. */
+  managers: { cik: string | null; name: string | null }[];
+  /** The filer's own words from the cover page, where they wrote any. */
+  note: string | null;
+}
+
 export interface FundSummary {
   cik: string;
   name: string;
@@ -197,6 +216,7 @@ export interface FundSummary {
   formerNames: unknown[];
   state: string | null;
   series: FundSeriesPoint[];
+  notices: FundNotice[];
 }
 
 export interface FilingRow {
@@ -426,12 +446,16 @@ function ascendingByPeriod<T extends { period: string }>(series: T[]): T[] {
 
 export async function loadFundSummary(cik: string, mf: Manifest): Promise<FundSummary> {
   try {
-    const env = await get<{ cik: string; name: string; code: string | null; formerNames: unknown[]; state: string | null; data: { series: FundSeriesPoint[] } }>(
+    const env = await get<{ cik: string; name: string; code: string | null; formerNames: unknown[]; state: string | null; notices?: FundNotice[]; data: { series: FundSeriesPoint[] } }>(
       `fund/${cik}/summary.json`, mf, cik,
     );
     return {
       cik: env.cik, name: env.name, code: env.code, formerNames: env.formerNames, state: env.state,
       series: ascendingByPeriod(env.data.series ?? []),
+      // Absent on every artifact written before 2026-08-26. An empty list is the
+      // honest answer for those: it means "no notice is recorded here", which
+      // leaves the Fund view saying exactly what it said before.
+      notices: env.notices ?? [],
     };
   } catch (e) {
     if (!(e instanceof MissingArtifactError)) throw e;
@@ -445,6 +469,9 @@ export async function loadFundSummary(cik: string, mf: Manifest): Promise<FundSu
     return {
       cik, name: row.name, code: null, formerNames: [], state: row.state,
       series: ascendingByPeriod(row.s.map(expandSeries)),
+      // The shared index carries totals only — it has no room for notices, and
+      // inventing one here would be worse than having none.
+      notices: [],
     };
   }
 }

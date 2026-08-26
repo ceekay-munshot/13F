@@ -53,6 +53,41 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **26 Aug 2026 — Pershing Square's page was blank, and the page was wrong about
+  why.** The dashboard said "we have not read Q2 2026 for Pershing Square yet".
+  It had read it, on the day it was filed.
+
+  What actually happened: Pershing Square Capital Management no longer reports
+  its own holdings. On 14 August it sent the SEC a **notice** — a short filing
+  that says "my positions are counted in someone else's report now" — naming
+  **Pershing Square Inc.**, the public parent company. The holdings were never
+  missing. All $19.5 billion of them were on the parent's page the whole time.
+
+  The dashboard could not say any of that, for two reasons:
+
+  1. **We threw the notice away as we read it.** A notice has no list of
+     holdings, so the pipeline skipped fetching its cover page — which is the
+     one page that names who reports the holdings instead. We now read it and
+     keep it.
+  2. **A quarter with no holdings had only two explanations, and neither fit.**
+     The page could say "they have not filed" or "we have not read it yet". A
+     notice is a third thing: they filed, we read it, and it points somewhere
+     else. It now says so, quotes the fund's own sentence from the filing, and
+     offers a button that opens the manager holding the positions.
+
+  Both pipelines were taught this, so the monthly rebuild cannot undo it, and
+  the archived copies of the SEC files carry it too.
+
+  **This is not rare.** The most recent SEC batch holds 2,045 of these notices.
+  Every one of them was a fund page that could only say "we have not read it
+  yet" about a filing already read.
+
+  **How it reaches the site:** the fix only changes a fund's page the next time
+  that fund is read, and a fund is read once and then left alone — so shipping
+  the code is not enough on its own. Pershing Square is re-read by hand right
+  after this. Every other fund in the same position catches up on its own at the
+  monthly rebuild on 3 September.
+
 - **18 Aug 2026** — the same-day ingest now fetches only what it has not already
   got, and remembers between runs where it is up to (the "cursor"). This was
   booked for Sat 15 Aug and is now shipped. It also turned out to be the fix for

@@ -36,7 +36,7 @@ import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
 import { SERIES_FIELDS } from "../shared/series-fields.mjs";
-import { fundQuarter, seriesEntry, filingRow } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow, noticeEntry } from "../shared/emit.mjs";
 import { currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel, deraWindowFor } from "../shared/calendar.mjs";
 import { paths, envelope, manifest, encodeHoldings, buildIdFrom, ROWS_PER_PAGE } from "../shared/artifacts.mjs";
 import { ArtifactWriter, writeHeadersFile } from "./_artifact-writer.mjs";
@@ -292,6 +292,10 @@ await runJob(async () => {
   const subEntry = find("SUBMISSION.TSV");
   const coverEntry = find("COVERPAGE.TSV");
   const sumEntry = find("SUMMARYPAGE.TSV");
+  // The cover page's list of other managers, one row per manager per filing.
+  // On a 13F-NT this is the succession pointer — the manager who reports these
+  // holdings instead — and it is the only place in the bulk data that says so.
+  const otherMgrEntry = find("OTHERMANAGER.TSV");
   const infoEntry = find("INFOTABLE.TSV");
   if (!subEntry || !infoEntry) throw new Error("data set is missing SUBMISSION.tsv or INFOTABLE.tsv");
 
@@ -340,6 +344,12 @@ await runJob(async () => {
       if ((pick(c, hm, "ISAMENDMENT") || "").toUpperCase() === "Y") f.is_amendment = true;
       f.amendment_type = (pick(c, hm, "AMENDMENTTYPE") || "").toUpperCase() || null;
       f.amendment_no = Number(pick(c, hm, "AMENDMENTNO")) || null;
+      // Free text the filer writes on the cover page. Almost always empty; on a
+      // notice it is where the reason lives. Capped for the same reason the
+      // same-day parser caps it — one filer's essay should not weigh on every
+      // artifact that carries this.
+      const addl = (pick(c, hm, "ADDITIONALINFORMATION") || "").trim();
+      f.additional_information = addl ? addl.slice(0, 500) : null;
     }
   }
 
@@ -356,6 +366,37 @@ await runJob(async () => {
       f.is_confidential_omitted = (pick(c, hm, "ISCONFIDENTIALOMITTED") || "").toUpperCase() === "Y";
       f.other_managers_count = Number(pick(c, hm, "OTHERINCLUDEDMANAGERSCOUNT")) || 0;
     }
+  }
+
+  // OPTIONAL BY DESIGN. Older windows may not carry the table, and a filing with
+  // no other managers simply has no row here — both are ordinary, so a missing
+  // file leaves `cover_managers` empty and nothing else changes. The fund page
+  // renders a notice with no named successor perfectly well; it just cannot say
+  // where the holdings went.
+  if (otherMgrEntry) {
+    const lines = readEntry(zip, otherMgrEntry).toString("latin1").split(/\r?\n/);
+    const hm = headerMap(lines[0]);
+    let attached = 0;
+    let withManagers = 0;
+    for (const line of lines.slice(1)) {
+      if (!line.trim()) continue;
+      const c = tsv(line);
+      const f = filings.get(pick(c, hm, "ACCESSION_NUMBER"));
+      if (!f) continue;
+      const cik = (pick(c, hm, "OTHERMANAGER_CIK") || pick(c, hm, "CIK") || "").trim();
+      const name = (pick(c, hm, "OTHERMANAGER_NAME") || pick(c, hm, "NAME") || "").trim();
+      if (!cik && !name) continue;
+      (f.cover_managers ??= []).push({
+        // Zero-padded to ten here and nowhere else, so the value can be used as
+        // an artifact path key without every consumer remembering to pad it.
+        cik: cik ? cik.padStart(10, "0") : null,
+        fileNumber: (pick(c, hm, "OTHERMANAGER_FORM13FFILENUMBER") || pick(c, hm, "FORM13FFILENUMBER") || "").trim() || null,
+        name: name || null,
+      });
+      if (f.cover_managers.length === 1) withManagers++;
+      attached++;
+    }
+    log(`OTHERMANAGER: ${attached} cover-page managers across ${withManagers} filings`);
   }
 
   // INFOTABLE is ~396 MB uncompressed, so it is decoded in chunks and yielded a
@@ -528,6 +569,9 @@ await runJob(async () => {
     droppedPartial += allPeriods.length - periodsAsc.length;
     const holdingPeriods = new Set(periodsAsc.slice(-KEEP_Q));
     const series = [];
+    // Quarters the manager answered with a notice. Beside the series, never in
+    // it — see noticeEntry() in shared/emit.mjs.
+    const noticeQuarters = [];
 
     // Fold each period, then diff against the immediately preceding CALENDAR
     // quarter — never "the previous row", which silently skips gaps.
@@ -619,6 +663,10 @@ await runJob(async () => {
       }
 
       const cur = folded.get(period);
+      // Recorded BEFORE the guard below, which is the line that drops the
+      // quarter. A notice is the one absence the fund page can explain, and only
+      // if something says it happened.
+      if (cur?.noticeOnly) noticeQuarters.push(noticeEntry({ period, filings: rawFilings }));
       // Skip on "no folded holdings", not on "is a notice". Those were the same
       // condition until noticeOnly and quarantinedOnly were split apart, and
       // testing the narrower one let a quarantined-only period fall through to
@@ -725,7 +773,9 @@ await runJob(async () => {
       if (fundStored) {
         writer.write(paths.fundSummary(fund.cik), envelope({
           kind: "fund-summary", cik: fund.cik, buildId: null,
-          extra: { name: fund.name, code: null, formerNames: [], state: fund.state },
+          extra: { name: fund.name, code: null, formerNames: [], state: fund.state,
+                   // Newest first, matching the series direction written here.
+                   notices: noticeQuarters.slice().reverse() },
           data: { series: series.slice().reverse() },
         }));
       }

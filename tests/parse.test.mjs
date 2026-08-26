@@ -233,6 +233,83 @@ describe("parsePrimaryDoc", () => {
     // would reject valid amendments.
     expect(c.confDeniedExpired).toBeNull();
   });
+
+  it("leaves the cover-page manager list empty when the filing has no such element", () => {
+    // The common case by far, and it must stay an empty array rather than
+    // undefined: the fund page maps over it.
+    expect(c.coverManagers).toEqual([]);
+    expect(c.additionalInformation).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The notice cover page
+// ---------------------------------------------------------------------------
+//
+// Verbatim from Pershing Square Capital Management's 2026-Q2 notice
+// (0001172661-26-003777), reduced to the elements this asserts on.
+//
+// The shape is the whole point: a 13F-NT has an EMPTY summary page, so the
+// summary-page manager list the parser already read comes back empty, and the
+// one fact the document exists to state lives on the COVER page instead. Read
+// only the first and a notice parses to nothing at all — which is what happened,
+// and why the dashboard told a client we had not read a filing we had.
+describe("parsePrimaryDoc on a 13F-NT notice", () => {
+  const NOTICE = `<?xml version="1.0"?>
+<edgarSubmission xmlns="http://www.sec.gov/edgar/thirteenffiler" xmlns:ns1="http://www.sec.gov/edgar/common">
+  <schemaVersion>X0202</schemaVersion>
+  <headerData><submissionType>13F-NT</submissionType>
+    <filerInfo><periodOfReport>06-30-2026</periodOfReport></filerInfo></headerData>
+  <formData>
+    <coverPage>
+      <reportCalendarOrQuarter>06-30-2026</reportCalendarOrQuarter>
+      <isAmendment>false</isAmendment>
+      <filingManager><name>Pershing Square Capital Management, L.P.</name></filingManager>
+      <reportType>13F NOTICE</reportType>
+      <otherManagersInfo>
+        <otherManager>
+          <cik>0002026053</cik>
+          <form13FFileNumber>028-25746</form13FFileNumber>
+          <name>PERSHING SQUARE INC.</name>
+        </otherManager>
+      </otherManagersInfo>
+      <additionalInformation>Holdings of this reporting manager are now included in the report of its public parent company.</additionalInformation>
+    </coverPage>
+    <summaryPage>
+      <otherIncludedManagersCount/>
+      <tableEntryTotal/>
+      <tableValueTotal/>
+    </summaryPage>
+  </formData>
+</edgarSubmission>`;
+
+  const nt = parsePrimaryDoc(NOTICE);
+
+  it("reads the cover-page manager who reports the holdings instead", () => {
+    expect(nt.coverManagers).toEqual([
+      { cik: "0002026053", fileNumber: "028-25746", name: "PERSHING SQUARE INC." },
+    ]);
+  });
+
+  it("pads the successor CIK to ten digits, because it is used as an artifact path", () => {
+    // `2026053` matches no `fund/0002026053/` key, so an unpadded value would
+    // render a button that navigates to a page that does not exist.
+    for (const m of nt.coverManagers) expect(m.cik).toMatch(/^\d{10}$/);
+  });
+
+  it("keeps the filer's own explanation", () => {
+    expect(nt.additionalInformation).toBe(
+      "Holdings of this reporting manager are now included in the report of its public parent company.",
+    );
+  });
+
+  it("still reports an empty summary-page list, which is what a notice has", () => {
+    // Guards against 'fixing' this by pointing otherManagers at the cover page:
+    // the two lists mean different things and both are needed.
+    expect(nt.otherManagers).toEqual([]);
+    expect(nt.tableEntryTotal).toBeNull();
+  });
+
 });
 
 describe("misc normalizers", () => {

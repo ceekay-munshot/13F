@@ -62,6 +62,16 @@ export function normalizeEdgarFiling(rec, { securities = {} } = {}) {
       report_type: rec.report_type ?? null,
       table_value_total: rec.table_value_total ?? null,
       table_entry_total: rec.table_entry_total ?? null,
+      // The cover page's other-manager list, carried through UNCHANGED. On a
+      // notice this is the whole point of the document — who reports these
+      // holdings instead — and a rebuild that dropped it would quietly restore
+      // the "we have not read this quarter yet" message on a quarter that was
+      // read correctly the first time.
+      //
+      // Archived records written before the parser read this have no such key.
+      // Empty is the honest answer for those, not a reason to fail.
+      cover_managers: Array.isArray(rec.cover_managers) ? rec.cover_managers : [],
+      additional_information: rec.additional_information ?? null,
       notice,
       quarantined: Boolean(rec.quarantined),
       reconciles: rec.reconciles ?? null,
@@ -101,6 +111,9 @@ export function normalizeEdgarFiling(rec, { securities = {} } = {}) {
     report_type: rec.report_type ?? null,
     table_value_total: rec.table_value_total ?? null,
     table_entry_total: rec.table_entry_total ?? null,
+    cover_managers: Array.isArray(rec.cover_managers) ? rec.cover_managers : [],
+    other_managers: Array.isArray(rec.other_managers) ? rec.other_managers : [],
+    additional_information: rec.additional_information ?? null,
     notice: false,
     units: units.units,
     unit_source: units.source,

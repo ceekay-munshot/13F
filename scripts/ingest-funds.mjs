@@ -22,7 +22,7 @@ import {
   decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor,
 } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
-import { fundQuarter, seriesEntry, filingRow } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow, noticeEntry } from "../shared/emit.mjs";
 import {
   currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel,
 } from "../shared/calendar.mjs";
@@ -135,13 +135,52 @@ function resolveSecurity(h) {
   return h;
 }
 
+/**
+ * A notice's cover page, or null if it cannot be read.
+ *
+ * NEVER THROWS. A notice is a fact we already have from the filing index — the
+ * cover page only adds the detail of who reports the holdings instead. If that
+ * one request fails the quarter is still correctly a notice, so this returns
+ * null and the run carries on. Making the succession detail a hard requirement
+ * would let a single bad response cost the client their whole daily update.
+ */
+async function parseNoticeCover(sec, cik, accession) {
+  try {
+    return parsePrimaryDoc((await sec.get(SEC_URLS.primaryDoc(cik, accession))).body);
+  } catch (err) {
+    if (err.name === "SecBlockedError") throw err;
+    return null;
+  }
+}
+
 /** Fetch and fully parse one filing. Three SEC requests. */
 async function loadFiling(sec, cik, f) {
   const hdr = parseIndexHeaders((await sec.get(SEC_URLS.indexHeaders(cik, f.accession_number))).body);
   if (!hdr.infoTableFilename) {
     // 13F-NT notices legitimately have no information table — the manager is
     // declaring that another manager reports its holdings. Not an error.
-    return { ...f, notice: true, rows: [], cover: null, headers: hdr };
+    //
+    // THE COVER PAGE IS STILL FETCHED. It used to return `cover: null` here and
+    // skip the request, which threw away the only thing a notice actually says:
+    // WHICH manager reports these holdings, and why. With that gone the fund
+    // page had nothing to show for the quarter, so it fell through to "we have
+    // not read this yet" — about a filing it had read, on the day it was filed.
+    //
+    // Pershing Square Capital Management filed exactly this for 2026-Q2, naming
+    // Pershing Square Inc. as the manager now reporting its book. The client saw
+    // an empty page and asked why their fund was missing.
+    //
+    // One extra request, only for notices. On the same-day path that is the
+    // client's own funds — a handful — so the cost is nil.
+    const ntCover = await parseNoticeCover(sec, cik, f.accession_number);
+    return {
+      ...f, notice: true, rows: [], cover: null, headers: hdr,
+      report_type: ntCover?.reportType ?? f.report_type ?? null,
+      manager_name: ntCover?.filingManagerName ?? f.manager_name ?? null,
+      // The succession pointer, in the same shape the bulk path produces.
+      cover_managers: ntCover?.coverManagers ?? [],
+      additional_information: ntCover?.additionalInformation ?? null,
+    };
   }
 
   const cover = parsePrimaryDoc((await sec.get(SEC_URLS.primaryDoc(cik, f.accession_number))).body);
@@ -188,6 +227,13 @@ async function loadFiling(sec, cik, f) {
     // interchangeable or the builder produces different artifacts depending on
     // which one happened to reach a fund first.
     table_entry_total: cover.tableEntryTotal ?? null,
+    // Both manager lists, kept as filed. On a holdings report these say "these
+    // are the managers whose positions are included below", which is the reverse
+    // of what the same list means on a notice — so they are stored, never
+    // interpreted here.
+    cover_managers: cover.coverManagers ?? [],
+    other_managers: cover.otherManagers ?? [],
+    additional_information: cover.additionalInformation ?? null,
     units: units.units,
     unit_source: units.source,
     median_implied_price: units.medianImpliedPrice,
@@ -453,10 +499,21 @@ await runJob(async () => {
 
       // ---- changes, then artifacts -------------------------------------------
       const series = [];
+      // Quarters that exist but hold no positions because the manager filed a
+      // notice. Kept beside the series, never inside it — see noticeEntry().
+      //
+      // Named for the QUARTER, not the filing: `notices` a few lines up already
+      // means "the notice filings within one period", and one name for two things
+      // in one function is how the two ingest paths drifted in the first place.
+      const noticeQuarters = [];
 
       for (const period of reported) {
         const cur = loaded.get(period);
         if (!cur) continue;
+
+        // Record the notice BEFORE the summary guard below returns. This is the
+        // only place that still knows the quarter existed at all.
+        if (cur.noticeOnly) noticeQuarters.push(noticeEntry({ period, filings: cur.filings ?? [] }));
 
         // A NOTICE-ONLY QUARTER HAS NO SUMMARY. Skip it here.
         //
@@ -550,7 +607,9 @@ await runJob(async () => {
           envelope({
             kind: "fund-summary", cik, buildId: null,
             extra: { name: displayName, code: fund.code, formerNames: subs.formerNames?.slice(0, 5) ?? [],
-                     state: subs.businessState },
+                     state: subs.businessState,
+                     // Newest first, matching the series direction on this path.
+                     notices: noticeQuarters.slice().reverse() },
             data: { series: series.slice().reverse() },
           }),
         );

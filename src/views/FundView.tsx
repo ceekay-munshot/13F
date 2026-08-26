@@ -10,7 +10,7 @@ import {
 } from "recharts";
 import { WidgetCard, ViewToggle, CaveatStrip } from "../components/WidgetCard";
 import { Kpi, KpiRow } from "../components/Kpi";
-import { ChartSkeleton, TableSkeleton, EmptyState, ErrorState, PartialNotice } from "../components/states";
+import { ChartSkeleton, TableSkeleton, EmptyState, ErrorState, PartialNotice, NoticeState } from "../components/states";
 import { t, ACTION_COLORS, type Action } from "../theme";
 import { usd, pct, pp, deltaPct, shares as fmtShares, count, periodLabel, dateLabel, utcStamp } from "../lib/format";
 import {
@@ -183,7 +183,7 @@ function TreemapTile(props: {
 }
 
 export function FundView({
-  cik, period, mf, longsOnly, refreshing, group = [], onPeriod,
+  cik, period, mf, longsOnly, refreshing, group = [], onPeriod, onFund,
 }: {
   cik: string;
   period: string;
@@ -199,6 +199,10 @@ export function FundView({
       chart — the bars already say which quarter is selected, so not letting the
       user click the one they are looking at is a dead end. */
   onPeriod?: (period: string) => void;
+  /** Open a different manager. Used when this one filed a notice saying another
+      manager reports its holdings — the successor is the answer to the reader's
+      actual question, so it has to be reachable from here. */
+  onFund?: (cik: string) => void;
 }) {
   // Distinguishes a FIRST load (skeletons are right) from a reload (keep the
   // data mounted and dim it). A ref, not state: it must not itself retrigger.
@@ -554,6 +558,55 @@ export function FundView({
    */
   const periodRow = mf.periods.find((p) => p.period === period);
   const stillIngesting = (periodRow?.known ?? 0) > (periodRow?.funds ?? 0);
+
+  /**
+   * THE THIRD ANSWER, AND IT OUTRANKS BOTH OF THE OTHERS.
+   *
+   * A notice is not an absence of data — it is data. The manager filed, we read
+   * it, and it says another manager reports this book. Checked BEFORE the two
+   * guesses below because both of those are inferences from a backlog count,
+   * and this is the filing itself. An inference must never beat a document.
+   *
+   * This is the case that sent a client to us: Pershing Square Capital
+   * Management filed a notice for 2026-Q2 naming its parent, and because the
+   * quarter was dropped from the series the page fell through to "we have not
+   * read Q2 2026 yet" — about a filing read on the day it arrived, while the
+   * holdings sat on the parent's page the whole time.
+   */
+  const noticeForPeriod = summary?.notices?.find((n) => n.period === period);
+
+  if (!loading && summary && !point && noticeForPeriod) {
+    const named = noticeForPeriod.managers.filter((m) => m.cik || m.name);
+    // One name is the common case and reads best named. Several is rare, and a
+    // list of them belongs in the buttons below rather than inside a sentence.
+    const soleName = named.length === 1 ? named[0].name : null;
+    const filedOn = noticeForPeriod.acceptedAt ? ` on ${dateLabel(noticeForPeriod.acceptedAt)}` : "";
+    return (
+      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+        <WidgetCard
+          refreshing={refreshing}
+          title={summary.name}
+          subtitle={soleName
+            ? `${periodLabel(period)} · reported by ${soleName}`
+            : `${periodLabel(period)} · reported by another manager`}
+          span={2}
+          bodyMinHeight={220}
+        >
+          <NoticeState
+            message={`${summary.name} reported no holdings of its own for ${periodLabel(period)}`}
+            hint={
+              `They did file${filedOn}. Their filing is a notice: it says these positions are ` +
+              `included in ${named.length > 1 ? "other managers' reports" : "another manager's report"} instead of their own. ` +
+              `The holdings are not missing — ${named.length ? "open the manager below to see them." : "the SEC filing does not name where they went."}`
+            }
+            note={noticeForPeriod.note}
+            managers={named}
+            onFund={onFund}
+          />
+        </WidgetCard>
+      </div>
+    );
+  }
 
   if (!loading && summary && !point) {
     const latest = latestPoint;
