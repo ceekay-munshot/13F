@@ -29,6 +29,10 @@
 //
 //   "Pershing Sq" matches both Pershing Square Capital Management ($13.7B) and
 //                 PERSHING SQUARE HOLDCO ($0.6B)
+//                 — and note that as of 2026-Q2 the right answer is the SECOND
+//                 one, renamed Pershing Square Inc., because the holdings moved
+//                 to it. Which entity is correct is not a fact about the names;
+//                 it changes, and it is checked against who actually files.
 //   "TCI"         matches TCI Fund Management ($45.2B) and an unrelated
 //                 registered advisor called TCI Wealth Advisors ($1.9B)
 //   "Abrams"      matches Abrams Capital Management ($4.6B) and Abrams Bison
@@ -58,7 +62,19 @@ export const CLIENT_WATCHLIST = [
   { cik: "0001067983", code: "BRK", label: "Berkshire Hathaway" },
   { cik: "0001590531", code: "FOX", label: "Foxhaven" },
   { cik: "0001061165", code: "LNP", label: "Lone Pine" },
-  { cik: "0001336528", code: "PSH", label: "Pershing Square" },
+  // MOVED 26 Aug 2026, from 0001336528 (Pershing Square Capital Management,
+  // L.P.). That entity stopped reporting its own holdings: for 2026-Q2 it filed
+  // a NOTICE saying its positions are included in the report of its public
+  // parent, and named this CIK. So this is now the entity that actually files
+  // the 13F, which is the rule the whole list is built on.
+  //
+  // The trade is real and was taken deliberately. The old CIK keeps the $13.7B
+  // history and it stays browsable at its own page — which now links here — but
+  // this entity's OWN earlier filings are a single ~$0.6B position, so its first
+  // four quarters here look nothing like Pershing Square. The 2026-Q2 crossover
+  // is flagged as a manager change and its deltas are withheld rather than
+  // reported as 13 purchases; from 2026-Q3 the comparison is ordinary again.
+  { cik: "0002026053", code: "PSH", label: "Pershing Square" },
   { cik: "0001960830", code: "SRG", label: "SurgoCap" },
   { cik: "0001647251", code: "TCI", label: "TCI Fund Mgmt" },
   { cik: "0001599383", code: "WND", label: "WindAcre" },

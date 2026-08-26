@@ -186,9 +186,112 @@ function quantile(sorted, q) {
  *
  * @returns {{event: string|null, detail: object}}
  */
+/**
+ * The included-manager list as a comparable set, or null when it is UNKNOWN.
+ *
+ * `null`/`undefined` means nobody recorded it — an artifact written before the
+ * list was parsed, or a source that does not carry it. `[]` means the filing was
+ * read and named nobody, which is an ANSWER and compares fine. Collapsing the
+ * two is what would let an unparsed quarter look like a manager change.
+ *
+ * Keyed on CIK where there is one, falling back to the normalised name: a filer
+ * that omits the CIK still names the manager, and a set that silently dropped
+ * those entries would report a change that did not happen.
+ */
+function managerKeys(list) {
+  if (!Array.isArray(list)) return null;
+  const out = new Set();
+  for (const m of list) {
+    if (!m) continue;
+    const k = m.cik || (m.name ? String(m.name).trim().toUpperCase() : null);
+    if (k) out.add(k);
+  }
+  return out;
+}
+
 export function detectStructuralEvent(current, prior, opts = {}) {
   const detail = {};
   if (!prior || !prior.holdings?.length) return { event: null, detail };
+
+  // ---------------------------------------------------------------------------
+  // 0. THE FORM CHANGED, NOT THE PORTFOLIO.
+  // ---------------------------------------------------------------------------
+  // A 13F cover page lists the OTHER MANAGERS whose positions are included in
+  // it. That list is stable quarter to quarter for almost every filer, and when
+  // it moves the book moves with it — not because anybody traded, but because
+  // the same holdings are now reported on a different form.
+  //
+  // This is the second piece of evidence the pro-rata detector was missing. It
+  // spots that every position moved by one multiplier, which is right for a
+  // redemption and wrong for a family of funds re-splitting its holdings across
+  // managers; the two are indistinguishable from the numbers alone. The manager
+  // list tells them apart, and it costs nothing — it is on a page we already
+  // download and parse.
+  //
+  // Measured case: Pershing Square Inc. reported one position worth $0.57B for
+  // 2026-Q1 with no other managers, then fourteen positions worth $19.47B for
+  // 2026-Q2 naming six, its operating manager among them — which filed a notice
+  // that same quarter pointing back at it. Read as trading, that is "13 new
+  // positions bought and 173% turnover". Nothing was bought.
+  //
+  // TWO CONDITIONS, BOTH REQUIRED. Managers alone would fire on the routine
+  // churn of a large family's filings; a book that jumped alone is the REVIEW
+  // rule below, which is deliberately vaguer because it has no explanation to
+  // offer. Together they are specific enough to name what happened.
+  //
+  // UNKNOWN IS NOT EMPTY. A filing whose manager list was never parsed arrives
+  // as null and this rule sits it out — guessing from an absent list is how a
+  // detector starts inventing events.
+  const mgrsNow = managerKeys(current.includedManagers);
+  const mgrsPrior = managerKeys(prior.includedManagers);
+  if (mgrsNow && mgrsPrior) {
+    const gained = [...mgrsNow].filter((m) => !mgrsPrior.has(m));
+    const lost = [...mgrsPrior].filter((m) => !mgrsNow.has(m));
+    const vN = current.value_long_usd ?? 0;
+    const vP = prior.value_long_usd ?? 0;
+    const pN = current.holdings.length;
+    const pP = prior.holdings.length;
+    // 1.5x either way. Well clear of ordinary trading, and both measured cases
+    // — 34x here, 2.14x for the Mitsubishi entity that consolidated two
+    // managers onto its form — are far above it.
+    const grew = (vP > 0 && vN / vP >= 1.5) || (pP > 0 && pN / pP >= 1.5);
+    const shrank = (vP > 0 && vN / vP <= 1 / 1.5) || (pP > 0 && pN / pP <= 1 / 1.5);
+
+    if (gained.length && grew) {
+      return {
+        event: "MANAGER_SET_CHANGED",
+        detail: {
+          ...detail,
+          direction: "gained",
+          managersGained: gained.length,
+          positionsNow: pN, positionsPrior: pP,
+          message:
+            `This quarter's filing includes ${gained.length} manager` +
+            `${gained.length === 1 ? "" : "s"} that the previous one did not, and the ` +
+            `book went from ${pP} position${pP === 1 ? "" : "s"} to ${pN}. These positions ` +
+            `were reported on another manager's form last quarter, so they are not ` +
+            `purchases and this quarter cannot be compared with the one before it.`,
+        },
+      };
+    }
+    if (lost.length && shrank) {
+      return {
+        event: "MANAGER_SET_CHANGED",
+        detail: {
+          ...detail,
+          direction: "lost",
+          managersLost: lost.length,
+          positionsNow: pN, positionsPrior: pP,
+          message:
+            `This quarter's filing drops ${lost.length} manager` +
+            `${lost.length === 1 ? "" : "s"} the previous one included, and the book went ` +
+            `from ${pP} position${pP === 1 ? "" : "s"} to ${pN}. Those positions are now ` +
+            `reported on another manager's form, so they are not sales and this quarter ` +
+            `cannot be compared with the one before it.`,
+        },
+      };
+    }
+  }
 
   const priorByKey = new Map(prior.holdings.map((h) => [`${h.cusip}|${h.put_call}`, h]));
   const ratios = [];
@@ -336,7 +439,23 @@ export function computeChanges(current, prior, priorState, opts = {}) {
   // Δ Value got the full 95.4% redemption laid out as 27 individual sells, which
   // is precisely the reading this suppression exists to prevent.
   const suppressAll =
-    structural.event === "PRO_RATA_REDUCTION" || structural.event === "UNIT_SCALE_CHANGE";
+    structural.event === "PRO_RATA_REDUCTION" ||
+    structural.event === "UNIT_SCALE_CHANGE" ||
+    structural.event === "MANAGER_SET_CHANGED";
+
+  // A MANAGER CHANGE ALSO WITHHOLDS THE ACTION, WHICH THE OTHER TWO DO NOT.
+  //
+  // For a pro-rata reduction the direction is still true — every position really
+  // was reduced — and only the magnitudes mislead, so TRIMMED stays and the
+  // numbers go. Here the direction is the lie: a position that moved onto this
+  // form from another one is labelled NEW, which is the word this dashboard uses
+  // for "they bought it". Thirteen of Pershing Square Inc.'s fourteen would have
+  // read as purchases.
+  //
+  // So the label is withheld with the numbers, and because summarizeActions
+  // counts by label, the quarter reports 0 new and 0 exited rather than a
+  // fabricated 13. "We cannot say" is the honest answer and the only one.
+  const suppressAction = structural.event === "MANAGER_SET_CHANGED";
 
   const key = (h) => `${h.cusip}|${h.put_call}`;
   const priorByKey = new Map(prior.holdings.map((h) => [key(h), h]));
@@ -388,7 +507,7 @@ export function computeChanges(current, prior, priorState, opts = {}) {
       cusip: h.cusip,
       put_call: h.put_call,
       name_of_issuer: h.name_of_issuer,
-      action,
+      action: suppressAction ? null : action,
       shares_now: h.ssh_prnamt,
       shares_prior: p?.ssh_prnamt ?? null,
       d_shares: suppressAll ? null : dShares,
@@ -439,7 +558,17 @@ export function computeChanges(current, prior, priorState, opts = {}) {
   let exitsWithheld = 0;
   for (const p of prior.holdings) {
     if (currentByKey.has(key(p))) continue;
-    if (confidentialOmitted) { exitsWithheld++; continue; }
+    // THE SAME INFERENCE, AND IT FAILS FOR THE SAME REASON.
+    //
+    // An exit is read off ABSENCE, which only means a sale if this form covers
+    // the same managers the last one did. When the manager list changed it does
+    // not: a position missing from this quarter may simply be reported on
+    // somebody else's form now. Emitting it as "EXITED, -100%" is the fabricated
+    // sell this whole detector exists to prevent, arriving from the other end.
+    //
+    // Counted rather than dropped, so the UI can say how many are unaccounted
+    // for instead of quietly showing a shorter list.
+    if (confidentialOmitted || suppressAction) { exitsWithheld++; continue; }
     changes.push({
       cusip: p.cusip,
       put_call: p.put_call,

@@ -615,3 +615,149 @@ describe("foldFilings — the cover-page total", () => {
     expect(foldFilings([f("a-1", "2025-10-30T12:00:00Z", { table_value_total: null })]).reportedTotalUsd).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// THE FORM CHANGED, NOT THE PORTFOLIO
+// ---------------------------------------------------------------------------
+//
+// The second piece of evidence the pro-rata detector was missing. A cover page
+// lists the other managers whose positions are included in the filing; when that
+// list moves, the book moves with it, and nobody traded.
+//
+// Measured case, and the reason this exists: Pershing Square Inc. filed one
+// position worth $0.57B for 2026-Q1 naming no other managers, then fourteen
+// positions worth $19.47B for 2026-Q2 naming six — its operating manager among
+// them, which filed a notice that quarter pointing back at it. Read as trading
+// that is "13 bought, 173% turnover". Nothing was bought.
+describe("a change in the managers included on the filing", () => {
+  const mgr = (cik, name) => ({ cik, name });
+  const book = (n, each) =>
+    Array.from({ length: n }, (_, i) => holding({ cusip: cusipAt(i), value: each, shares: 10_000, weight: 100 / n }));
+
+  // Q1: one position, no other managers. Q2: fourteen, six managers.
+  const priorQ = {
+    period_end: "2026-03-31",
+    holdings: book(1, 569_340_000),
+    value_long_usd: 569_340_000,
+    includedManagers: [],
+  };
+  const currentQ = {
+    period_end: "2026-06-30",
+    holdings: book(14, 1_390_406_626),
+    value_long_usd: 19_465_692_772,
+    includedManagers: [
+      mgr("0001336528", "Pershing Square Capital Management, L.P."),
+      mgr("0001336477", "PSCM GP, LLC"),
+      mgr("0002129159", "Pershing Square Partner Group LLC"),
+      mgr("0002027456", "Pershing Square Management, LLC"),
+      mgr("0002129160", "Pershing Square PSUS Holdings, LLC"),
+      mgr("0002131683", "Pershing Square HHH Holdings, LLC"),
+    ],
+  };
+
+  it("is named specifically, rather than falling through to the vague catch-all", () => {
+    // Without this rule the magnitude check fires and says only "the book moved
+    // 3319%, changes may not reflect trading" — true, unhelpful, and it keeps
+    // the deltas.
+    const s = detectStructuralEvent(currentQ, priorQ);
+    expect(s.event).toBe("MANAGER_SET_CHANGED");
+    expect(s.detail.direction).toBe("gained");
+    expect(s.detail.managersGained).toBe(6);
+    expect(s.detail.message).toMatch(/not purchases/);
+  });
+
+  it("withholds the BUY/SELL LABEL, not only the numbers", () => {
+    // The distinction from a pro-rata reduction. There the direction is true and
+    // only the magnitude misleads, so TRIMMED stays. Here "NEW" is itself the
+    // false claim — it is the word this dashboard uses for "they bought it".
+    const { changes, suppressed, structuralEvent } = computeChanges(currentQ, priorQ, PRIOR_STATE.OK);
+    expect(structuralEvent).toBe("MANAGER_SET_CHANGED");
+    expect(suppressed).toBe(true);
+    expect(changes.length).toBeGreaterThan(0);
+    for (const c of changes) {
+      expect(c.action).toBeNull();
+      expect(c.d_shares).toBeNull();
+      expect(c.d_value).toBeNull();
+      expect(c.d_value_pct).toBeNull();
+      expect(c.d_weight_pp).toBeNull();
+    }
+    // And therefore the quarter counts none of them as purchases.
+    expect(summarizeActions(changes)).toEqual({ n_new: 0, n_added: 0, n_held: 0, n_trimmed: 0, n_exited: 0 });
+  });
+
+  it("withholds exits when managers were dropped, and counts them instead", () => {
+    // The same inference failing from the other end: a position absent from this
+    // form may simply be on somebody else's now. "EXITED, -100%" is the same
+    // fabricated sell, arriving backwards.
+    const before = { ...currentQ, period_end: "2026-03-31" };
+    const after = {
+      period_end: "2026-06-30",
+      holdings: book(1, 569_340_000),
+      value_long_usd: 569_340_000,
+      includedManagers: [],
+    };
+    const { changes, exitsWithheld, structuralEvent } = computeChanges(after, before, PRIOR_STATE.OK);
+    expect(structuralEvent).toBe("MANAGER_SET_CHANGED");
+    expect(exitsWithheld).toBe(13);
+    expect(changes.filter((c) => c.action === "EXITED")).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // The guards. A detector that fires too easily is worse than none: it hides
+  // real trading behind "cannot be compared".
+  // -------------------------------------------------------------------------
+
+  it("does NOT fire when the manager list changed but the book did not", () => {
+    // Routine churn in a large family's filings. Nothing about the portfolio
+    // changed, so there is nothing to withhold.
+    const s = detectStructuralEvent(
+      { ...currentQ, holdings: book(14, 1_000_000), value_long_usd: 14_000_000 },
+      { ...priorQ, holdings: book(14, 1_000_000), value_long_usd: 14_000_000, includedManagers: [mgr("0000000001", "A")] },
+    );
+    expect(s.event).toBeNull();
+  });
+
+  it("does NOT fire when the book jumped but the managers are the same", () => {
+    // A genuinely huge trading quarter. Still flagged by the catch-all, which
+    // keeps its deltas — that is the difference between the two rules.
+    const same = [mgr("0001336528", "Pershing Square Capital Management, L.P.")];
+    const s = detectStructuralEvent(
+      { ...currentQ, includedManagers: same },
+      { ...priorQ, includedManagers: same },
+    );
+    expect(s.event).toBe("REVIEW");
+  });
+
+  it("sits out entirely when the manager list was never recorded", () => {
+    // Artifacts archived before this was parsed carry null, and guessing from an
+    // absent list is how a detector starts inventing events. Falls through to
+    // the catch-all, exactly as it did before this rule existed.
+    const s = detectStructuralEvent(
+      { ...currentQ, includedManagers: undefined },
+      { ...priorQ, includedManagers: undefined },
+    );
+    expect(s.event).toBe("REVIEW");
+  });
+
+  it("tells a filing that named nobody apart from one nobody read", () => {
+    // `[]` is an ANSWER — the filer listed no other managers. `null` is silence.
+    // Collapsing them would make every unparsed quarter look like a change.
+    const s = detectStructuralEvent(currentQ, { ...priorQ, includedManagers: null });
+    expect(s.event).toBe("REVIEW");
+    expect(detectStructuralEvent(currentQ, priorQ).event).toBe("MANAGER_SET_CHANGED");
+  });
+
+  it("does not let Cantillon's redemption be relabelled a manager change", () => {
+    // The pro-rata case must keep its own explanation: its manager list did not
+    // move, and the uniform multiplier is the whole story.
+    const priorH = [], curH = [];
+    for (let i = 0; i < 38; i++) priorH.push(holding({ cusip: cusipAt(i), value: 400_000_000, shares: 4_000_000, weight: 100 / 38 }));
+    for (let i = 0; i < 27; i++) curH.push(holding({ cusip: cusipAt(i), value: 18_420_000, shares: 184_200, weight: 100 / 27 }));
+    const same = [mgr("0000000001", "A")];
+    const s = detectStructuralEvent(
+      { period_end: "2026-06-30", holdings: curH, value_long_usd: 665_113_090, includedManagers: same },
+      { period_end: "2026-03-31", holdings: priorH, value_long_usd: 15_050_978_966, includedManagers: same },
+    );
+    expect(s.event).toBe("PRO_RATA_REDUCTION");
+  });
+});

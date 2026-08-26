@@ -36,7 +36,7 @@ import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
 import { SERIES_FIELDS } from "../shared/series-fields.mjs";
-import { fundQuarter, seriesEntry, filingRow, noticeEntry } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers } from "../shared/emit.mjs";
 import { currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel, deraWindowFor } from "../shared/calendar.mjs";
 import { paths, envelope, manifest, encodeHoldings, buildIdFrom, ROWS_PER_PAGE } from "../shared/artifacts.mjs";
 import { ArtifactWriter, writeHeadersFile } from "./_artifact-writer.mjs";
@@ -296,6 +296,11 @@ await runJob(async () => {
   // On a 13F-NT this is the succession pointer — the manager who reports these
   // holdings instead — and it is the only place in the bulk data that says so.
   const otherMgrEntry = find("OTHERMANAGER.TSV");
+  // The SUMMARY page's list — a different table from the one above, and the one
+  // a holdings report uses. A 13F-HR names the managers it reports FOR here; a
+  // 13F-NT names the manager reporting for IT on the cover page. Reading only
+  // one of the two answers only half the question.
+  const otherMgr2Entry = find("OTHERMANAGER2.TSV");
   const infoEntry = find("INFOTABLE.TSV");
   if (!subEntry || !infoEntry) throw new Error("data set is missing SUBMISSION.tsv or INFOTABLE.tsv");
 
@@ -397,6 +402,33 @@ await runJob(async () => {
       attached++;
     }
     log(`OTHERMANAGER: ${attached} cover-page managers across ${withManagers} filings`);
+  }
+
+  if (otherMgr2Entry) {
+    const lines = readEntry(zip, otherMgr2Entry).toString("latin1").split(/\r?\n/);
+    const hm = headerMap(lines[0]);
+    // Seed every filing with a KNOWN-EMPTY list before filling, so a filing with
+    // no row here is "named nobody" rather than "nobody looked". Only done when
+    // the table is present: if the window does not carry it at all, every filing
+    // stays null and the structural detector sits the quarter out.
+    for (const f of filings.values()) if (!Array.isArray(f.other_managers)) f.other_managers = [];
+    let attached = 0;
+    for (const line of lines.slice(1)) {
+      if (!line.trim()) continue;
+      const c = tsv(line);
+      const f = filings.get(pick(c, hm, "ACCESSION_NUMBER"));
+      if (!f) continue;
+      const cik = (pick(c, hm, "OTHERMANAGER2_CIK") || pick(c, hm, "CIK") || "").trim();
+      const name = (pick(c, hm, "OTHERMANAGER2_NAME") || pick(c, hm, "NAME") || "").trim();
+      if (!cik && !name) continue;
+      f.other_managers.push({
+        cik: cik ? cik.padStart(10, "0") : null,
+        fileNumber: (pick(c, hm, "OTHERMANAGER2_FORM13FFILENUMBER") || pick(c, hm, "FORM13FFILENUMBER") || "").trim() || null,
+        name: name || null,
+      });
+      attached++;
+    }
+    log(`OTHERMANAGER2: ${attached} summary-page managers`);
   }
 
   // INFOTABLE is ~396 MB uncompressed, so it is decoded in chunks and yielded a
@@ -617,6 +649,7 @@ await runJob(async () => {
       const summary = summarizeHoldings(res.rows);
       folded.set(period, {
         noticeOnly: false, holdings: res.rows, accessions: res.accessions,
+        includedManagers: mergeManagers(foldable),
         warnings: res.warnings, summary, value_long_usd: summary.value_long_usd,
         reported_total_usd: last.table_value_total,
         confidentialOmitted: foldable.some((f) => f.is_confidential_omitted),

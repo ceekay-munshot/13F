@@ -95,6 +95,13 @@ type QuarterNote = {
 const STRUCTURAL_COPY: Record<string, string> = {
   PRO_RATA_REDUCTION: "Uniform reduction across positions",
   UNIT_SCALE_CHANGE: "Reported unit scale changed",
+  // The form changed, not the portfolio: this quarter's filing covers a
+  // different set of managers than the one before it, so the book moved without
+  // anybody trading. Deltas and the buy/sell labels are both withheld.
+  MANAGER_SET_CHANGED: "Different managers included this quarter",
+  // Was rendering as a bare "REVIEW" in an amber cell — a code, to a reader who
+  // has no way to look it up.
+  REVIEW: "Book changed too much to compare",
 };
 
 const PRIOR_COPY: Record<string, string> = {

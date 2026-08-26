@@ -125,13 +125,20 @@ export function fundQuarter({
   issuerIdFor,
 }) {
   const { changes, suppressed, reason, structuralEvent, structural, exitsWithheld } = computeChanges(
-    { period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd },
+    {
+      period_end: period, holdings: cur.holdings, value_long_usd: cur.value_long_usd,
+      // The cover page's list of managers included in this filing. `undefined`
+      // where a path does not carry it, which the detector reads as UNKNOWN and
+      // sits out — never as "nobody". See managerKeys in shared/fold.mjs.
+      includedManagers: cur.includedManagers,
+    },
     priorState === PRIOR_STATE.OK
       ? {
           period_end: pp,
           accession: prior?.accessions?.at(-1) ?? null,
           holdings: prior.holdings,
           value_long_usd: prior.value_long_usd,
+          includedManagers: prior.includedManagers,
         }
       : null,
     priorState,
@@ -343,4 +350,29 @@ export function noticeEntry({ period, filings = [] }) {
     managers,
     note: latest?.additional_information ?? null,
   };
+}
+
+/**
+ * The managers named across a quarter's filings, or null if none of them said.
+ *
+ * NULL IS NOT EMPTY. A filing we could not parse the cover of contributes no
+ * knowledge, and a quarter with no knowledge at all must come back null so the
+ * structural detector sits it out rather than reading it as "no managers" — a
+ * false manager change is a suppressed quarter for a reason that never happened.
+ */
+export function mergeManagers(filings) {
+  let known = false;
+  const byKey = new Map();
+  for (const f of filings) {
+    for (const field of ["other_managers", "cover_managers"]) {
+      const list = f[field];
+      if (!Array.isArray(list)) continue;
+      known = true;
+      for (const m of list) {
+        if (!m || (!m.cik && !m.name)) continue;
+        byKey.set(m.cik || String(m.name).trim().toUpperCase(), { cik: m.cik ?? null, name: m.name ?? null });
+      }
+    }
+  }
+  return known ? [...byKey.values()] : null;
 }

@@ -22,7 +22,7 @@ import {
   decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor,
 } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
-import { fundQuarter, seriesEntry, filingRow, noticeEntry } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers } from "../shared/emit.mjs";
 import {
   currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel,
 } from "../shared/calendar.mjs";
@@ -481,6 +481,13 @@ await runJob(async () => {
         const summary = summarizeHoldings(folded.rows);
         loaded.set(period, {
           noticeOnly: false,
+          // Every manager named on the filings that make up this quarter, from
+          // both lists — a holdings report puts them on the summary page and a
+          // notice on the cover page, and a quarter can contain either.
+          //
+          // Union across the fold, not the last filing's list: an amendment that
+          // restates the table does not restate who was included.
+          includedManagers: mergeManagers(foldable),
           holdings: folded.rows,
           accessions: folded.accessions,
           warnings: folded.warnings,

@@ -70,7 +70,11 @@ export function normalizeEdgarFiling(rec, { securities = {} } = {}) {
       //
       // Archived records written before the parser read this have no such key.
       // Empty is the honest answer for those, not a reason to fail.
-      cover_managers: Array.isArray(rec.cover_managers) ? rec.cover_managers : [],
+      // NULL, NOT []. A record archived before this was parsed knows nothing
+      // about the manager list, and the structural detector must be able to tell
+      // that apart from a filing that named nobody — see managerKeys in
+      // shared/fold.mjs. An empty array would read as an answer.
+      cover_managers: Array.isArray(rec.cover_managers) ? rec.cover_managers : null,
       additional_information: rec.additional_information ?? null,
       notice,
       quarantined: Boolean(rec.quarantined),
@@ -111,8 +115,8 @@ export function normalizeEdgarFiling(rec, { securities = {} } = {}) {
     report_type: rec.report_type ?? null,
     table_value_total: rec.table_value_total ?? null,
     table_entry_total: rec.table_entry_total ?? null,
-    cover_managers: Array.isArray(rec.cover_managers) ? rec.cover_managers : [],
-    other_managers: Array.isArray(rec.other_managers) ? rec.other_managers : [],
+    cover_managers: Array.isArray(rec.cover_managers) ? rec.cover_managers : null,
+    other_managers: Array.isArray(rec.other_managers) ? rec.other_managers : null,
     additional_information: rec.additional_information ?? null,
     notice: false,
     units: units.units,

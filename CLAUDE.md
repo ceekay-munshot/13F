@@ -53,6 +53,36 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **26 Aug 2026 (later) — the PSH tile now points at the parent company, and the
+  crossover quarter no longer claims 13 purchases.** You asked to follow the
+  holdings, so PSH is now Pershing Square Inc. rather than the entity that hands
+  its book over. You see what they own, buy and sell, from Q3 2026 onward exactly
+  as with any other fund.
+
+  One quarter needed care first. Q2 2026 is the crossover: on the parent's own
+  filings the book goes from one position worth $0.57bn to fourteen worth
+  $19.47bn. Read as trading — which is how the dashboard read it — that is "13
+  new positions bought" and "173% turnover". **Nothing was bought.** The same
+  holdings simply arrived on a different form.
+
+  So the dashboard now checks a second thing before it calls anything a purchase:
+  the list of managers a filing covers, which is printed on the filing and barely
+  ever changes. Pershing Square Inc. named one other manager for Q1 and six for
+  Q2. When that list moves *and* the book jumps with it, the quarter is marked
+  "different managers included" and the buy/sell columns are left blank with the
+  reason written out, instead of inventing trades. The holdings themselves are
+  shown in full — that is the part that is true.
+
+  This is the second piece of evidence the "one big withdrawal, not 27 separate
+  sales" detector was booked to need. It is now built, and the booked item above
+  can be closed for this half of it: Cantillon still reads as a genuine
+  withdrawal, because its manager list did not move.
+
+  **Guarded against firing too eagerly**, which would be worse than not having it:
+  it needs both signals, it sits out entirely when the manager list was never
+  recorded (older stored filings), and it tells "the filer named nobody" apart
+  from "nobody read it". All of that is covered by tests.
+
 - **26 Aug 2026 — Pershing Square's page was blank, and the page was wrong about
   why.** The dashboard said "we have not read Q2 2026 for Pershing Square yet".
   It had read it, on the day it was filed.
