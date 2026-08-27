@@ -89,3 +89,57 @@ export const CLIENT_WATCHLIST = [
 
 /** Just the CIKs, for the ingest planner. */
 export const WATCHLIST_CIKS = CLIENT_WATCHLIST.map((f) => f.cik);
+
+/**
+ * Managers whose 13F reporting MOVED to another entity.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A MAP AND NOT JUST AN EDIT ABOVE
+ * ---------------------------------------------------------------------------
+ * Changing a CIK in the list above only changes what a NEW visitor sees. The
+ * per-user set lives in this browser's localStorage, written the first time
+ * anyone loaded the dashboard, and it keeps whatever CIK was current that day —
+ * for good. So the day Pershing Square's book moved to its parent, every
+ * existing browser carried on asking for the entity that had stopped reporting,
+ * drew a struck-through empty column headed "PER" (the list no longer had a
+ * short code for it, so it fell back to the first three letters of the name),
+ * and said "no filing this quarter" about a manager that had filed on time.
+ *
+ * The repoint above is the DEFAULT. This is how it reaches the people who
+ * already have one.
+ *
+ * ONLY FOR A REPORTING ENTITY THAT REALLY MOVED, evidenced by the filings
+ * themselves — not for a fund somebody would merely rather watch instead.
+ * Rewriting a user's saved list is not something to do on a hunch.
+ *
+ * 0001336528 -> 0002026053, 2026-Q2. Pershing Square Capital Management filed a
+ * notice naming Pershing Square Inc. as reporting its positions, and Pershing
+ * Square Inc.'s own filing that quarter names it back. Two documents agreeing.
+ *
+ * @type {Record<string, string>}
+ */
+export const SUCCEEDED_BY = {
+  "0001336528": "0002026053",
+};
+
+/**
+ * A saved list of CIKs, with superseded ones moved on.
+ *
+ * Order is preserved — the successor takes the old entry's place rather than
+ * being appended, because the order is the user's own ranking. A list already
+ * holding both collapses to one: two columns for one book is worse than the
+ * stale column this exists to remove.
+ *
+ * Pure and total, so it can be unit-tested and so a malformed saved value can
+ * never break the page it is read on.
+ */
+export function migrateCiks(ciks) {
+  if (!Array.isArray(ciks)) return [];
+  const out = [];
+  for (const c of ciks) {
+    if (typeof c !== "string") continue;
+    const moved = SUCCEEDED_BY[c] ?? c;
+    if (!out.includes(moved)) out.push(moved);
+  }
+  return out;
+}

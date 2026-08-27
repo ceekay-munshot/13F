@@ -21,7 +21,7 @@
 
 export type { WatchFund } from "../../shared/watchlist.mjs";
 export { CLIENT_WATCHLIST } from "../../shared/watchlist.mjs";
-import { CLIENT_WATCHLIST } from "../../shared/watchlist.mjs";
+import { CLIENT_WATCHLIST, migrateCiks } from "../../shared/watchlist.mjs";
 
 const SEED = CLIENT_WATCHLIST.map((f) => f.cik);
 const KEY = "13f:favourites";
@@ -39,7 +39,25 @@ export function loadFavourites(): string[] {
     const raw = localStorage.getItem(KEY);
     if (raw === null) return [...SEED];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [...SEED];
+    if (!Array.isArray(parsed)) return [...SEED];
+    const saved = parsed.filter((x) => typeof x === "string");
+    // FOLLOW A MANAGER WHOSE REPORTING MOVED.
+    //
+    // Editing the list in shared/watchlist.mjs only changes what a NEW visitor
+    // sees; this key was written the first time this browser loaded the page and
+    // keeps whatever CIK was current then. Without this, repointing PSH to
+    // Pershing Square's parent reached nobody who had ever used the dashboard —
+    // they kept a struck-through empty column for an entity that had stopped
+    // reporting, and the page said "no filing this quarter" about it.
+    //
+    // Written back so it happens once rather than on every load, and so the two
+    // stay in step if the user edits their list afterwards. A storage failure
+    // here is harmless: the migrated list is already correct in memory.
+    const moved = migrateCiks(saved);
+    if (moved.length !== saved.length || moved.some((c, i) => c !== saved[i])) {
+      saveFavourites(moved);
+    }
+    return moved;
   } catch {
     // Private mode, disabled storage, or corrupted JSON. The seed set is a
     // perfectly good dashboard; never let storage break the page.

@@ -11,3 +11,12 @@ export interface WatchFund {
 
 export declare const CLIENT_WATCHLIST: WatchFund[];
 export declare const WATCHLIST_CIKS: string[];
+
+/**
+ * Managers whose 13F reporting moved to another entity, old CIK -> new CIK.
+ * See the source file for the evidence required before adding one.
+ */
+export declare const SUCCEEDED_BY: Record<string, string>;
+
+/** A saved list of CIKs with superseded ones moved on, order preserved. */
+export declare function migrateCiks(ciks: unknown): string[];

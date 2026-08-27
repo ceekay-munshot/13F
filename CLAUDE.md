@@ -53,6 +53,27 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **27 Aug 2026 — the switch to the parent reached nobody who had used the
+  dashboard before, and that is now fixed.** Yesterday's repoint changed what a
+  NEW visitor sees. Your own list of funds is saved in your browser the first
+  time you load the page, so it kept the old company: a struck-through empty
+  column headed "PER", saying "no filing this quarter" about a fund that filed
+  on the deadline. Reloading would not have fixed it, ever.
+
+  A saved list is now moved on when a fund's reporting moves, once, keeping your
+  own ordering. Tested against the exact situation: a browser holding the old
+  list goes from "13 of 14" to "14 of 14 — all tracked funds", with Pershing
+  Square's holdings back in the comparison.
+
+  Deliberately narrow: it only rewrites entries that are actually there, so a
+  fund you removed on purpose stays removed, and it will only ever be used for a
+  reporting entity that really moved, evidenced by the filings themselves.
+
+  The hover label on a blank column was making the same mistake as everything
+  else and now says which of the four things happened — we could not load it,
+  they filed a notice pointing elsewhere, we have not read it yet, or they really
+  did not file.
+
 - **26 Aug 2026 (later) — the PSH tile now points at the parent company, and the
   crossover quarter no longer claims 13 purchases.** You asked to follow the
   holdings, so PSH is now Pershing Square Inc. rather than the entity that hands

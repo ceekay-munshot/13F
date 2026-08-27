@@ -68,7 +68,7 @@ function HolderSparkline({ counts, max }: { counts: number[]; max: number }) {
 }
 
 export function ConsensusMatrix({
-  rows, funds, holderHistory, onTicker, onFund, maxRows,
+  rows, funds, holderHistory, onTicker, onFund, maxRows, stillIngesting = false,
 }: {
   rows: ConsensusRow[];
   funds: FundInput[];
@@ -76,6 +76,9 @@ export function ConsensusMatrix({
   onTicker?: (issuerId: string) => void;
   onFund?: (cik: string) => void;
   maxRows: number;
+  /** The quarter is still being read, so an absent column says nothing about
+      the manager. Decided by the caller, which has the manifest's counts. */
+  stillIngesting?: boolean;
 }) {
   const [hoverCol, setHoverCol] = useState<string | null>(null);
   const shown = rows.slice(0, maxRows);
@@ -113,10 +116,28 @@ export function ConsensusMatrix({
               key={f.cik}
               onClick={() => onFund?.(f.cik)}
               onMouseEnter={() => setHoverCol(f.cik)}
-              // A dimmed column has two possible causes and the tooltip is the
-              // only place that can tell them apart: the manager did not file,
-              // or we could not fetch what they did file.
-              title={`${f.name}${f.failed ? " — could not be loaded" : f.missing ? " — no filing this quarter" : ""}`}
+              // A dimmed column has FOUR possible causes and the tooltip is the
+              // only place that can tell them apart. It used to state the first
+              // of them as fact for all of them.
+              //
+              //   failed    we could not fetch it. Ours, not theirs.
+              //   notice    they filed, and it says another manager reports these
+              //             positions. Named here, because "no filing" is flatly
+              //             untrue of a manager who filed on the deadline.
+              //   unread    they filed and we have not got to it yet — which is
+              //             a statement about our queue, not about them.
+              //   not filed the only case where the original wording was right.
+              title={`${f.name}${
+                f.failed
+                  ? " — could not be loaded"
+                  : f.notice
+                    ? ` — filed a notice; positions reported by ${f.notice.managers.join(", ") || "another manager"}`
+                    : f.missing
+                      ? stillIngesting
+                        ? " — filed, not read yet"
+                        : " — no filing this quarter"
+                      : ""
+              }`}
               style={{
                 width: CELL_W, flexShrink: 0, border: "none", background: "transparent",
                 cursor: onFund ? "pointer" : "default", padding: "7px 0 5px",

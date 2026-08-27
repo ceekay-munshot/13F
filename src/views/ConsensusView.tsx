@@ -837,6 +837,7 @@ export function ConsensusView({
                 maxRows={showAll ? 1500 : DEFAULT_ROWS}
                 onFund={onFund}
                 onTicker={setOpenIssuer}
+                stillIngesting={stillIngesting}
               />
               <div
                 style={{
