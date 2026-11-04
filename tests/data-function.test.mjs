@@ -21,6 +21,7 @@ function bucket(objects) {
       const body = objects[key];
       return {
         body,
+        text: async () => body,
         httpEtag: `"etag-${key}"`,
         writeHttpMetadata: (h) => {
           h.set("content-type", "application/json");
@@ -150,5 +151,43 @@ describe("artifact Function — behaviour that must not have changed", () => {
     expect(a.headers.get("cache-control")).toContain("immutable");
     const m = await call("manifest.json", { objects: { "manifest.json": "{}" } });
     expect(m.headers.get("cache-control")).toContain("max-age=60");
+  });
+});
+
+describe("artifact Function — meta/periods.json derived from the manifest", () => {
+  // The quarter list the MCP reads at /data/meta/periods.json. The standalone
+  // object is uploaded immutable and only rewritten monthly, so a reader without
+  // ?b= was pinned to a stale copy while manifest.periods advanced every day.
+  const manifest = JSON.stringify({
+    v: 1,
+    buildId: "bld-xyz",
+    periods: [
+      { period: "2026-09-30", label: "Q3 2026", deadline: "2026-11-14", filings: 3949, funds: 3800 },
+      { period: "2026-06-30", label: "Q2 2026", deadline: "2026-08-14", filings: 8500, funds: 8400 },
+    ],
+  });
+  // A deliberately STALE standalone object, as it is in R2 today.
+  const stalePeriods = '{"v":1,"kind":"periods","buildId":null,"data":[{"period":"2026-03-31","label":"Q1 2026"}]}';
+
+  it("serves periods from the live manifest, short-cached, not the stale immutable object", async () => {
+    const res = await call("meta/periods.json", {
+      objects: { "manifest.json": manifest, "meta/periods.json": stalePeriods },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-13f-source")).toBe("derived-from-manifest");
+    expect(res.headers.get("cache-control")).toContain("max-age=60"); // never a year
+    const body = JSON.parse(await res.text());
+    expect(body.kind).toBe("periods");
+    expect(body.buildId).toBe("bld-xyz");
+    expect(body.data.map((p) => p.period)).toEqual(["2026-09-30", "2026-06-30"]); // the manifest's, not Q1
+  });
+
+  it("falls back to the standalone object when the manifest cannot be read", async () => {
+    // No manifest.json in the bucket: the branch must fall through, not error.
+    const res = await call("meta/periods.json", { objects: { "meta/periods.json": stalePeriods } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-13f-source")).toBe(null); // served the R2 object, not derived
+    const body = JSON.parse(await res.text());
+    expect(body.data[0].period).toBe("2026-03-31");
   });
 });

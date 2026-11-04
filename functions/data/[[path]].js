@@ -93,6 +93,44 @@ export async function onRequestGet({ params, env, request, next, waitUntil }) {
   // Served from the edge if it is there. A hit skips the R2 round trip entirely
   // and never reaches the code below.
   const cache = edgeCache();
+
+  // ── meta/periods.json: DERIVED from the manifest, not served as its own R2
+  //    object. The standalone periods.json is uploaded `immutable` and is only
+  //    rewritten by the monthly universe build, so a reader WITHOUT the ?b=
+  //    cache-buster (e.g. the MCP) was pinned to a months-old copy while the
+  //    manifest's own `.periods` advanced every day. Serving it from the live
+  //    manifest keeps the `periods` endpoint identical to manifest.periods and
+  //    short-cached like the manifest. Run BEFORE the generic edge read so a
+  //    previously-frozen copy can't be returned, and refresh the edge entry to
+  //    the manifest's TTL. Any miss/parse error falls through to the normal
+  //    passthrough below, so this only ever improves freshness.
+  if (key === "meta/periods.json") {
+    try {
+      const mfObj = await env.F13F_R2.get("manifest.json");
+      if (mfObj) {
+        const mf = JSON.parse(await mfObj.text());
+        if (Array.isArray(mf?.periods)) {
+          const headers = new Headers({
+            "content-type": "application/json",
+            "cache-control": "public, max-age=60, must-revalidate",
+            "x-13f-source": "derived-from-manifest",
+          });
+          const resp = new Response(
+            JSON.stringify({ v: 1, kind: "periods", buildId: mf.buildId ?? null, data: mf.periods }),
+            { headers },
+          );
+          if (cache) {
+            try {
+              const store = cache.put(request, resp.clone()).catch(() => {});
+              if (typeof waitUntil === "function") waitUntil(store);
+            } catch { /* best-effort edge refresh */ }
+          }
+          return resp;
+        }
+      }
+    } catch { /* fall through to the normal passthrough below */ }
+  }
+
   if (cache) {
     try {
       const hit = await cache.match(request);
