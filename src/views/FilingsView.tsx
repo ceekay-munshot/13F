@@ -16,10 +16,6 @@ import { usd, count, periodLabel, dateLabel, utcStamp } from "../lib/format";
 import { loadPeriodFilings, edgarUrl, type Manifest, type Filer, type FilingRow } from "../lib/data";
 import { filingDeadline, recentPeriods } from "../../shared/calendar.mjs";
 
-const GRID_WIDE: React.CSSProperties = {
-  display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
-};
-
 /**
  * Whole days between two ISO dates, counted on the CALENDAR.
  *
@@ -274,7 +270,7 @@ export function FilingsView({
   }, [timeline]);
 
   if (err) {
-    return <div style={GRID_WIDE}><WidgetCard title="Filings" span={2}><ErrorState message={err} /></WidgetCard></div>;
+    return <div className="card-grid"><WidgetCard title="Filings" span={2}><ErrorState message={err} /></WidgetCard></div>;
   }
 
   return (
@@ -348,7 +344,7 @@ export function FilingsView({
         <Kpi label="Amendments" value={loading ? "…" : count(amendments.length)} scope={notices.length ? `${notices.length} notice filing${notices.length === 1 ? "" : "s"}` : "Restatements & additions"} />
       </KpiRow>
 
-      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+      <div className="card-grid" style={{ marginTop: 22 }}>
         {/* PRIMARY — the feed */}
         <WidgetCard
           refreshing={refreshing}

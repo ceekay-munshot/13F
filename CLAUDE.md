@@ -51,7 +51,55 @@ they send to the SEC (the US financial regulator) every three months.
   evidence needed is already in the SEC files we download: the cover-page list
   of included managers, which is stable across quarters. **Not yet built.**
 
+- **The yellow "filed for Q3 2026 but still queued to be read" banner is
+  guessing, and the guess is nearly always "yes".** Found 11 Nov 2026. It named
+  Berkshire Hathaway and 12 others as filed-but-unread two days before the
+  deadline, when most of them very likely had not filed yet.
+
+  Why: the page decides "still loading" by comparing two totals — managers the
+  SEC says filed, and managers we hold holdings for. Those can never match,
+  because about 2,000 managers a quarter file only a notice ("my positions are
+  in someone else's report") and never become a holdings page. So the page
+  believes every quarter is still loading forever: Q2 2026, three months past
+  its deadline, still reads 10,853 filed vs 8,542 held. Every tracked fund with
+  no data is therefore described as "filed, not read yet", whatever the truth.
+
+  The fix needs the pipeline to say *which* managers filed, not just how many —
+  it already has that list while it works (`discover-13f-filers.mjs`) and throws
+  it away. **Not yet built, and not scheduled anywhere** — this note is the only
+  record. (On 11 Nov an attempt to queue it as a task in the app timed out.) The
+  check is `stillIngesting` in `src/views/ConsensusView.tsx`; the Filings tab's
+  "This quarter is still loading" banner and the Fund tab use the same test.
+
 ### Done
+
+- **11 Nov 2026 — the page no longer falls apart when you zoom out, or on a
+  phone or tablet.** You zoomed out and saw a blank third of the screen on the
+  right, and the "Consensus matrix" heading crushed into a column one word wide.
+
+  Three separate causes, all fixed:
+  1. **The page layout only worked between about 1,000 and 1,500 pixels wide.**
+     Wider, it made three columns and every panel used two, leaving the third
+     empty. On a phone, panels asked for two columns when there was room for one,
+     and the page scrolled sideways. It is now two columns on a big screen, one
+     on a small one, with no gaps and no sideways scrolling, on all three tabs.
+  2. **Eleven filter buttons sat beside the panel title** and squeezed it to
+     nothing. They now sit on their own row under the title and wrap neatly.
+  3. **The matrix stopped two-thirds of the way across** a wide screen. Its
+     columns now stretch to fill the panel, up to a sensible width.
+
+  Smaller things fixed on the way: the five number tiles at the top lay out as
+  5, then 3-over-2, then 2-2-1 — never a lone tile in a row of four; the top bar
+  drops its least useful words on a phone instead of hiding the tabs; the hover
+  explanations were coming out in an old-fashioned serif font.
+
+  Also, as asked: **picking a fund in the search box now opens it on the Fund
+  tab.** On the other tabs the box reads "Search funds…" instead of showing
+  whichever fund the Fund tab last had open, which had nothing to do with the
+  page underneath.
+
+  Checked by screenshotting all three tabs at six widths, from a phone (390
+  pixels) to a zoomed-out big screen (2,400), with the real data.
 
 - **27 Aug 2026 — the switch to the parent reached nobody who had used the
   dashboard before, and that is now fixed.** Yesterday's repoint changed what a

@@ -23,6 +23,7 @@ export function Kpi({
     <div
       className="widget-card"
       style={{
+        minWidth: 0,
         background: t.cardBg, border: `1px solid ${t.border}`, borderRadius: 16,
         padding: "12px 16px", display: "flex", flexDirection: "column", gap: 2,
         backdropFilter: "blur(8px)", boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
@@ -55,14 +56,13 @@ export function Kpi({
   );
 }
 
-/** auto-fit, not auto-fill: five tiles stretch to fill the row rather than
- *  leaving a dead track at the end. */
+/** Every view has exactly five tiles, so the rows are laid out for five rather
+ *  than left to auto-fit — which produced a row of four and one orphan tile
+ *  between about 900 and 1,100 pixels. See .kpi-row in styles.css: 5 across,
+ *  then 3 over 2, then 2-2-1, never a gap. */
 export function KpiRow({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      className="stagger"
-      style={{ display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}
-    >
+    <div className="stagger kpi-row">
       {children}
     </div>
   );

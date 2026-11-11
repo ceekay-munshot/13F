@@ -50,6 +50,74 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * Page layout — one set of breakpoints for every view.
+ *
+ * THE OLD GRID ONLY WORKED BETWEEN ROUGHLY 1,000 AND 1,500 PIXELS WIDE.
+ * It was `repeat(auto-fill, minmax(480px, 1fr))` with nearly every card told to
+ * span two columns. auto-fill means "as many 480px columns as fit", so:
+ *   - zoomed out (or a big monitor) it made THREE columns, every card took two,
+ *     and a blank third of the page sat on the right;
+ *   - wider still it made four, and full-width cards paired up side by side;
+ *   - on a phone it made one, a card asking for two invented a second column,
+ *     and the page scrolled sideways.
+ * Two columns, collapsing to one, is what every view was designed for. A
+ * full-width card spans `1 / -1`, which means "all columns, however many there
+ * are", so it can never create a column that is not there.
+ * ------------------------------------------------------------------------- */
+.dash-main { padding: 24px 32px; }
+
+.card-grid {
+  display: grid; gap: 20px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.card-grid > .card-full { grid-column: 1 / -1; }
+
+/* Two lists side by side inside one card ("bought" | "sold"). A 1px column is
+ * the hairline between them. */
+.split-2 { display: grid; grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr); }
+
+/* KPI tiles. Always five. */
+.kpi-row { display: grid; gap: 20px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+/* Page-level header. */
+.app-header { gap: 16px; padding: 0 24px; }
+.app-header-controls { gap: 12px; }
+
+@media (max-width: 1023px) {
+  .card-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .dash-main { padding: 20px 20px; }
+  /* Three over two: six narrow tracks, the first three tiles take two each and
+   * the last two take three each, so both rows run edge to edge. */
+  .kpi-row { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; }
+  .kpi-row > * { grid-column: span 2; }
+  .kpi-row > :nth-child(n + 4) { grid-column: span 3; }
+}
+
+@media (max-width: 720px) {
+  .dash-main { padding: 14px 12px; }
+  .card-grid { gap: 14px; }
+  /* Stacked, not squeezed: two 170px lists of tickers and dollar amounts are
+   * unreadable. The rule turns into a horizontal divider. */
+  .split-2 { grid-template-columns: minmax(0, 1fr); }
+  .split-2 > .split-rule { height: 1px; }
+  .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .kpi-row > *, .kpi-row > :nth-child(n + 4) { grid-column: auto; }
+  .kpi-row > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .app-header { gap: 10px; padding: 0 12px; }
+  .app-header-controls { gap: 8px; }
+  .app-header-context { display: none; }
+  /* The fund search is the main control on a phone: give it the whole line. */
+  .fund-picker, .fund-picker > button { width: 100%; }
+}
+
+@media (max-width: 480px) {
+  /* The product name is the one thing the badge already says, and the dot
+   * keeps its colour and its hover text when the words go. */
+  .app-header-title { display: none; }
+  .freshness-detail { display: none; }
+}
+
+/* ---------------------------------------------------------------------------
  * Widget card
  * ------------------------------------------------------------------------- */
 .widget-card {

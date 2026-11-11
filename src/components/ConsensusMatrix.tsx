@@ -25,6 +25,19 @@ const GROUP_COL = 148;
 const CELL_W = 62;
 const ROW_H = 30;
 
+// THE GRID STRETCHES TO THE CARD, UP TO A POINT.
+//
+// The widths above are minimums. With them as fixed sizes, a wide screen (or a
+// zoomed-out one) showed the matrix in the left two-thirds of its card and
+// nothing in the rest. Name and fund columns now share the spare width; the
+// caps stop a 14-column grid on a 2,400px screen turning into a row of wide
+// empty slabs. Every row is built from the same items with the same rules, so
+// the columns still line up exactly.
+const NAME_MAX = 340;
+const CELL_MAX = 120;
+const nameCol = { width: NAME_COL, flexGrow: 1, flexShrink: 0, maxWidth: NAME_MAX } as const;
+const cellCol = { width: CELL_W, flexGrow: 1, flexShrink: 0, maxWidth: CELL_MAX } as const;
+
 /** Tint saturates at a 10% position: above that the eye cannot tell 12% from 18%
  *  anyway, and letting one mega-position define the scale flattens everything else. */
 function tintFor(weight: number | null): string {
@@ -103,7 +116,7 @@ export function ConsensusMatrix({
         >
           <div
             style={{
-              width: NAME_COL, flexShrink: 0, position: "sticky", left: 0, zIndex: 4,
+              ...nameCol, position: "sticky", left: 0, zIndex: 4,
               background: "rgba(255,255,255,0.97)", padding: "7px 12px",
               fontSize: 10, fontWeight: 700, color: t.textHint, textTransform: "uppercase",
               letterSpacing: "0.05em",
@@ -139,7 +152,7 @@ export function ConsensusMatrix({
                       : ""
               }`}
               style={{
-                width: CELL_W, flexShrink: 0, border: "none", background: "transparent",
+                ...cellCol, border: "none", background: "transparent",
                 cursor: onFund ? "pointer" : "default", padding: "7px 0 5px",
                 fontSize: 10.5, fontWeight: 700, fontFamily: "inherit",
                 color: f.missing ? t.textHint : t.textSecondary,
@@ -172,7 +185,7 @@ export function ConsensusMatrix({
             <button
               onClick={() => onTicker?.(r.issuerId)}
               style={{
-                width: NAME_COL, flexShrink: 0, position: "sticky", left: 0, zIndex: 1,
+                ...nameCol, position: "sticky", left: 0, zIndex: 1,
                 background: "#fff", border: "none", cursor: onTicker ? "pointer" : "default",
                 display: "flex", alignItems: "center", gap: 7, padding: "0 12px",
                 textAlign: "left", fontFamily: "inherit", overflow: "hidden",
@@ -214,7 +227,7 @@ export function ConsensusMatrix({
                       : `${f.name} — does not hold ${r.ticker ?? r.name}`
                   }
                   style={{
-                    width: CELL_W, flexShrink: 0, display: "flex", alignItems: "center",
+                    ...cellCol, display: "flex", alignItems: "center",
                     justifyContent: "center", gap: 3, cursor: cell ? "pointer" : "default",
                     // An exited cell is tinted red and hatched, not left blank:
                     // who LEFT is half the anchor, and a blank cell would read

@@ -36,7 +36,7 @@ export function FavouritesBar({
   return (
     <div
       style={{
-        display: "flex", alignItems: "center", gap: 8, marginTop: 10,
+        display: "flex", alignItems: "center", gap: 8, marginTop: -4, marginBottom: 16,
         // The row scrolls rather than wrapping. Wrapping would change the
         // page's height as the set grows, pushing the KPIs and chart down by a
         // line — the content below should not move because someone starred a

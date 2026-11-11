@@ -89,10 +89,6 @@ const VIEW_IMPORTS: Record<ViewId, () => Promise<unknown>> = {
 // render. Costs nothing extra: this is the default view, it is always needed.
 void importConsensus().catch(() => { /* the lazy boundary retries and handles it */ });
 
-const GRID_WIDE: React.CSSProperties = {
-  display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
-};
-
 export default function Dashboard() {
   const { session, market } = useHostContext();
   // Consensus, not Fund. "What is the group accumulating, and who entered or
@@ -302,24 +298,32 @@ export default function Dashboard() {
       <main
         id="dashboard-main"
         data-dashboard-capture-root="true"
-        style={{ flex: 1, overflow: "auto", padding: "24px 32px" }}
+        // Padding lives in .dash-main so it can shrink on small screens.
+        className="dash-main"
+        style={{ flex: 1, overflow: "auto" }}
       >
         {err ? (
-          <div style={GRID_WIDE}>
+          <div className="card-grid">
             <WidgetCard title="Data" span={2}>
               <ErrorState message={err} />
             </WidgetCard>
           </div>
         ) : !mf || !period ? (
-          <div style={GRID_WIDE}>
+          <div className="card-grid">
             <WidgetCard title="Loading" span={2}><TableSkeleton rows={6} cols={5} /></WidgetCard>
           </div>
         ) : (
           <>
             <ScopeBar
               filers={filers}
-              cik={cik}
-              onCik={setCik}
+              // PICKING A FUND MEANS "SHOW ME THIS FUND". On Consensus and
+              // Filings the box used to quietly change a fund the page was not
+              // showing, and displayed whichever manager the Fund tab last had
+              // open — a name that had nothing to do with the page underneath.
+              // Off the Fund tab it now reads "Search funds…", and a pick opens
+              // the fund.
+              cik={view === "fund" ? cik : null}
+              onCik={(c) => { setCik(c); setView("fund"); }}
               periods={periods}
               period={period}
               onPeriod={setPeriod}
@@ -354,7 +358,7 @@ export default function Dashboard() {
             <ViewErrorBoundary>
             <Suspense
               fallback={
-                <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+                <div className="card-grid" style={{ marginTop: 22 }}>
                   <WidgetCard title="Loading view" span={2} bodyMinHeight={260}>
                     <TableSkeleton rows={7} cols={6} />
                   </WidgetCard>
@@ -369,7 +373,7 @@ export default function Dashboard() {
                 alone, the default manager is chosen a moment later, and that
                 moment is real. Say "picking a manager" instead. */}
             {(view === "fund" && !cik) || (view === "consensus" && consensusPending) ? (
-              <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+              <div className="card-grid" style={{ marginTop: 22 }}>
                 <WidgetCard title={view === "fund" ? "Fund" : "Consensus"} span={2} bodyMinHeight={260}>
                   <TableSkeleton rows={7} cols={6} />
                 </WidgetCard>

@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { font } from "../theme";
 
 type Rect = { top: number; bottom: number; left: number; width: number };
 
@@ -113,6 +114,10 @@ function Bubble({ text, rect, side }: { text: string; rect: Rect; side: "bottom"
         // Above the sticky header (z-index 30) and the drawer scrim.
         zIndex: 90,
         pointerEvents: "none",
+        // The bubble is rendered into <body>, OUTSIDE the app's root, so it does
+        // not inherit the app's typeface — it was coming out in the browser's
+        // default serif. Set it here rather than relying on inheritance.
+        fontFamily: font,
         background: "#111827",
         color: "#f9fafb",
         fontSize: 11.5,

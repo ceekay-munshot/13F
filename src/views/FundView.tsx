@@ -19,10 +19,6 @@ import {
 } from "../lib/data";
 import { priorPeriod } from "../../shared/calendar.mjs";
 
-const GRID_WIDE: React.CSSProperties = {
-  display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
-};
-
 function ActionChip({ action }: { action: Action | null }) {
   if (!action) return <span style={{ color: t.textHint }}>—</span>;
   const color = ACTION_COLORS[action];
@@ -520,7 +516,7 @@ export function FundView({
   const series = seriesAsc;
 
   if (err) {
-    return <div style={GRID_WIDE}><WidgetCard title="Fund" span={2}><ErrorState message={err} /></WidgetCard></div>;
+    return <div className="card-grid"><WidgetCard title="Fund" span={2}><ErrorState message={err} /></WidgetCard></div>;
   }
 
   // Filed, but its holdings are outside the stored detail set. Distinct from
@@ -529,7 +525,7 @@ export function FundView({
   // would be a plain factual error.
   if (!loading && summary && point && point.hasHoldings === false) {
     return (
-      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+      <div className="card-grid" style={{ marginTop: 22 }}>
         <WidgetCard
           refreshing={refreshing}
           title={summary.name}
@@ -589,7 +585,7 @@ export function FundView({
     const soleName = named.length === 1 ? named[0].name : null;
     const filedOn = noticeForPeriod.acceptedAt ? ` on ${dateLabel(noticeForPeriod.acceptedAt)}` : "";
     return (
-      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+      <div className="card-grid" style={{ marginTop: 22 }}>
         <WidgetCard
           refreshing={refreshing}
           title={summary.name}
@@ -619,7 +615,7 @@ export function FundView({
     const latest = latestPoint;
     const outstanding = (periodRow?.known ?? 0) - (periodRow?.funds ?? 0);
     return (
-      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+      <div className="card-grid" style={{ marginTop: 22 }}>
         <WidgetCard
           refreshing={refreshing}
           title={summary.name}
@@ -716,7 +712,7 @@ export function FundView({
         />
       </KpiRow>
 
-      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+      <div className="card-grid" style={{ marginTop: 22 }}>
         {/* PRIMARY — the holdings treemap. Top 50 only: 100 tiles in a 480px
             card is ~40 unlabelled slivers, which is decoration rather than data. */}
         <WidgetCard
@@ -965,10 +961,10 @@ export function FundView({
               }
             />
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr" }}>
+            <div className="split-2">
               {[movers.up, null, movers.down].map((group, gi) =>
                 group === null ? (
-                  <div key="rule" style={{ background: t.border }} />
+                  <div key="rule" className="split-rule" style={{ background: t.border }} />
                 ) : (
                   <div key={gi}>
                     <div

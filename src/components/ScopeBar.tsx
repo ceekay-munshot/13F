@@ -162,13 +162,15 @@ export function FundPicker({
   }
 
   return (
-    <div ref={ref} style={{ position: "relative" }}>
+    <div ref={ref} className="fund-picker" style={{ position: "relative", minWidth: 0, maxWidth: "100%" }}>
       <button
         className="pressable"
         onClick={() => setOpen((v) => !v)}
         title="Search funds"
         style={{
-          height: 36, minWidth: 300, padding: "0 12px", borderRadius: 10, cursor: "text",
+          // 300px where there is room, the full line on a phone — never wider
+          // than the screen.
+          height: 36, minWidth: "min(300px, 100%)", maxWidth: "100%", padding: "0 12px", borderRadius: 10, cursor: "text",
           fontSize: 13, fontFamily: "inherit", textAlign: "left",
           border: `1px solid ${open ? t.primary : t.borderSolid}`,
           boxShadow: open ? `0 0 0 3px ${t.primaryLight}` : "0 1px 2px rgba(0,0,0,0.04)",
@@ -318,7 +320,7 @@ export function ScopeBar({
     <div
       style={{
         display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-        minHeight: 36, marginBottom: 4,
+        minHeight: 36, marginBottom: 16,
       }}
     >
       <FundPicker filers={filers} value={cik} onChange={onCik} universeCount={universeCount} />

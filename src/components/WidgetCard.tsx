@@ -54,23 +54,33 @@ export function CaveatStrip({ children, action }: { children: ReactNode; action?
 }
 
 export function WidgetCard({
-  title, subtitle, category, actions, caveat, span = 1, bodyMinHeight, refreshing, children,
+  title, subtitle, category, actions, toolbar, caveat, span = 1, bodyMinHeight, refreshing, children,
 }: {
   title: string;
   subtitle?: string;
   category?: Category;
+  /** Small controls that sit beside the title — a two-way toggle, a count. */
   actions?: ReactNode;
+  /**
+   * A full row of controls under the title. For a card with more filters than
+   * fit beside its own name: put there, they crushed the title into a column
+   * one word wide ("Consensus / matrix / Comparing / 14 / active ...").
+   */
+  toolbar?: ReactNode;
   caveat?: ReactNode;
-  span?: 1 | 2 | 3;
+  /** 1 = half the page on a wide screen; 2 = the full width, always. */
+  span?: 1 | 2;
   bodyMinHeight?: number;
   refreshing?: boolean;
   children: ReactNode;
 }) {
   return (
     <div
-      className="widget-card"
+      className={span > 1 ? "widget-card card-full" : "widget-card"}
       style={{
-        gridColumn: span > 1 ? `span ${span}` : undefined,
+        // minWidth 0: a grid item's default minimum is its content, so one wide
+        // table inside would otherwise push the card — and the page — sideways.
+        minWidth: 0,
         background: t.cardBg,
         border: `1px solid ${t.border}`,
         borderRadius: 16,
@@ -84,8 +94,14 @@ export function WidgetCard({
     >
       <div
         style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
-          padding: "10px 16px", borderBottom: `1px solid ${t.border}`,
+          // WRAP, NEVER SQUEEZE. The title used to be the only thing allowed to
+          // shrink, so a wide set of controls beside it squashed the heading
+          // into a one-word-per-line column. Now the title keeps a readable
+          // minimum and the controls drop onto their own line when they will not
+          // fit beside it.
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          flexWrap: "wrap", columnGap: 12, rowGap: 8,
+          padding: "10px 16px", borderBottom: toolbar ? "none" : `1px solid ${t.border}`,
           background: t.cardHeader, backdropFilter: "blur(8px)", flexShrink: 0,
           position: "relative", overflow: "hidden",
         }}
@@ -93,17 +109,31 @@ export function WidgetCard({
         {/* Refreshing keeps the card mounted and shows progress in the chrome, so
             the previous quarter's numbers stay readable while the next load runs. */}
         {refreshing && <span className="refresh-bar" />}
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: "1 1 240px" }}>
           <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: t.textPrimary }}>{title}</h3>
           {subtitle && (
-            <p style={{ margin: "2px 0 0", fontSize: 11, color: t.textHint, lineHeight: 1.3 }}>{subtitle}</p>
+            <p style={{ margin: "2px 0 0", fontSize: 11, color: t.textHint, lineHeight: 1.35 }}>{subtitle}</p>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {actions}
-          {category && <CategoryBadge category={category} />}
-        </div>
+        {(actions || category) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0, maxWidth: "100%" }}>
+            {actions}
+            {category && <CategoryBadge category={category} />}
+          </div>
+        )}
       </div>
+
+      {toolbar && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8,
+            padding: "0 16px 10px", borderBottom: `1px solid ${t.border}`,
+            background: t.cardHeader, flexShrink: 0,
+          }}
+        >
+          {toolbar}
+        </div>
+      )}
 
       {caveat}
 
@@ -139,7 +169,7 @@ export function ViewToggle<T extends string>({
   hints?: Partial<Record<T, string>>;
 }) {
   return (
-    <div style={{ display: "inline-flex", background: "#f3f4f6", borderRadius: 8, padding: 2, gap: 2 }}>
+    <div style={{ display: "inline-flex", flexWrap: "wrap", maxWidth: "100%", background: "#f3f4f6", borderRadius: 8, padding: 2, gap: 2 }}>
       {options.map((opt) => {
         const active = opt === value;
         const button = (
@@ -149,7 +179,7 @@ export function ViewToggle<T extends string>({
             aria-pressed={active}
             style={{
               border: "none", cursor: "pointer", borderRadius: 6,
-              padding: "3px 9px", fontSize: 11, fontWeight: 600,
+              padding: "3px 9px", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
               background: active ? "#fff" : "transparent",
               color: active ? t.textPrimary : t.textMuted,
               boxShadow: active ? "0 1px 2px rgba(0,0,0,0.06)" : "none",

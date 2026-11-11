@@ -20,10 +20,6 @@ import {
 } from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
 
-const GRID_WIDE: React.CSSProperties = {
-  display: "grid", gap: 20, gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))",
-};
-
 const THRESHOLDS = [
   { key: "2", label: "≥2 funds", min: 2, hint: "Show a name as soon as two of your funds hold it." },
   { key: "3", label: "≥3 funds", min: 3, hint: "Only names that at least three of your funds hold — a stricter test of agreement." },
@@ -646,7 +642,7 @@ export function ConsensusView({
   );
 
   if (err) {
-    return <div style={GRID_WIDE}><WidgetCard title="Consensus" span={2}><ErrorState message={err} /></WidgetCard></div>;
+    return <div className="card-grid"><WidgetCard title="Consensus" span={2}><ErrorState message={err} /></WidgetCard></div>;
   }
 
   // "Has not filed" is a claim about the MANAGER. A fund we failed to fetch is
@@ -712,7 +708,7 @@ export function ConsensusView({
         />
       </KpiRow>
 
-      <div style={{ ...GRID_WIDE, marginTop: 22 }}>
+      <div className="card-grid" style={{ marginTop: 22 }}>
         {/* PRIMARY */}
         <WidgetCard
           refreshing={refreshing}
@@ -727,8 +723,11 @@ export function ConsensusView({
           // single-row result, which reads as a broken widget rather than as a
           // narrow filter.
           bodyMinHeight={loading ? 300 : undefined}
-          actions={
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          // A TOOLBAR ROW, NOT HEADER ACTIONS. Eleven controls beside the title
+          // left the title no room at all, and it was squeezed into a column one
+          // word wide. Under the title they wrap as the screen narrows instead.
+          toolbar={
+            <>
               <ViewToggle
                 options={THRESHOLDS.map((x) => x.label) as unknown as readonly string[]}
                 value={THRESHOLDS.find((x) => x.key === threshold)!.label}
@@ -751,7 +750,7 @@ export function ConsensusView({
                     aria-pressed={moveFilter === key}
                     style={{
                       fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
-                      padding: "4px 9px", borderRadius: 7,
+                      padding: "4px 9px", borderRadius: 7, whiteSpace: "nowrap",
                       border: `1px solid ${moveFilter === key ? t.primaryBorder : t.border}`,
                       background: moveFilter === key ? t.primaryLight : "#fff",
                       color: moveFilter === key ? t.primaryText : t.textMuted,
@@ -761,7 +760,10 @@ export function ConsensusView({
                   </button>
                 </Hint>
               ))}
-              <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              {/* Search and export sit at the right end when there is room, and
+                  share a line of their own when there is not. */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flex: "1 1 260px", maxWidth: 380, minWidth: 0 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, flex: "1 1 auto", minWidth: 0 }}>
                 <span className="sr-only">Search consensus names</span>
                 <input
                   value={query}
@@ -769,7 +771,8 @@ export function ConsensusView({
                   placeholder="Search ticker or issuer…"
                   style={{
                     fontSize: 11.5, fontFamily: "inherit", padding: "5px 9px", borderRadius: 7,
-                    border: `1px solid ${t.border}`, width: 168, color: t.textPrimary, outline: "none",
+                    border: `1px solid ${t.border}`, width: "100%", minWidth: 0,
+                    color: t.textPrimary, outline: "none",
                   }}
                 />
               </label>
@@ -789,12 +792,13 @@ export function ConsensusView({
                 style={{
                   fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
                   padding: "4px 9px", borderRadius: 7, border: `1px solid ${t.border}`,
-                  background: "#fff", color: t.textMuted,
+                  background: "#fff", color: t.textMuted, whiteSpace: "nowrap", flexShrink: 0,
                 }}
               >
                 Export CSV
               </button>
-            </div>
+              </div>
+            </>
           }
           caveat={
             // THREE DIFFERENT ABSENCES, AND THEY ARE NOT THE SAME SENTENCE.
@@ -896,14 +900,14 @@ export function ConsensusView({
           {loading || !anchor ? (
             <TableSkeleton rows={6} cols={3} />
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1px 1fr" }}>
+            <div className="split-2">
               <div>
                 <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: ACTION_COLORS.NEW, padding: "9px 14px 4px" }}>
                   New positions ({anchor.entries.length})
                 </div>
                 <AnchorList items={anchor.entries} tone="new" emptyMessage="No new positions this quarter" />
               </div>
-              <div style={{ background: t.border }} />
+              <div className="split-rule" style={{ background: t.border }} />
               <div>
                 <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: ACTION_COLORS.EXITED, padding: "9px 14px 4px" }}>
                   Exited ({anchor.exits.length})

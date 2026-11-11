@@ -44,8 +44,8 @@ function FreshnessPill({ state, detail }: { state: Freshness; detail: string }) 
         fontSize: 11, color: t.textMuted, whiteSpace: "nowrap",
       }}
     >
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color }} />
-      {detail}
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }} />
+      <span className="freshness-detail">{detail}</span>
     </span>
   );
 }
@@ -95,10 +95,13 @@ export function Header({
 }) {
   return (
     <header
+      // Gap and side padding come from .app-header so they can tighten on a
+      // phone; an inline value would beat the stylesheet at every width.
+      className="app-header"
       style={{
         position: "sticky", top: 0, zIndex: 30,
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
-        padding: "0 24px", height: 48, flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        height: 48, flexShrink: 0,
         background: t.headerBar, backdropFilter: "blur(8px)",
         borderBottom: `1px solid ${t.borderSolid}`,
       }}
@@ -112,14 +115,16 @@ export function Header({
         >
           13F
         </span>
-        <h1 style={{ fontSize: 15, fontWeight: 700, color: t.textPrimary, margin: 0, whiteSpace: "nowrap" }}>
+        {/* On a narrow screen the tabs matter more than the label: the context
+            line goes first, then the product name (the badge still says 13F). */}
+        <h1 className="app-header-title" style={{ fontSize: 15, fontWeight: 700, color: t.textPrimary, margin: 0, whiteSpace: "nowrap" }}>
           13F Fund Tracker
         </h1>
-        <span style={{ fontSize: 12, color: t.textHint, whiteSpace: "nowrap" }}>{context}</span>
+        <span className="app-header-context" style={{ fontSize: 12, color: t.textHint, whiteSpace: "nowrap" }}>{context}</span>
         {ticker && <TickerPill ticker={ticker} funds={tickerFunds} onClick={onTickerClick} />}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+      <div className="app-header-controls" style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
         <div style={{ display: "inline-flex", background: "#f3f4f6", borderRadius: 8, padding: 2, gap: 2 }}>
           {VIEWS.map((v) => {
             const active = v.id === view;
