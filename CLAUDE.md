@@ -78,6 +78,19 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **17 Nov 2026 — the check for "a name that does not exist" now looks where
+  the name is used, not just anywhere in the file.** This is the check that
+  missed the monthly-rebuild mistake described in the next entry: a line used
+  a word that existed in two other loops of the same file but not in the one
+  it sat in. The check saw the word somewhere and passed it. It now only
+  accepts a word that is actually within reach of the line using it.
+
+  Tested on the exact mistake: it now stops it, and says which lines the word
+  does exist on. Run over every version of every pipeline file in the
+  project's history (144 saves), it finds that mistake and the one older typo
+  already known, and nothing else, so it does not raise false alarms. Nothing
+  in today's code is broken. The dashboard itself is unaffected.
+
 - **17 Nov 2026 — a fund that corrects its report now shows the corrected
   total.** Each quarter carries the total the fund wrote on its own filing. When
   a fund sent a correction, the monthly rebuild took that total from whichever

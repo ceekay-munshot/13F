@@ -1,7 +1,8 @@
 // scripts/_undefined-refs.mjs
 //
-// Find identifiers a module USES but never declares, imports, or receives as a
-// parameter — the "no-undef" rule, done with a real parser instead of a regex.
+// Find identifiers a module USES but that nothing visible from that spot
+// declares, imports, or receives as a parameter — the "no-undef" rule, done with
+// a real parser and real scopes instead of a regex.
 //
 // ---------------------------------------------------------------------------
 // WHY THIS EXISTS
@@ -28,6 +29,27 @@
 // read too early, which is an ordering fact rather than a naming one. That case
 // stays with the declaration-order check in ci-guards.mjs. Two different bugs,
 // two different checks; neither subsumes the other.
+//
+// ---------------------------------------------------------------------------
+// WHY IT RESOLVES BY SCOPE, NOT BY FILE
+// ---------------------------------------------------------------------------
+// The first version hoisted every `let`/`const` it found in any nested block up
+// into the enclosing function, so a name declared ANYWHERE in a function counted
+// as declared EVERYWHERE in it. That let a third one through (PR #17):
+//
+//     ranked.forEach(({ fund }, idx) => {
+//       …
+//       misalignedNames.push(`${cik} ${period}`);   // no `cik` in reach
+//     });
+//
+// `const cik` existed in ingest-dera.mjs — twice, inside two other loops of the
+// same function — so the check passed, and the monthly rebuild would have thrown
+// "cik is not defined" the first time it met a filing with names on the wrong
+// codes. Now a name counts as defined only if a declaration is visible from the
+// exact spot it is used: block scope for let/const/class (and for function
+// declarations, since every file here is an ES module and so strict), function
+// scope for var, hoisting respected because every scope is fully collected
+// before anything is resolved.
 //
 // acorn is a devDependency and is already in the tree via vite. It is declared
 // explicitly rather than relied on transitively, so a vite upgrade cannot
@@ -64,171 +86,189 @@ const GLOBALS = new Set([
   "__dirname", "__filename", "require", "module", "exports",
 ]);
 
-/** Names a node introduces into scope. */
-function declaredBy(pattern, out) {
-  if (!pattern) return;
-  switch (pattern.type) {
-    case "Identifier": out.add(pattern.name); break;
-    case "ObjectPattern":
-      for (const p of pattern.properties) {
-        if (p.type === "RestElement") declaredBy(p.argument, out);
-        else declaredBy(p.value, out);
-      }
-      break;
-    case "ArrayPattern": for (const e of pattern.elements) declaredBy(e, out); break;
-    case "AssignmentPattern": declaredBy(pattern.left, out); break;
-    case "RestElement": declaredBy(pattern.argument, out); break;
-  }
-}
-
 /**
- * Walk the tree keeping a scope chain, and collect every Identifier that is READ
- * but resolves to nothing.
+ * Walk the tree building the real scope tree, record every Identifier that is
+ * READ together with the scope it is read in, and only then resolve each one by
+ * walking outwards. Resolving after collecting is what makes hoisting free: a
+ * function may call something declared further down, in its own scope or any
+ * enclosing one.
  *
  * Property keys (`o.foo`, `{foo: 1}`), labels, and import/export specifiers are
  * not references and are skipped — getting that wrong is what makes naive
  * versions of this noisy.
+ *
+ * Each problem carries `declaredAt`: the lines where a binding of that name
+ * exists somewhere in the file, out of reach. Empty means the name exists
+ * nowhere — a typo; non-empty means a scope mistake like PR #17's.
  */
 export function undefinedRefs(source, filename = "<source>") {
   const ast = parse(source, { ecmaVersion: "latest", sourceType: "module", locations: true });
-  const problems = [];
 
-  // Hoist every declaration in a scope before walking its body, so a function
-  // may legitimately call something declared further down the file.
-  const collect = (nodes, scope, fnScope) => {
-    for (const n of nodes) hoist(n, scope, fnScope);
+  /** `fn` marks the scopes `var` belongs to: the module, functions, static blocks. */
+  const newScope = (parent, fn) => ({ parent, names: new Set(), fn });
+  const varScope = (scope) => { let s = scope; while (!s.fn) s = s.parent; return s; };
+
+  const refs = [];           // { id, scope }
+  const declLines = new Map(); // name -> [line], file-wide, for the message only
+  const declare = (scope, id) => {
+    scope.names.add(id.name);
+    if (!declLines.has(id.name)) declLines.set(id.name, []);
+    declLines.get(id.name).push(id.loc.start.line);
   };
-  const hoist = (n, scope, fnScope) => {
-    if (!n || typeof n.type !== "string") return;
-    switch (n.type) {
-      case "VariableDeclaration":
-        for (const d of n.declarations) declaredBy(d.id, n.kind === "var" ? fnScope : scope);
+  const use = (id, scope) => refs.push({ id, scope });
+
+  /**
+   * A binding pattern: names go into `target`; default values and computed keys
+   * are expressions, evaluated in `scope`.
+   */
+  const bind = (pattern, target, scope) => {
+    if (!pattern) return;
+    switch (pattern.type) {
+      case "Identifier": declare(target, pattern); return;
+      case "ObjectPattern":
+        for (const p of pattern.properties) {
+          if (p.type === "RestElement") { bind(p.argument, target, scope); continue; }
+          if (p.computed) walk(p.key, scope);
+          bind(p.value, target, scope);
+        }
         return;
-      case "FunctionDeclaration": if (n.id) scope.add(n.id.name); return;
-      case "ClassDeclaration": if (n.id) scope.add(n.id.name); return;
-      case "ImportDeclaration":
-        for (const s of n.specifiers) scope.add(s.local.name);
-        return;
-      case "ExportNamedDeclaration":
-      case "ExportDefaultDeclaration":
-        if (n.declaration) hoist(n.declaration, scope, fnScope);
-        return;
-      // `var` and function declarations escape blocks; recurse to find them.
-      case "IfStatement": hoist(n.consequent, scope, fnScope); hoist(n.alternate, scope, fnScope); return;
-      case "ForStatement": case "ForInStatement": case "ForOfStatement":
-        hoist(n.body, scope, fnScope); return;
-      case "WhileStatement": case "DoWhileStatement": case "LabeledStatement":
-        hoist(n.body, scope, fnScope); return;
-      case "BlockStatement": collect(n.body, scope, fnScope); return;
-      case "TryStatement":
-        hoist(n.block, scope, fnScope);
-        if (n.handler) hoist(n.handler.body, scope, fnScope);
-        hoist(n.finalizer, scope, fnScope);
-        return;
-      case "SwitchStatement":
-        for (const c of n.cases) collect(c.consequent, scope, fnScope);
-        return;
+      case "ArrayPattern": for (const e of pattern.elements) bind(e, target, scope); return;
+      case "AssignmentPattern": bind(pattern.left, target, scope); walk(pattern.right, scope); return;
+      case "RestElement": bind(pattern.argument, target, scope); return;
     }
   };
 
-  const walk = (node, chain) => {
+  const fn = (node, outer) => {
+    const scope = newScope(outer, true);
+    if (node.type !== "ArrowFunctionExpression") scope.names.add("arguments");
+    // A function expression's own name is visible only inside it.
+    if (node.type === "FunctionExpression" && node.id) declare(scope, node.id);
+    for (const p of node.params) bind(p, scope, scope);
+    // The body's top-level declarations share the function's scope.
+    if (node.body.type === "BlockStatement") for (const s of node.body.body) walk(s, scope);
+    else walk(node.body, scope);
+  };
+
+  const cls = (node, outer) => {
+    const scope = newScope(outer, false);
+    if (node.id) declare(scope, node.id); // the inner binding every class has
+    walk(node.superClass, scope);
+    walk(node.body, scope);
+  };
+
+  const walk = (node, scope) => {
     if (!node || typeof node.type !== "string") return;
-    const resolved = (name) => GLOBALS.has(name) || chain.some((s) => s.has(name));
-
-    const scoped = (bodyNodes, extraNames, isFunction) => {
-      const scope = new Set(extraNames);
-      const next = [scope, ...chain];
-      collect(bodyNodes, scope, isFunction ? scope : next[1] ?? scope);
-      for (const b of bodyNodes) walk(b, next);
-    };
-
     switch (node.type) {
       case "Program": {
-        const scope = new Set();
-        collect(node.body, scope, scope);
-        const next = [scope, ...chain];
-        for (const b of node.body) walk(b, next);
+        const s = newScope(null, true);
+        for (const b of node.body) walk(b, s);
+        return;
+      }
+      case "VariableDeclaration": {
+        const target = node.kind === "var" ? varScope(scope) : scope;
+        for (const d of node.declarations) { bind(d.id, target, scope); walk(d.init, scope); }
         return;
       }
       case "FunctionDeclaration":
+        // Block-scoped: these files are ES modules, so always strict.
+        if (node.id) declare(scope, node.id);
+        fn(node, scope);
+        return;
       case "FunctionExpression":
-      case "ArrowFunctionExpression": {
-        const names = new Set(["arguments", "this"]);
-        if (node.id) names.add(node.id.name);
-        for (const p of node.params) declaredBy(p, names);
-        for (const p of node.params) walk(p.type === "AssignmentPattern" ? p.right : null, [names, ...chain]);
-        if (node.body.type === "BlockStatement") scoped(node.body.body, names, true);
-        else { const next = [names, ...chain]; walk(node.body, next); }
+      case "ArrowFunctionExpression":
+        fn(node, scope);
+        return;
+      case "ClassDeclaration":
+        if (node.id) declare(scope, node.id);
+        cls(node, scope);
+        return;
+      case "ClassExpression":
+        cls(node, scope);
+        return;
+      case "StaticBlock": {
+        const s = newScope(scope, true);
+        for (const b of node.body) walk(b, s);
         return;
       }
-      case "BlockStatement": scoped(node.body, [], false); return;
+      case "BlockStatement": {
+        const s = newScope(scope, false);
+        for (const b of node.body) walk(b, s);
+        return;
+      }
       case "CatchClause": {
-        const names = new Set();
-        declaredBy(node.param, names);
-        scoped(node.body.body, names, false);
+        const s = newScope(scope, false);
+        bind(node.param, s, s);
+        walk(node.body, s);
         return;
       }
-      case "ForStatement": case "ForInStatement": case "ForOfStatement": {
-        const names = new Set();
-        for (const k of ["init", "left"]) {
-          const p = node[k];
-          if (p && p.type === "VariableDeclaration") for (const d of p.declarations) declaredBy(d.id, names);
-        }
-        const next = [names, ...chain];
-        for (const k of ["init", "left", "test", "update", "right", "body"]) walk(node[k], next);
+      case "ForStatement": {
+        const s = newScope(scope, false);
+        for (const k of ["init", "test", "update", "body"]) walk(node[k], s);
         return;
       }
+      case "ForInStatement": case "ForOfStatement": {
+        const s = newScope(scope, false);
+        for (const k of ["left", "right", "body"]) walk(node[k], s);
+        return;
+      }
+      case "SwitchStatement": {
+        walk(node.discriminant, scope);
+        const s = newScope(scope, false); // every case shares one block
+        for (const c of node.cases) { walk(c.test, s); for (const b of c.consequent) walk(b, s); }
+        return;
+      }
+      case "ImportDeclaration":
+        for (const s of node.specifiers) declare(scope, s.local);
+        return;
+      case "ExportAllDeclaration": return;
+      case "ExportNamedDeclaration":
+        if (node.source) return; // `export { a } from "./m"` names nothing local
+        walk(node.declaration, scope);
+        for (const s of node.specifiers) use(s.local, scope);
+        return;
       case "MemberExpression":
-        walk(node.object, chain);
-        if (node.computed) walk(node.property, chain);
+        walk(node.object, scope);
+        if (node.computed) walk(node.property, scope);
         return;
       case "Property":
-        if (node.computed) walk(node.key, chain);
-        walk(node.value, chain);
+      case "MethodDefinition":
+      case "PropertyDefinition":
+        if (node.computed) walk(node.key, scope);
+        walk(node.value, scope);
         return;
-      case "MethodDefinition": case "PropertyDefinition":
-        if (node.computed) walk(node.key, chain);
-        walk(node.value, chain);
-        return;
-      case "ImportDeclaration": case "ExportAllDeclaration": return;
-      case "ExportNamedDeclaration":
-        // `export { a as b }` names locals, which hoisting already resolved.
-        if (node.source) return;
-        walk(node.declaration, chain);
-        for (const s of node.specifiers) {
-          if (!resolved(s.local.name)) {
-            problems.push({ name: s.local.name, line: s.local.loc.start.line, file: filename });
-          }
-        }
-        return;
-      case "LabeledStatement": walk(node.body, chain); return;
+      case "LabeledStatement": walk(node.body, scope); return;
       case "BreakStatement": case "ContinueStatement": return;
       case "MetaProperty": return;
-      case "Identifier":
-        if (!resolved(node.name)) {
-          problems.push({ name: node.name, line: node.loc.start.line, file: filename });
-        }
-        return;
+      case "Identifier": use(node, scope); return;
     }
 
     for (const key of Object.keys(node)) {
       if (key === "loc" || key === "start" || key === "end" || key === "type") continue;
       const v = node[key];
-      if (Array.isArray(v)) for (const c of v) walk(c, chain);
-      else if (v && typeof v.type === "string") walk(v, chain);
+      if (Array.isArray(v)) for (const c of v) walk(c, scope);
+      else if (v && typeof v.type === "string") walk(v, scope);
     }
   };
 
-  walk(ast, []);
+  walk(ast, null);
 
-  // De-duplicate: one report per name per line.
+  const resolves = (name, scope) => {
+    for (let s = scope; s; s = s.parent) if (s.names.has(name)) return true;
+    return GLOBALS.has(name);
+  };
+
+  // One report per name per line.
   const seen = new Set();
-  return problems.filter((p) => {
-    const k = `${p.name}:${p.line}`;
-    if (seen.has(k)) return false;
+  const problems = [];
+  for (const { id, scope } of refs) {
+    if (resolves(id.name, scope)) continue;
+    const line = id.loc.start.line;
+    const k = `${id.name}:${line}`;
+    if (seen.has(k)) continue;
     seen.add(k);
-    return true;
-  });
+    problems.push({ name: id.name, line, file: filename, declaredAt: declLines.get(id.name) ?? [] });
+  }
+  return problems;
 }
 
 export function undefinedRefsInFile(path) {

@@ -667,6 +667,11 @@ function guardNothingFailsQuietly() {
  *
  * Real scope analysis is the only thing that catches this class reliably. It is
  * exact: a name that resolves to nothing is not a matter of judgement.
+ *
+ * "Resolves" means from the line that uses it, not from anywhere in the file.
+ * PR #17 wrote `${cik}` in a loop where no `cik` was in reach; the first version
+ * of this check passed it because `const cik` sat in two other loops of the same
+ * function. See scripts/_undefined-refs.mjs.
  */
 function guardNoUndefinedNames() {
   const guard = "no-call-to-a-name-that-does-not-exist";
@@ -685,7 +690,10 @@ function guardNoUndefinedNames() {
         continue;
       }
       for (const p of problems) {
-        fail(guard, f, `line ${p.line}: \`${p.name}\` is used but never declared, imported, or passed in. It throws ReferenceError the moment this line runs.`);
+        const where = p.declaredAt.length
+          ? `is declared on line${p.declaredAt.length > 1 ? "s" : ""} ${p.declaredAt.join(", ")}, but not anywhere line ${p.line} can see`
+          : "is used but never declared, imported, or passed in";
+        fail(guard, f, `line ${p.line}: \`${p.name}\` ${where}. It throws ReferenceError the moment this line runs.`);
       }
     }
   }

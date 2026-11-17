@@ -41,6 +41,56 @@ describe("names that do not exist", () => {
   });
 });
 
+describe("names declared, but not anywhere the line can see — PR #17", () => {
+  // The first version counted a name as declared everywhere in a function if it
+  // was declared anywhere in it. PR #17 added `${cik}` inside a forEach whose
+  // fund is `fund`; `const cik` existed only inside two OTHER loops of the same
+  // function, so the check passed and the monthly rebuild would have thrown
+  // "cik is not defined" on the first filing with names on the wrong codes.
+
+  it("catches the shape that shipped: declared in one block, used in a sibling", () => {
+    const src = `export function rebuild(rows, ranked) {
+      const misalignedNames = [];
+      for (const c of rows) {
+        const cik = c.cik.trim();
+        if (!cik) continue;
+      }
+      ranked.forEach(({ fund }, idx) => {
+        misalignedNames.push(\`\${cik} \${idx}\`);
+      });
+      return misalignedNames;
+    }`;
+    const found = undefinedRefs(src, "t.mjs");
+    expect(found).toHaveLength(1);
+    // declaredAt says it exists, out of reach — a scope mistake, not a typo.
+    expect(found[0]).toMatchObject({ name: "cik", line: 8, declaredAt: [4] });
+  });
+
+  it("a let/const from an if-block, read after the block", () => {
+    expect(names(`export function f(x) { if (x) { const y = 1; } return y; }`)).toEqual(["y"]);
+  });
+
+  it("a loop variable, read after the loop", () => {
+    expect(names(`export function f(xs) { for (let i = 0; i < xs.length; i++) {} return i; }`)).toEqual(["i"]);
+  });
+
+  it("a catch binding, read after the catch", () => {
+    expect(names(`export function f() { try { g(); } catch (err) {} return err; }\nfunction g() {}`)).toEqual(["err"]);
+  });
+
+  it("one function's parameter, read in a sibling function", () => {
+    expect(names(`export function a(fund) { return fund; }\nexport function b() { return fund.cik; }`)).toEqual(["fund"]);
+  });
+
+  it("a var inside a nested function, read in the outer one", () => {
+    expect(names(`export function f() { const g = () => { var v = 1; return v; }; return g() + v; }`)).toEqual(["v"]);
+  });
+
+  it("a function declared in a block, called outside it (modules are strict)", () => {
+    expect(names(`export function f(x) { if (x) { function h() { return 1; } } return h(); }`)).toEqual(["h"]);
+  });
+});
+
 describe("what it must not flag — a noisy check gets turned off", () => {
   const clean = (src) => expect(names(src)).toEqual([]);
 
@@ -76,6 +126,39 @@ describe("what it must not flag — a noisy check gets turned off", () => {
 
   it("classes, getters, and this", () => {
     clean(`export class A extends Error { #p = 1; get v() { return this.#p; } static make() { return new A(); } }`);
+  });
+
+  it("a var declared in a block is visible to the whole function", () => {
+    clean(`export function f(xs) { for (const x of xs) { if (x) { var last = x; } } return last; }`);
+  });
+
+  it("a closure reading a name its enclosing scope declares further down", () => {
+    clean(`export function f(xs) {
+      const pick = (k) => byKey.get(k) ?? fallback(k);
+      const byKey = new Map(xs);
+      return pick("a");
+      function fallback(k) { return k; }
+    }`);
+  });
+
+  it("a block's own names, read from closures inside that block", () => {
+    clean(`export function f(rows) {
+      for (const r of rows) { const cik = r.cik; rows.forEach(({ fund }) => fund.push(cik)); }
+      for (let i = 0; i < rows.length; i++) setTimeout(() => rows[i]);
+    }`);
+  });
+
+  it("a function or class expression's own name, inside itself", () => {
+    clean(`export const fact = function f(n) { return n < 2 ? 1 : n * f(n - 1); };
+      export const K = class Self { static make() { return new Self(); } };`);
+  });
+
+  it("switch cases share one block; labels are not names", () => {
+    clean(`export function f(k) {
+      outer: for (const x of [1]) {
+        switch (k) { case 1: { const a = x; return a; } default: continue outer; }
+      }
+    }`);
   });
 
   it("the real pipeline, every module — the only test that proves it is usable", async () => {
