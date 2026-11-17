@@ -132,6 +132,23 @@ function tileStyle(dWeightPp: number | null, action: string | null) {
  * treemap answer both "what do they own" and "what moved", which is why there is
  * no separate change-heatmap widget.
  */
+/**
+ * What a tile says when the line has no ticker: the start of the name as filed,
+ * cut to fit the tile, rather than a bare dash.
+ *
+ * A dash told the reader nothing, and since 17 Nov 2026 a misaligned filing can
+ * leave a dozen of them on one map (Lightrock: BRUNSWICK, CARETRUST, CABOT…).
+ * The first word is nearly always the distinctive one. ~7px per character at
+ * 11.5px bold.
+ */
+function tileText(ticker: string | null | undefined, name: string | undefined, width: number) {
+  if (ticker) return ticker;
+  const word = (name ?? "").trim().split(/\s+/)[0] ?? "";
+  if (!word) return "—";
+  const fit = Math.max(3, Math.floor((width - 10) / 7));
+  return word.length <= fit ? word : `${word.slice(0, fit - 1)}…`;
+}
+
 function TreemapTile(props: {
   x?: number; y?: number; width?: number; height?: number;
   ticker?: string | null; name?: string; dWeightPp?: number | null; action?: string | null;
@@ -171,7 +188,7 @@ function TreemapTile(props: {
           // text unreadable.
           stroke="none" style={{ paintOrder: "stroke" }}
         >
-          {ticker ?? "—"}
+          {tileText(ticker, name, width)}
         </text>
       )}
       {showSub && (
