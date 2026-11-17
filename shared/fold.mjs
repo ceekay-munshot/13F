@@ -36,6 +36,16 @@
  * 2024-05-15 (~8 months); Jefferies amended 2021-Q1 in September 2023 (~29
  * months). There is no SEC-stated limit. Derived tables must therefore be
  * invalidatable, never append-only.
+ *
+ * THE LABEL IS NOT ALWAYS TRUE. Some filers tick "adds new holdings" on what is
+ * plainly a full re-filing of the whole book — see `repeatedShare` below for the
+ * measurement and the rule. Trusting the label there adds the book to itself.
+ *
+ * THE RESULT HAS ONE ROW PER POSITION. Each filing's rows were aggregated and
+ * weighted on their own; a genuine addition can name a security the book already
+ * holds (the withheld part of a partly confidential position), and its weights
+ * are shares of the AMENDMENT's total, not the quarter's. So whenever the fold
+ * really did combine two filings, the result is merged and re-weighted here.
  */
 export function foldFilings(filings) {
   const warnings = [];
@@ -63,6 +73,14 @@ export function foldFilings(filings) {
 
   let rows = [];
   const accessions = [];
+  // What the fold actually did with each filing, in `ordered` order: "replace"
+  // or "add". The cover-page total follows these, so it cannot disagree with
+  // the rows about which filings make up the quarter.
+  const applied = [];
+  // True while the book holds rows from more than one filing — the only case in
+  // which it can carry two rows for one position, or weights computed against
+  // some other total. A later replacement makes it one filing again.
+  let combined = false;
 
   for (const f of ordered) {
     accessions.push(f.accession_number);
@@ -71,6 +89,8 @@ export function foldFilings(filings) {
       // An original seeds the set. A second original for the same period is
       // unusual but the later one wins, consistent with restatement semantics.
       rows = [...(f.rows || [])];
+      applied.push("replace");
+      combined = false;
       continue;
     }
 
@@ -78,8 +98,29 @@ export function foldFilings(filings) {
 
     if (type === "RESTATEMENT") {
       rows = [...(f.rows || [])];
+      applied.push("replace");
+      combined = false;
     } else if (type === "NEW HOLDINGS") {
-      rows = [...rows, ...(f.rows || [])];
+      const repeat = repeatedShare(rows, f.rows || []);
+      if (repeat.share >= RELISTED_BOOK_SHARE || repeat.sameSharesValueShare >= RELISTED_BOOK_SHARE) {
+        // A full re-filing wearing the wrong label. Taken as what it is, and
+        // said out loud, because it overrides what the filer wrote.
+        warnings.push({
+          code: "new_holdings_relists_book",
+          detail:
+            `${f.accession_number} is labelled NEW HOLDINGS but repeats ${repeat.repeated} of the ` +
+            `${repeat.of} positions already reported, ` +
+            `${(repeat.sameSharesValueShare * 100).toFixed(0)}% of the book by value at identical share ` +
+            `counts; treated as RESTATEMENT`,
+        });
+        rows = [...(f.rows || [])];
+        applied.push("replace");
+        combined = false;
+      } else {
+        if (rows.length && (f.rows || []).length) combined = true;
+        rows = [...rows, ...(f.rows || [])];
+        applied.push("add");
+      }
     } else {
       // Neither value present. Defaulting to RESTATEMENT is the safer of two
       // bad options — treating an unknown amendment as additive would
@@ -90,6 +131,8 @@ export function foldFilings(filings) {
         detail: `${f.accession_number}: amendment_type=${JSON.stringify(f.amendment_type)}; treated as RESTATEMENT`,
       });
       rows = [...(f.rows || [])];
+      applied.push("replace");
+      combined = false;
     }
   }
 
@@ -100,7 +143,180 @@ export function foldFilings(filings) {
     });
   }
 
-  return { rows, accessions, warnings, reportedTotalUsd: foldReportedTotal(ordered) };
+  // Only when two filings were really combined. Everywhere else the rows are
+  // one filing's, already aggregated and weighted by the parser, and passing
+  // them through untouched keeps every other artifact byte-for-byte the same.
+  if (combined) rows = mergeHoldings(rows);
+
+  return { rows, accessions, warnings, reportedTotalUsd: foldReportedTotal(ordered, applied) };
+}
+
+// ---------------------------------------------------------------------------
+// A "NEW HOLDINGS" amendment that is really a full re-filing
+// ---------------------------------------------------------------------------
+
+/**
+ * At or above this share of the book, a NEW HOLDINGS amendment is read as a full
+ * re-filing rather than an addition. Two measures, either one enough:
+ *
+ *   POSITIONS  the share of the positions already reported that the amendment
+ *              names again, at any size.
+ *   VALUE      the share of the book's value that the amendment repeats with
+ *              the SAME share count — the same holding, reported again.
+ *
+ * MEASURED, 17 Nov 2026, on 101 NEW HOLDINGS amendments that had a book before
+ * them — every one in the dashboard's filings feeds for Q4 2025 to Q3 2026, plus
+ * those behind the funds whose Q3 exit lists showed doubles — each read from the
+ * filing itself on EDGAR. The two kinds do not overlap:
+ *
+ *   42 re-filings, in 39 fund-quarters. 41 repeat 61-100% of the positions already
+ *     reported. Arbiter Partners' 2026-Q2 original and both its "new holdings"
+ *     amendments each list the same 42-44 positions worth ~$190M; trusting the
+ *     label published 127 positions worth $576M, and the one it later sold
+ *     appeared three times. Arini Capital's original omitted a $491M position;
+ *     its amendment added it AND re-listed the other 27, so each of those 27
+ *     appeared twice with weights a factor of two apart (CZR: 7.40% of the
+ *     incomplete book, 3.67% of the whole one — the right one). The 42nd (CIK
+ *     0001032814, 2026-Q2) is why there is a second measure: it repeats only 17
+ *     of 53 positions, but they are its 17 largest, share for share — 99% of a
+ *     $3.78B book — and adding them would have doubled it.
+ *
+ *   59 genuine additions. Most repeat nothing: they add positions that were
+ *     withheld. Some name securities the book already holds — the withheld part
+ *     of a partly disclosed position — at most 37% of the positions, and almost
+ *     never at the same share count (0.3% of the book's value at most), which
+ *     is what an addition to an existing position looks like.
+ *
+ * Half sits well inside both gaps. Both are shares of the BOOK, not of the
+ * amendment: an addition of five rows that all name existing securities is 100%
+ * repeated by its own measure and still an addition.
+ */
+export const RELISTED_BOOK_SHARE = 0.5;
+
+/**
+ * The key a position is unique on within one filing — the same three fields
+ * aggregateHoldings groups by in scripts/_sec-parse.mjs. Never other_manager.
+ */
+function positionKey(h) {
+  return `${h.cusip}|${h.put_call ?? ""}|${h.ssh_prnamt_type ?? "SH"}`;
+}
+
+/** Value and shares per position, summed, so a book holding two parts of one position compares as one. */
+function byPosition(rows) {
+  const out = new Map();
+  for (const h of rows) {
+    const k = positionKey(h);
+    const o = out.get(k) ?? { value: 0, shares: 0 };
+    o.value += h.value_usd || 0;
+    o.shares += h.ssh_prnamt || 0;
+    out.set(k, o);
+  }
+  return out;
+}
+
+/**
+ * How much of the book an amendment repeats — see RELISTED_BOOK_SHARE.
+ *
+ * @returns {{repeated: number, of: number, share: number, sameSharesValueShare: number}}
+ *   `repeated` of the book's `of` positions also appear in the amendment, and
+ *   `share` is that fraction. `sameSharesValueShare` is the fraction of the
+ *   book's value held in positions the amendment repeats at the identical share
+ *   count. All zero for an empty book: an amendment with nothing before it
+ *   repeats nothing.
+ */
+export function repeatedShare(book, amendmentRows) {
+  const before = byPosition(book);
+  if (!before.size) return { repeated: 0, of: 0, share: 0, sameSharesValueShare: 0 };
+  let bookValue = 0;
+  for (const b of before.values()) bookValue += b.value;
+
+  let repeated = 0;
+  let sameSharesValue = 0;
+  for (const [k, a] of byPosition(amendmentRows)) {
+    const b = before.get(k);
+    if (!b) continue;
+    repeated++;
+    if (a.shares === b.shares) sameSharesValue += b.value;
+  }
+  return {
+    repeated,
+    of: before.size,
+    share: repeated / before.size,
+    sameSharesValueShare: bookValue > 0 ? sameSharesValue / bookValue : 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// One row per position, weighted against the whole quarter
+// ---------------------------------------------------------------------------
+
+/**
+ * Set `weight_pct` and `implied_price` on every holding, against the long-equity
+ * total of exactly these holdings. Mutates and returns its argument.
+ *
+ * The parser's aggregateHoldings calls this too, so there is one formula. It
+ * used to live only there, run once per FILING — which is right until the fold
+ * puts two filings into one book, when every weight in the second is a share of
+ * a total that is no longer the quarter's.
+ *
+ * Long equity only for the denominator — never a denominator that mixes option
+ * notional with equity market value. Post-2023 filers are inconsistent about
+ * whether an option row's value is fair value or underlying notional, and large
+ * filers commonly report notional, so a mixed denominator inflates the book and
+ * deflates every weight by an amount that varies per fund.
+ */
+export function weighHoldings(holdings) {
+  const valueLong = holdings
+    .filter((h) => h.put_call === "" && h.ssh_prnamt_type === "SH")
+    .reduce((a, h) => a + h.value_usd, 0);
+
+  for (const h of holdings) {
+    // NULLIF-equivalent: 167 of 315,211 measured rows have value = 0, rare
+    // enough to miss in fixtures and common enough to appear in production.
+    h.weight_pct = valueLong > 0 ? (h.value_usd / valueLong) * 100 : null;
+    h.implied_price =
+      h.put_call === "" && h.ssh_prnamt_type === "SH" && h.ssh_prnamt > 0
+        ? h.value_usd / h.ssh_prnamt
+        : null;
+  }
+  return holdings;
+}
+
+/**
+ * Collapse a combined book to one row per position and re-weight it.
+ *
+ * Two rows for one position after a genuine addition are two PORTIONS of it —
+ * the part reported first and the part that was withheld — so they are summed,
+ * exactly as aggregateHoldings sums the portions of a position within one
+ * filing. Identity fields are taken from the first row that has them.
+ *
+ * WHY THIS MATTERS DOWNSTREAM. computeChanges reads the book through maps keyed
+ * on the position, which keep one row, but walks the prior book row by row to
+ * find exits. A position held twice was therefore matched once and exited twice
+ * — the doubled "Exited" list — each copy carrying a weight against a different
+ * filing's total.
+ *
+ * Never mutates its input: the per-filing rows also feed the filings list.
+ */
+export function mergeHoldings(rows) {
+  const byKey = new Map();
+  for (const h of rows) {
+    const k = positionKey(h);
+    const acc = byKey.get(k);
+    if (!acc) {
+      byKey.set(k, { ...h });
+      continue;
+    }
+    acc.value_usd += h.value_usd || 0;
+    acc.ssh_prnamt += h.ssh_prnamt || 0;
+    for (const f of ["voting_sole", "voting_shared", "voting_none", "row_count"]) {
+      if (acc[f] != null || h[f] != null) acc[f] = (acc[f] || 0) + (h[f] || 0);
+    }
+    for (const f of ["name_of_issuer", "title_of_class", "figi", "ticker", "issuerId"]) {
+      if (acc[f] == null && h[f] != null) acc[f] = h[f];
+    }
+  }
+  return weighHoldings([...byKey.values()]);
 }
 
 /**
@@ -125,18 +341,23 @@ export function foldFilings(filings) {
  * cover total covers only the entries it adds, so the period's reported total is
  * the original plus each addition — the same accumulate-or-reset the rows get.
  *
+ * "The same" literally: it is handed what the row fold DID with each filing, not
+ * the filing's label. A "new holdings" amendment that was really a full
+ * re-filing reset the rows, so it resets the total too — Arbiter Partners'
+ * 2026-Q2 read $576M, three copies of a $190M book added together.
+ *
  * @param {Array} ordered  filings sorted oldest-first by acceptance
+ * @param {Array<"replace"|"add">} applied  what the row fold did with each
  * @returns {number|null}
  */
-function foldReportedTotal(ordered) {
+function foldReportedTotal(ordered, applied) {
   let total = null;
-  for (const f of ordered) {
+  ordered.forEach((f, i) => {
     const v = f.table_value_total;
-    if (v == null) continue;
-    const type = (f.amendment_type || "").toUpperCase();
-    if (f.is_amendment && type === "NEW HOLDINGS") total = (total ?? 0) + v;
+    if (v == null) return;
+    if (applied[i] === "add") total = (total ?? 0) + v;
     else total = v; // an original, a restatement, or an unclassified amendment
-  }
+  });
   return total;
 }
 
