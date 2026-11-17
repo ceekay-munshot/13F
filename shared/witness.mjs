@@ -53,14 +53,33 @@ export const UNEXPLAINED_SHORTFALL_PCT = 2;
 /**
  * How long after a filing lands on EDGAR before its absence is a fault.
  *
- * During filing season managers file continuously, and the same-day job runs
- * daily, so "they filed this morning and we do not have it yet" is the pipeline
- * working, not failing. Two days is one full cycle plus a spare.
+ * SIX HOURS, NOT TWO DAYS. It was two days while the pipeline only learned of a
+ * filing from that night's daily index, so "filed this morning, not on the
+ * dashboard yet" really was the pipeline working. It also meant that on 16 Nov
+ * 2026 — Q3's deadline, eleven of the fourteen client funds filing — this check
+ * stayed green all day while a client refreshed a page that said Lone Pine had
+ * not been read. A client fund missing for a working day is exactly what it is
+ * here to catch.
+ *
+ * The pipeline now reads EDGAR's latest-filings list and checks each client
+ * fund against its own SEC filing list on every run, and runs every half hour
+ * in filing season. A client fund that filed six hours ago and is still not on
+ * its page has missed a dozen chances: that is a fault, not a queue.
  *
  * Past that it is a real gap: Nuveen filed for 2026-06-30 on 2026-08-11 and was
  * still missing from the dashboard ten days later. This check found it.
  */
-export const INGEST_GRACE_DAYS = 2;
+export const INGEST_GRACE_HOURS = 6;
+export const INGEST_GRACE_DAYS = INGEST_GRACE_HOURS / 24;
+
+/** "5 hours ago" under two days, "10 days ago" beyond — whichever a person would say. */
+export function ageText(days) {
+  if (days < 2) {
+    const h = Math.max(0, Math.floor(days * 24));
+    return `${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  return `${Math.floor(days)} days ago`;
+}
 
 export function coverReadings(rawTotal, schemaVersion) {
   if (!Number.isFinite(rawTotal)) return null;
@@ -180,14 +199,14 @@ export async function judge({ name, period, ours, filings, readCover, asOf = new
       return {
         verdict: "not-comparable",
         name,
-        why: `filed ${forms} for ${period} on ${when}, ${daysOld < 1 ? "today" : `${Math.floor(daysOld)}d ago`} ` +
-             `— inside the ${INGEST_GRACE_DAYS}-day ingest window, so not yet a gap`,
+        why: `filed ${forms} for ${period} on ${when}, ${ageText(daysOld)} ` +
+             `— inside the ${INGEST_GRACE_HOURS}-hour ingest window, so not yet a gap`,
       };
     }
     return {
       verdict: "disagree",
       name,
-      what: `EDGAR has ${forms} for ${period} (accepted ${when}, ${Math.floor(daysOld)} days ago), but our ` +
+      what: `EDGAR has ${forms} for ${period} (accepted ${when}, ${ageText(daysOld)}), but our ` +
             `dashboard has no ${period} at all.`,
     };
   }

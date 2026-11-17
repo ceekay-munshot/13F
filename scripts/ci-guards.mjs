@@ -492,6 +492,53 @@ function guardSameDayPublish() {
 }
 
 // ---------------------------------------------------------------------------
+// GUARD — a filing made this morning must be seen this morning.
+//
+// 16 Nov 2026, Q3's deadline. Eleven of the client's fourteen funds filed
+// during the day. Discovery read only EDGAR's daily index, which is cut at
+// about 10pm New York time, so none of them existed as far as the pipeline
+// knew until that night; the check that compares client funds with the SEC
+// allowed two days' grace, so it stayed green; and a client refreshed a page
+// that said Lone Pine "had not been read yet" all afternoon.
+//
+// Three things stop that, and this guard keeps all three:
+//
+//   1. the planner reads EDGAR's latest-filings list, not only the index;
+//   2. it compares each client fund's OWN SEC filing list with its published
+//      page — and queues it only on that evidence (the same rule as above:
+//      the SEC must say they filed; a list of favourites is never enough);
+//   3. the witness calls a missing client quarter a fault within hours, not days.
+// ---------------------------------------------------------------------------
+{
+  const guard = "same-day-discovery";
+  checks.push(guard);
+  const d = join(ROOT, "scripts/discover-13f-filers.mjs");
+  if (existsSync(d)) {
+    const src = readFileSync(d, "utf8");
+    if (!/SEC_URLS\.currentFeed\(/.test(src) || !/noteLiveFiling\(/.test(src)) {
+      fail(guard, d, "the planner no longer reads EDGAR's latest-filings list. Without it a filing made in the morning is invisible until that night's index — the 16 Nov 2026 outage.");
+    }
+    const check = /is any client fund's page behind the SEC\?[\s\S]*?requeue\(/.exec(src)?.[0] ?? "";
+    if (!check) {
+      fail(guard, d, "the planner no longer compares each client fund's SEC filing list with its published page.");
+    } else if (!/SEC_URLS\.submissions\(/.test(check) || !/behindOnSite\(/.test(check)) {
+      fail(guard, d, "client funds are queued without the SEC's own filing list as evidence. That is the watchlist fallback the guard above forbids.");
+    }
+  }
+  const w = join(ROOT, "shared/witness.mjs");
+  if (existsSync(w)) {
+    const hours = Number(/INGEST_GRACE_HOURS\s*=\s*(\d+(?:\.\d+)?)/.exec(readFileSync(w, "utf8"))?.[1]);
+    if (!Number.isFinite(hours) || hours > 12) {
+      fail(guard, w, `INGEST_GRACE_HOURS is ${Number.isFinite(hours) ? hours : "missing"}. A client fund missing from its page for longer than half a day must be reported — it was two days on 16 Nov 2026, and nobody was told.`);
+    }
+  }
+  const watch = join(ROOT, ".github/workflows/watch.yml");
+  if (!existsSync(watch) || !/watch-ingest\.mjs/.test(readFileSync(watch, "utf8"))) {
+    fail(guard, watch, "nothing starts the ingest except GitHub's own timer, which kept about one run in four in Nov 2026 — twelve hours apart on deadline day.");
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 
 // ---------------------------------------------------------------------------

@@ -55,6 +55,14 @@ export interface Manifest {
      */
     known?: number;
     knownAsOf?: string | null;
+    /**
+     * Of `known`, how many are still waiting to be read — the ingest cursor's
+     * own count. Prefer it to `known - funds`: about 2,000 managers a quarter
+     * file only a notice and never become a holdings page, so that difference
+     * never reaches zero and every quarter looked "still loading" for ever.
+     * Absent on builds from before 17 Nov 2026; see queuedFor().
+     */
+    pending?: number;
   }[];
   funds: Record<string, string>;
   /**
@@ -567,6 +575,24 @@ export async function loadPeriodFilings(period: string, mf: Manifest): Promise<P
  * newest period that actually has enough data to be worth looking at, and the
  * quarter stepper lets the user move to the sparse newest one deliberately.
  */
+/**
+ * How many managers who filed for this quarter we have NOT read yet.
+ * null means no opinion (the pipeline never said how many filed).
+ *
+ * One answer for every screen that says "still loading". It used to be
+ * `known - funds` in three places, and that difference never reaches zero —
+ * managers who file only a notice never become a holdings page — so on 16 Nov
+ * 2026 the Fund tab told a client "1,451 managers are still queued, Lone Pine
+ * may be one of them" when the real queue was a handful, and kept saying it.
+ * Builds from before the pipeline published `pending` fall back to that
+ * estimate rather than to silence.
+ */
+export function queuedFor(row: Manifest["periods"][number] | undefined): number | null {
+  if (!row || row.known == null) return null;
+  if (typeof row.pending === "number" && Number.isFinite(row.pending)) return Math.max(0, row.pending);
+  return Math.max(0, row.known - (row.funds ?? 0));
+}
+
 export function defaultPeriod(mf: Manifest): string {
   if (!mf.periods.length) return mf.coverage.to;
 

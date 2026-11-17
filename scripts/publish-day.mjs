@@ -379,8 +379,17 @@ const unfinished = createRegister();
   const planned = (period) =>
     PLAN && PLAN.period === period && Number.isFinite(PLAN.filersKnown) && PLAN.filersKnown > 0;
 
+  // `pending` is how many of `known` are still queued — the honest answer to
+  // "is this quarter still loading?". Taken after the commit step crossed off
+  // what this run finished, so it is the number as of this publish.
   const knownFor = (period) =>
-    planned(period) ? { known: PLAN.filersKnown, knownAsOf: PLAN.generatedAt ?? null } : {};
+    planned(period)
+      ? {
+          known: PLAN.filersKnown,
+          knownAsOf: PLAN.generatedAt ?? null,
+          ...(Number.isFinite(PLAN.filersPending) ? { pending: PLAN.filersPending } : {}),
+        }
+      : {};
 
   for (const k of feedKeys) {
     const period = k.split("/")[1];
@@ -444,7 +453,13 @@ const unfinished = createRegister();
       filings: Math.max(out.total ?? 0, ingested),
       // `funds` is NOT taken from the feed any more — see the note where
       // fundsAdded is counted. mergeManifest adds this to what is published.
-      ...(out.known != null ? { known: out.known, knownAsOf: out.knownAsOf ?? null } : {}),
+      ...(out.known != null
+        ? {
+            known: out.known,
+            knownAsOf: out.knownAsOf ?? null,
+            ...(Number.isFinite(out.pending) ? { pending: out.pending } : {}),
+          }
+        : {}),
     };
   }
 

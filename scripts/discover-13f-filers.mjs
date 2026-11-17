@@ -54,12 +54,42 @@
 //      on shared runners; nothing was lost and the next slot resumes.
 //   1  something is actually wrong and a human should look.
 
+// ---------------------------------------------------------------------------
+// AND THE ONE AFTER IT — 17 Nov 2026
+// ---------------------------------------------------------------------------
+// Reading only the daily index made this "next-day", not "same-day". EDGAR cuts
+// a day's index at about 10pm New York time, so a filing made at nine in the
+// morning was invisible here for thirteen hours however often we ran. On Q3's
+// deadline eleven of the client's fourteen funds filed during the day, and a
+// client was told all afternoon that Lone Pine "had not been read yet".
+//
+// Two more sources now feed the same cursor, both of them the SEC's own word:
+//
+//   3. THE LATEST-FILINGS LIST. EDGAR lists a filing minutes after accepting
+//      it. Every run reads it back to the last day whose index is already in,
+//      and queues anyone new. That night's index is merged over it, so nothing
+//      the live list missed is lost (see shared/ingest-cursor.mjs).
+//   4. EACH CLIENT FUND'S OWN FILING LIST, compared with its published page.
+//      If the SEC holds a newer quarter than the dashboard shows, the fund is
+//      queued whatever the cursor believes. Fourteen small requests, and the
+//      one check that would have caught 16 November by itself.
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, SecBlockedError, padCik } from "./_sec-fetch.mjs";
-import { parseFormIdx } from "./_sec-parse.mjs";
+import { parseCurrentFeed, parseFormIdx, parseSubmissions } from "./_sec-parse.mjs";
 import { addDays, parseISO, toISO, currentPeriod } from "../shared/calendar.mjs";
 import { WATCHLIST_CIKS } from "../shared/watchlist.mjs";
+import {
+  alreadyRecorded,
+  behindOnSite,
+  crossOff,
+  expectationsFor,
+  mergeIndexDay,
+  noteLiveFiling,
+  readDay,
+  requeue,
+} from "../shared/ingest-cursor.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -115,6 +145,28 @@ const FRESH_SHARE = Math.max(0, Math.min(1, num(args["fresh-share"], 0.35)));
 const MAX_NEW_DAYS = Math.max(1, num(args["max-new-days"], 80));
 
 const TODAY = str(args.today) || new Date().toISOString().slice(0, 10);
+
+/**
+ * How far back the latest-filings list may be paged. It holds about two working
+ * days — ~3,500 13F entries on deadline day — so 60 pages of 100 is a ceiling
+ * that is never the reason a run stops early. Reading stops long before that
+ * once it reaches a day whose index is already in.
+ */
+const LIVE_MAX_PAGES = Math.max(0, num(args["live-pages"], 60));
+
+/**
+ * A filing accepted after EDGAR's 5:30pm cut-off is dated the NEXT business day
+ * — a Friday-evening filing is dated Monday. Live days may therefore sit a few
+ * days in the future, and must not be swept away as out of window.
+ */
+const LIVE_AHEAD_DAYS = 4;
+
+/** Where the dashboard is served, to see what each client fund's page shows. */
+const ORIGIN = String(str(args.origin) || process.env.SITE || "https://13f-eo2.pages.dev").replace(/\/+$/, "");
+
+/** Expectations older than this are dropped — see expectationsFor. */
+const EXPECT_DAYS = 3;
+const OUT_EXPECT = str(args["out-expect"]);
 
 /**
  * COMMIT MODE. Cross off the filers a run actually finished.
@@ -193,9 +245,9 @@ function loadState(path) {
     const days = {};
     for (const [d, v] of Object.entries(s.days)) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !v) continue;
-      const all = Array.isArray(v.all) ? v.all : [];
-      const pending = Array.isArray(v.pending) ? v.pending : [];
-      days[d] = { rows: Number(v.rows) || 0, all, pending };
+      // readDay keeps `live` and `acc` — dropping them here would make every
+      // live day look final, and its nightly index would never be read.
+      days[d] = readDay(v);
     }
     return { v: 1, days };
   } catch (err) {
@@ -227,9 +279,53 @@ async function filersOn(sec, dateISO) {
   // ONE PARSER FOR THESE FILES, IN _sec-parse.mjs. This module used to carry its
   // own regex, which is how the shared one went unnoticed for months while
   // returning zero rows against the live header layout.
-  const rows = parseFormIdx(body);
-  const ciks = [...new Set(rows.map((r) => padCik(r.cik)))];
-  return { ciks, rows: rows.length };
+  const rows = parseFormIdx(body).map((r) => ({ ...r, cik: padCik(r.cik) }));
+  return rows;
+}
+
+/**
+ * Who has filed since the last daily index we read — from EDGAR's live list.
+ *
+ * Newest first, a hundred a page. Stops at the first page that reaches a day
+ * whose index is already in: everything older is accounted for. A failure here
+ * is NOT fatal — the index still arrives tonight — so it is reported and the
+ * run carries on without it, rather than costing the whole run.
+ */
+async function liveFilings(sec, state) {
+  const out = [];
+  for (let page = 0; page < LIVE_MAX_PAGES; page++) {
+    // mayNotExist: browse-edgar is a busy dynamic script, not a static file. If
+    // it alone refuses us, SecFetcher first proves whether this machine is
+    // blocked (one HEAD to a static file). Served normally -> SecMissingError,
+    // caught below, and the run carries on with the daily index. Only a real
+    // block stops the run — and then everything else would have failed too.
+    const body =
+      (await sec.get(SEC_URLS.currentFeed("13F", 100, page * 100), { as: "text", mayNotExist: true })).body ?? "";
+    const entries = (body.match(/<entry>/g) ?? []).length;
+    if (!entries) break;
+    const rows = parseCurrentFeed(body);
+    out.push(...rows);
+    const oldest = rows.at(-1)?.filing_date;
+    if (oldest && state.days[oldest] && !state.days[oldest].live) break;
+    // A whole page we already knew about: an earlier run read from here down.
+    // Each page is a slow request (~5s, measured 17 Nov), and on deadline day
+    // the list is ~35 pages deep — so stop rather than re-read it every half
+    // hour. Anything an earlier run failed to reach is still in tonight's index.
+    if (rows.length && rows.every((r) => alreadyRecorded(state, r))) break;
+    if (entries < 100) break;
+  }
+  return out;
+}
+
+/** The published page for one fund, or null if it has none. Throws if unsure. */
+async function publishedSummary(cik) {
+  const res = await fetch(`${ORIGIN}/data/fund/${cik}/summary.json?plan=${Date.now()}`, {
+    headers: { "cache-control": "no-cache" },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status}`);
+  return await res.json();
 }
 
 /** See WINDOW_DAYS: season start, clamped by a hard ceiling and a soft floor. */
@@ -263,6 +359,13 @@ const plan = {
   /** Watchlist funds this run moved to the front. */
   prioritised: [],
   daysIncomplete: [],
+  /** Filings the latest-filings list showed this run, and how many were new to us. */
+  liveSeen: 0,
+  liveQueued: 0,
+  /** Set when the latest-filings list could not be read; tonight's index still covers it. */
+  liveError: null,
+  /** Client funds whose SEC filing list is ahead of their published page. */
+  favouritesBehind: [],
   ciks: [],
 };
 
@@ -287,12 +390,7 @@ async function run() {
     }
     const raw = COMPLETED_IN && existsSync(COMPLETED_IN) ? readFileSync(COMPLETED_IN, "utf8") : "";
     const done = new Set(raw.split(/[,\s]+/).map((c) => c.trim()).filter(Boolean).map(padCik));
-    let removed = 0;
-    for (const d of Object.keys(state.days)) {
-      const before = state.days[d].pending.length;
-      state.days[d].pending = state.days[d].pending.filter((c) => !done.has(c));
-      removed += before - state.days[d].pending.length;
-    }
+    const removed = crossOff(state, done);
     const dates = Object.keys(state.days);
     plan.filersKnown = new Set(dates.flatMap((d) => state.days[d].all)).size;
     plan.filersPending = new Set(dates.flatMap((d) => state.days[d].pending)).size;
@@ -353,10 +451,12 @@ async function run() {
   }
 
   // ---- read the days we have not read yet ---------------------------------
-  const unread = inWindow.filter((d) => !state.days[d]);
+  // A day followed on the live list is not "read" until its index is: the index
+  // is the complete record, and merging it is what catches anything the live
+  // list did not show us.
+  const unread = inWindow.filter((d) => !state.days[d] || state.days[d].live);
   for (const d of unread.slice(0, MAX_NEW_DAYS)) {
-    const { ciks, rows } = await filersOn(sec, d);
-    state.days[d] = { rows, all: ciks, pending: ciks.slice() };
+    state.days[d] = mergeIndexDay(state.days[d], await filersOn(sec, d));
     plan.indexDaysRead++;
   }
   plan.indexDaysUnread = Math.max(0, unread.length - MAX_NEW_DAYS);
@@ -366,9 +466,62 @@ async function run() {
 
   // Days that fell out of the window are dropped. Anything still pending after a
   // hundred days is no longer a same-day concern — the monthly universe run from
-  // the SEC's quarterly data set is what backfills that far back.
+  // the SEC's quarterly data set is what backfills that far back. A live day may
+  // be dated a little AHEAD of today (see LIVE_AHEAD_DAYS).
+  //
+  // Done BEFORE the two checks below, so neither can have its work swept away
+  // in the same run that found it.
+  const latest = toISO(addDays(parseISO(TODAY), LIVE_AHEAD_DAYS));
   for (const d of Object.keys(state.days)) {
-    if (d < from || d > TODAY) delete state.days[d];
+    if (d < from || d > latest || (d > TODAY && !state.days[d].live)) delete state.days[d];
+  }
+
+  // ---- and who has filed since, from the live list ------------------------
+  try {
+    const live = await liveFilings(sec, state);
+    plan.liveSeen = live.length;
+    for (const f of live) if (noteLiveFiling(state, f)) plan.liveQueued++;
+    note(`latest-filings list: ${live.length} 13F filing(s) since the last daily index, ${plan.liveQueued} new to us`);
+  } catch (err) {
+    if (err instanceof SecBlockedError) throw err;
+    plan.liveError = err.message;
+    note(
+      `::warning::could not read EDGAR's latest-filings list (${err.message}). Today's filings will be ` +
+        "picked up from tonight's daily index instead — later, but nothing is lost.",
+    );
+  }
+
+  // ---- and is any client fund's page behind the SEC? ----------------------
+  //
+  // Asked of the SEC and of the dashboard, not of the cursor. Whatever the
+  // cursor believes — finished, never seen, crossed off by a run that did not
+  // really get the filing — a fund whose own SEC filing list holds a quarter
+  // its page does not show is queued now. That is evidence, not a fallback: if
+  // the SEC cannot be asked, nothing is queued.
+  for (const cik of WATCHLIST_CIKS.map((c) => padCik(c))) {
+    let summary;
+    try {
+      summary = await publishedSummary(cik);
+    } catch (err) {
+      note(`  could not read the published page for ${cik} (${err.message}) — not comparing it this run`);
+      continue;
+    }
+    let filings;
+    try {
+      filings = parseSubmissions((await sec.get(SEC_URLS.submissions(cik), { as: "json" })).body).filings;
+    } catch (err) {
+      if (err instanceof SecBlockedError) throw err;
+      note(`  could not read the SEC filing list for ${cik} (${err.message}) — not comparing it this run`);
+      continue;
+    }
+    const behind = behindOnSite(summary, filings);
+    if (!behind) continue;
+    for (const f of behind.filings) requeue(state, { cik, ...f });
+    plan.favouritesBehind.push({ cik, name: summary?.name ?? null, ...behind });
+    note(
+      `client fund ${summary?.name ?? cik}: the SEC has ${behind.period}, its page shows ` +
+        `${behind.ourNewest ?? "nothing"} — queued`,
+    );
   }
 
   // ---- choose this run's work ---------------------------------------------
@@ -433,6 +586,11 @@ async function run() {
       `across ${plan.daysIncomplete.length} day(s); taking ${plan.filersSelected} this run ` +
       `(cap ${MAX_FUNDS || "none"}${prioritised.length ? `, ${prioritised.length} of them watchlist` : ""})`,
   );
+
+  // What the ingest must see before it may call each of these finished: the
+  // filings that queued them, while those are recent enough to matter.
+  const since = toISO(addDays(parseISO(TODAY), -EXPECT_DAYS));
+  writeFile(OUT_EXPECT, JSON.stringify(expectationsFor(state, plan.ciks, since), null, 2));
 
   // The cursor we PROPOSE. The workflow commits it only after the publish has
   // succeeded, and only for the funds the ingest actually finished — so a run

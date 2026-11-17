@@ -199,15 +199,24 @@ describe("what it refuses to judge", () => {
 });
 
 describe("the ingest grace window", () => {
-  // During filing season managers file continuously and the same-day job runs
-  // daily, so "filed this morning, not on the dashboard yet" is the pipeline
-  // working. Making that red every day teaches the owner to ignore red.
+  // A filing from a few hours ago may still be in the queue — that is the
+  // pipeline working. Six hours, not the two days it used to be: the pipeline
+  // now sees filings the same day, and a client fund missing for a working day
+  // is the outage a client notices (16 Nov 2026, Lone Pine).
   const filedOn = (d) => [HR({ accepted: `${d}T14:00:00.000Z` })];
 
-  it("a filing from this morning is not yet a gap", async () => {
+  it("a filing from four hours ago is not yet a gap", async () => {
     const v = await run({ ours: undefined, filings: filedOn("2026-08-21"), asOf: new Date("2026-08-21T18:00:00Z") });
     expect(v.verdict).toBe("not-comparable");
     expect(v.why).toContain("not yet a gap");
+    expect(v.why).toContain("4 hours ago");
+  });
+
+  it("a client fund that filed this morning and is still missing tonight is a gap", async () => {
+    // Lone Pine filed on deadline day and the page said "not read yet" all day.
+    const v = await run({ ours: undefined, filings: filedOn("2026-11-16"), asOf: new Date("2026-11-17T02:00:00Z") });
+    expect(v.verdict).toBe("disagree");
+    expect(v.what).toContain("12 hours ago");
   });
 
   it("a filing from ten days ago that we still do not have is a real gap", async () => {

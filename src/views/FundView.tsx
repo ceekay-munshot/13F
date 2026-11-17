@@ -14,7 +14,7 @@ import { ChartSkeleton, TableSkeleton, EmptyState, ErrorState, PartialNotice, No
 import { t, ACTION_COLORS, type Action } from "../theme";
 import { usd, pct, pp, deltaPct, shares as fmtShares, count, periodLabel, dateLabel, utcStamp } from "../lib/format";
 import {
-  loadFundSummary, loadFundPeriod, edgarUrl,
+  loadFundSummary, loadFundPeriod, edgarUrl, queuedFor,
   type Manifest, type FundSummary, type FundPeriod, type Holding,
 } from "../lib/data";
 import { priorPeriod } from "../../shared/calendar.mjs";
@@ -560,7 +560,9 @@ export function FundView({
    * this page has no business making a claim about any particular manager.
    */
   const periodRow = mf.periods.find((p) => p.period === period);
-  const stillIngesting = (periodRow?.known ?? 0) > (periodRow?.funds ?? 0);
+  // The queue the pipeline reports, not `known - funds` — see queuedFor.
+  const queued = queuedFor(periodRow) ?? 0;
+  const stillIngesting = queued > 0;
 
   /**
    * THE THIRD ANSWER, AND IT OUTRANKS BOTH OF THE OTHERS.
@@ -613,7 +615,6 @@ export function FundView({
 
   if (!loading && summary && !point) {
     const latest = latestPoint;
-    const outstanding = (periodRow?.known ?? 0) - (periodRow?.funds ?? 0);
     return (
       <div className="card-grid" style={{ marginTop: 22 }}>
         <WidgetCard
@@ -632,7 +633,7 @@ export function FundView({
             }
             hint={
               stillIngesting
-                ? `${count(outstanding)} managers have filed with the SEC for this quarter and are still queued for reading — this may be one of them. Check back in a few hours, or use the quarter stepper to see ${latest ? latest.label : "an earlier quarter"} in the meantime.`
+                ? `${count(queued)} manager${queued === 1 ? " has" : "s have"} filed with the SEC for this quarter and ${queued === 1 ? "is" : "are"} still queued for reading — this may be one of them. New filings are read within the hour; use the quarter stepper to see ${latest ? latest.label : "an earlier quarter"} in the meantime.`
                 : latest
                   ? `Their most recent filing is ${latest.label} — use the quarter stepper to go back. 13F is due 45 days after each quarter ends, and most managers file close to the deadline.`
                   : "No filings found for this manager in the covered window."

@@ -1,0 +1,60 @@
+name: Keep the ingest on time
+
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS — 17 Nov 2026
+#
+# `Ingest 13F filings` asks GitHub to start it every two hours. GitHub's timer
+# is best-effort, and for this repository it kept roughly one slot in four:
+# measured 5–17 Nov, three or four runs a day instead of twelve, gaps of seven
+# to eight hours, and TWELVE hours on 16 Nov — Q3's deadline, the busiest day
+# of the quarter. A client spent that afternoon refreshing a page that said
+# Lone Pine had not been read yet.
+#
+# A run started by request starts within seconds. So this job stays awake for
+# most of six hours and starts the ingest itself whenever one is due: every 30
+# minutes in filing season, hourly after it, every two hours otherwise (see
+# shared/watch.mjs). It never touches the SEC or the bucket.
+#
+# It only needs GitHub's timer to wake IT a few times a day. It asks hourly; a
+# wake-up that arrives while one is already watching waits its turn in the
+# queue below, so there is nearly always one awake. (GitHub keeps one waiting
+# run per group and marks any older waiting one "cancelled" — harmless.)
+#
+# The ingest's own two-hourly timer is left in place as a second way in.
+# ---------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: '11 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: 13f-watch
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    # GitHub stops any job at six hours. Stopping cleanly a little before that
+    # leaves room for the next waiting run to take over.
+    timeout-minutes: 355
+    steps:
+      # Two folders, not the whole repository: public/ alone is ~300 MB, and
+      # this job runs many times a day.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts
+            shared
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Start the ingest whenever it is due
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/watch-ingest.mjs --for-minutes=345

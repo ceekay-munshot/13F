@@ -430,10 +430,18 @@ export const SEC_URLS = {
   submissions: (cik) => `https://data.sec.gov/submissions/CIK${padCik(cik)}.json`,
   submissionsShard: (name) => `https://data.sec.gov/submissions/${name}`,
 
-  /** Near-real-time feed; `type` is a PREFIX match so this includes 13F-HR/A. */
-  currentFeed: (type = "13F-HR", count = 100) =>
+  /**
+   * EDGAR's "Latest Filings" list — every filing, minutes after it is accepted.
+   *
+   * `type` is a PREFIX match, so "13F" returns 13F-HR, 13F-HR/A, 13F-NT and
+   * 13F-NT/A together. Newest first, 100 a page, paged with `start`. Measured on
+   * 2026-11-16 (deadline day): it reaches back about two working days — ~3,500
+   * 13F entries — and an empty page past that. The daily index is still the
+   * complete record; this is what lets a filing be seen the same day.
+   */
+  currentFeed: (type = "13F-HR", count = 100, start = 0) =>
     `https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=${type}` +
-    `&company=&dateb=&owner=include&count=${count}&output=atom`,
+    `&company=&dateb=&owner=include&start=${start}&count=${count}&output=atom`,
 
   /** One file per day covering EVERY filer — the whole global feed, 1 request. */
   dailyIndex: (yyyy, qtr, yyyymmdd) =>

@@ -13,7 +13,7 @@ import { Kpi, KpiRow } from "../components/Kpi";
 import { TableSkeleton, EmptyState, ErrorState } from "../components/states";
 import { t, fundColor } from "../theme";
 import { usd, count, periodLabel, dateLabel, utcStamp } from "../lib/format";
-import { loadPeriodFilings, edgarUrl, type Manifest, type Filer, type FilingRow } from "../lib/data";
+import { loadPeriodFilings, edgarUrl, queuedFor, type Manifest, type Filer, type FilingRow } from "../lib/data";
 import { filingDeadline, recentPeriods } from "../../shared/calendar.mjs";
 
 /**
@@ -210,8 +210,15 @@ export function FilingsView({
   const periodRow = mf.periods.find((p) => p.period === period);
   const known = periodRow?.known ?? null;
   const held = periodRow?.funds ?? filedCiks.size;
-  const stillLoading = known !== null && known > held;
-  const notYetLoaded = stillLoading ? known - held : 0;
+  // READ, NOT HELD. `held` counts holdings pages; `known` counts everyone who
+  // filed, including the ~2,000 a quarter who file only a notice and never get
+  // a holdings page. So "held of known" could never reach 100%, and this view
+  // said "still loading" about every quarter for ever. The pipeline now
+  // publishes its own queue (see queuedFor); what has been read is the rest.
+  const queued = queuedFor(periodRow);
+  const read = known !== null && queued !== null ? known - queued : held;
+  const stillLoading = (queued ?? 0) > 0;
+  const notYetLoaded = stillLoading ? (queued ?? 0) : 0;
 
   /**
    * CAN WE EVEN NAME WHO HAS NOT FILED?
@@ -288,7 +295,7 @@ export function FilingsView({
         </span>
         <span style={{ fontSize: 12, color: t.textMuted }}>
           {known !== null
-            ? `· ${count(held)} of ${count(known)} managers who filed are loaded`
+            ? `· ${count(read)} of ${count(known)} managers who filed are loaded`
             : `· ${filedCiks.size} of ${filers.length} tracked funds filed`}
         </span>
         <div style={{ flex: 1, minWidth: 80, height: 3, background: "#e0e7ff", borderRadius: 2, overflow: "hidden" }}>
@@ -298,7 +305,7 @@ export function FilingsView({
               height: "100%", width: "100%", background: t.primary,
               transform: `scaleX(${
                 known !== null
-                  ? Math.min(1, known ? held / known : 0)
+                  ? Math.min(1, known ? read / known : 0)
                   : filers.length ? filedCiks.size / filers.length : 0
               })`,
             }}
@@ -319,9 +326,9 @@ export function FilingsView({
             This quarter is still loading
           </span>
           <span style={{ fontSize: 12, color: "#92400e" }}>
-            {count(notYetLoaded)} more manager{notYetLoaded === 1 ? "" : "s"} have filed with the SEC than
-            we have read so far. They are queued and arrive over the next few hours — a manager missing
-            from this list has not necessarily failed to file.
+            {count(notYetLoaded)} more manager{notYetLoaded === 1 ? " has" : "s have"} filed with the SEC than
+            we have read so far. They are read in order, tracked funds first, about 800 every half hour — a
+            manager missing from this list has not necessarily failed to file.
           </span>
         </div>
       )}
@@ -329,7 +336,7 @@ export function FilingsView({
       <KpiRow>
         <Kpi
           label="Managers loaded"
-          value={loading ? "…" : known !== null ? `${count(held)} of ${count(known)}` : `${filedCiks.size} of ${filers.length}`}
+          value={loading ? "…" : known !== null ? `${count(read)} of ${count(known)}` : `${filedCiks.size} of ${filers.length}`}
           scope={
             known !== null
               ? stillLoading
@@ -507,7 +514,7 @@ export function FilingsView({
               message={stillLoading ? "This quarter is still being read" : "Not enough of the feed to say"}
               hint={
                 stillLoading
-                  ? `${count(held)} of ${count(known ?? 0)} managers who filed are loaded. Naming the rest as "not filed" would be wrong — they have filed, we have not read them yet.`
+                  ? `${count(read)} of ${count(known ?? 0)} managers who filed are loaded. Naming the rest as "not filed" would be wrong — they have filed, we have not read them yet.`
                   : `Only the ${count((rows ?? []).length)} newest of ${count(feedTotal)} filings are carried here, so a manager's absence from the list means nothing.`
               }
             />

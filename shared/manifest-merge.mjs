@@ -196,6 +196,11 @@ function pick(totals) {
   if (totals.known != null) {
     out.known = totals.known;
     out.knownAsOf = totals.knownAsOf ?? null;
+    // How many of those `known` managers are still queued — straight from the
+    // ingest cursor. `known - funds` cannot answer that: ~2,000 managers a
+    // quarter file only a notice and never become a holdings page, so that
+    // gap never closes and every quarter looked "still loading" for ever.
+    if (Number.isFinite(totals.pending)) out.pending = totals.pending;
   }
   return out;
 }
@@ -292,7 +297,7 @@ export function mergeSummary(live, incoming) {
  * every other manager are carried through untouched. Anything that would drop
  * one of those throws: a shorter feed is not a fresher feed.
  */
-export function mergePeriodFilings(live, incoming, ciks, { cap = FEED_ROWS, known = null, knownAsOf = null } = {}) {
+export function mergePeriodFilings(live, incoming, ciks, { cap = FEED_ROWS, known = null, knownAsOf = null, pending = null } = {}) {
   const liveRows = Array.isArray(live?.data) ? live.data : [];
   const inRows = Array.isArray(incoming?.data) ? incoming.data : [];
   if (!inRows.length) throw new Error("incoming feed has no rows — refusing to publish it");
@@ -355,9 +360,13 @@ export function mergePeriodFilings(live, incoming, ciks, { cap = FEED_ROWS, know
     // turns "9,255 outstanding" (a lie, they had filed) into "463 of 10,698
     // ingested so far" (the truth).
     ...(known != null
-      ? { known, knownAsOf }
+      ? { known, knownAsOf, ...(Number.isFinite(pending) ? { pending } : {}) }
       : live?.known != null
-        ? { known: live.known, knownAsOf: live.knownAsOf ?? null }
+        ? {
+            known: live.known,
+            knownAsOf: live.knownAsOf ?? null,
+            ...(Number.isFinite(live.pending) ? { pending: live.pending } : {}),
+          }
         : {}),
     data: rows,
   };

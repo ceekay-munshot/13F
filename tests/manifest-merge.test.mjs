@@ -386,6 +386,19 @@ describe("mergePeriodFilings — counting a quarter as it fills", () => {
     expect(second.known).toBe(10698);
     expect(second.knownAsOf).toBe("2026-08-18T05:00:00.000Z");
   });
+
+  it("carries the queued count beside it, and keeps it when not re-supplied", () => {
+    const ours = ["0000000002"];
+    const first = mergePeriodFilings(
+      env([row("0000000001", "a-1", "2026-08-14T12:00:00Z")]),
+      env([row("0000000002", "b-1", "2026-08-15T12:00:00Z")]),
+      ours,
+      { known: 10698, knownAsOf: "2026-08-18T05:00:00.000Z", pending: 73 },
+    );
+    expect(first.pending).toBe(73);
+    const second = mergePeriodFilings(first, env([row("0000000002", "b-2", "2026-08-16T12:00:00Z")]), ours);
+    expect(second.pending).toBe(73);
+  });
 });
 
 describe("mergeManifest — period totals from the merged feed", () => {
@@ -420,6 +433,18 @@ describe("mergeManifest — period totals from the merged feed", () => {
     expect(row.filings).toBe(900);
     expect(row.known).toBe(10698);
     expect(row.knownAsOf).toBe("2026-08-18T05:00:00.000Z");
+  });
+
+  it("carries how many filed managers are still queued, from the cursor", () => {
+    // `known - funds` never closes — managers who file only a notice never get a
+    // holdings page — so the page and the watchdog read every quarter as still
+    // loading for ever. `pending` is the cursor's own count.
+    const { manifest } = mergeManifest(live, incoming, {
+      buildId: "def5678",
+      ciks: ["0001067983"],
+      periodTotals: { "2026-06-30": { filings: 900, known: 10698, knownAsOf: "2026-08-18T05:00:00.000Z", pending: 0 } },
+    });
+    expect(manifest.periods.find((p) => p.period === "2026-06-30").pending).toBe(0);
   });
 
   it("a partial run that gave nobody a new quarter leaves the count alone", () => {

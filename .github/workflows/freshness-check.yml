@@ -18,6 +18,7 @@ on:
 permissions:
   contents: read
   issues: write
+  actions: read
 
 jobs:
   check:
@@ -37,11 +38,24 @@ jobs:
       # serving path. R2 could go stale, serve a torn build, or lose its
       # manifest, and this still reported "Freshness OK". It did exactly that
       # for a day while the dashboard was showing a 404.
+      # When did the ingest last START? Asked of GitHub directly. The published
+      # data only changes when a run has something new, so it cannot tell a
+      # quiet healthy run from no run at all — and said "not running" for two
+      # days while it ran (Nov 2026).
+      - name: When did the ingest last start
+        id: last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          at=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ingest.yml --limit 1 --json createdAt -q '.[0].createdAt' || true)
+          echo "at=${at}" >> "$GITHUB_OUTPUT"
+          echo "ingest last started: ${at:-unknown}"
+
       - name: Evaluate freshness
         id: check
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
-        run: node scripts/freshness-check.mjs --origin="$SITE"
+        run: node scripts/freshness-check.mjs --origin="$SITE" --last-ingest-start="${{ steps.last.outputs.at }}"
 
       - name: Open or update freshness issue
         if: failure()

@@ -718,6 +718,69 @@ export function parseMasterIdx(text) {
 }
 
 /**
+ * EDGAR's "Latest Filings" Atom feed — the same-day list of who just filed.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS
+ * ---------------------------------------------------------------------------
+ * The daily index is the complete record, but EDGAR cuts it at about 10pm New
+ * York time. Read on its own, a manager who files at nine in the morning is
+ * invisible to the pipeline for thirteen hours. On 2026-11-16 — Q3's deadline —
+ * eleven of the client's fourteen funds filed during the day, and a client
+ * refreshing the dashboard that afternoon was told Lone Pine had not been read
+ * yet. It had not been SEEN yet: nothing the pipeline consulted listed it.
+ *
+ * This feed lists a filing minutes after it is accepted. One entry looks like:
+ *
+ *   <entry>
+ *   <title>13F-HR - DUNHAM TRUST Co (0001454224) (Filer)</title>
+ *   <link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/1454224/…-index.htm"/>
+ *   <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-11-16 &lt;b&gt;AccNo:&lt;/b&gt; 0001580642-26-007760 …</summary>
+ *   <updated>2026-11-16T17:30:35-05:00</updated>
+ *   <category scheme="https://www.sec.gov/" label="form type" term="13F-HR"/>
+ *   <id>urn:tag:sec.gov,2008:accession-number=0001580642-26-007760</id>
+ *   </entry>
+ *
+ * Only the FILER's entry is kept. The filer's CIK comes from the title, never
+ * from the accession — the accession's prefix is whoever submitted it, often a
+ * filing agent (see accessionFromPath below).
+ *
+ * `filing_date` is the date EDGAR files it under, which is the date of the daily
+ * index it will appear in. A filing accepted after the 5:30pm cut-off is dated
+ * the NEXT business day, so this can be later than the day it was seen.
+ */
+export function parseCurrentFeed(xml) {
+  const out = [];
+  const seen = new Set();
+  for (const m of String(xml).matchAll(/<entry>([\s\S]*?)<\/entry>/g)) {
+    const e = m[1];
+    const title = /<title>([\s\S]*?)<\/title>/.exec(e)?.[1]?.trim() ?? "";
+    const t = /^(\S+)\s+-\s+(.*)\s+\((\d{1,10})\)\s+\((\w+)\)$/.exec(title);
+    if (!t || t[4] !== "Filer") continue;
+    const formType = /term="([^"]+)"/.exec(e)?.[1] ?? t[1];
+    if (!FORM_TYPES.has(formType)) continue;
+    const accession =
+      /accession-number=(\d{10}-\d{2}-\d{6})/.exec(e)?.[1] ??
+      /AccNo:(?:&lt;\/b&gt;|<\/b>)?\s*(\d{10}-\d{2}-\d{6})/.exec(e)?.[1];
+    const filed = /Filed:(?:&lt;\/b&gt;|<\/b>)?\s*(\d{4}-\d{2}-\d{2})/.exec(e)?.[1];
+    if (!accession || !filed) continue;
+    const cik = t[3].padStart(10, "0");
+    const key = `${accession}|${cik}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      form_type: formType,
+      company_name: t[2].trim(),
+      cik,
+      filing_date: filed,
+      accession_number: accession,
+      accepted: /<updated>([^<]+)<\/updated>/.exec(e)?.[1]?.trim() ?? null,
+    });
+  }
+  return out;
+}
+
+/**
  * "edgar/data/1350694/0001350694-26-000002.txt" -> "0001350694-26-000002".
  *
  * IMPORTANT: never derive the filer's CIK from an accession number. The first
