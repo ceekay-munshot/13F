@@ -41,7 +41,8 @@ const OUT = args.out || ".build/movers";
 const PERIODS = Number(args.periods || 2);
 const LIMIT = args.limit ? Number(args.limit) : Infinity;
 const CONCURRENCY = Number(args.concurrency || 24);
-const PUBLISH = Boolean(args.publish) && LIMIT === Infinity;
+// DRY_RUN wins over --publish: a dry run must not be able to publish by mistake.
+const PUBLISH = Boolean(args.publish) && LIMIT === Infinity && process.env.DRY_RUN !== "true";
 // More read failures than this and the answer is not trustworthy enough to publish.
 const MAX_FAILED_SHARE = 0.02;
 // Bypasses the edge cache for the two files that change in place.
@@ -181,6 +182,12 @@ for (const period of periods) {
   let tradedAll = 0, tradedUnc = 0;
   for (const f of funds) for (const m of f[4]) { tradedAll += Math.abs(m[3]); if (m[6] === unc) tradedUnc += Math.abs(m[3]); }
   log(`${period}: ${(100 * tradedUnc / Math.max(1, tradedAll)).toFixed(1)}% of money traded is Unclassified`);
+  {
+    const left = new Map();
+    for (const f of funds) for (const m of f[4]) if (m[6] === unc) left.set(m[0], (left.get(m[0]) ?? 0) + Math.abs(m[3]));
+    const top = [...left.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25);
+    log(`  largest still unplaced: ${top.map(([t, v]) => `${t} $${(v / 1e6).toFixed(0)}M`).join(", ")}`);
+  }
   log(`${period}: ${funds.length} concentrated managers, ${moves} trades · ` +
       `read ${tally.read}, reused ${tally.reused}, not filed ${tally.notFiled}, failed ${tally.failed} · ` +
       `left out ${JSON.stringify(skips)}`);

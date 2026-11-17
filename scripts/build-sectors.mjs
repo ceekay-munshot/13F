@@ -74,7 +74,8 @@ const FRESH_DAYS = args["fresh-days"] ? Number(args["fresh-days"]) : null;
 // A ceiling, not a target: a normal build asks a few dozen. The first build
 // with no memory asks about two thousand, which at 3 a second is ~12 minutes.
 const MAX_LOOKUPS = Number(args["max-lookups"] || 4000);
-const PUBLISH = Boolean(args.publish);
+// DRY_RUN wins over --publish: a dry run must not be able to publish by mistake.
+const PUBLISH = Boolean(args.publish) && process.env.DRY_RUN !== "true";
 
 /** Last build's state, from a URL or a file. null if there is none yet. */
 async function readPrevious(where) {
