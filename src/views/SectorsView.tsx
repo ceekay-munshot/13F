@@ -12,6 +12,7 @@ import { EmptyState, ErrorState, TableSkeleton } from "../components/states";
 import { t, ACTION_COLORS } from "../theme";
 import { usd, periodLabel } from "../lib/format";
 import { loadMovers, loadSectorMap, type Manifest, type Movers, type MoverMove } from "../lib/data";
+import { SECTORS } from "../../shared/sic.mjs";
 
 const CAPS = ["20", "30", "40"] as const;
 type Cap = (typeof CAPS)[number];
@@ -51,7 +52,9 @@ function bySector(movers: Movers, sectorMap: Record<string, string>, cap: number
   for (const [cik, name, value, positions, moves] of movers.funds) {
     if (positions > cap) continue;
     for (const m of moves) {
-      const sector = sectorMap[m[0].toUpperCase()] ?? "Unclassified";
+      // Placed by the pipeline, which had the filed name and share class to go
+      // on; the ticker alone is the fallback for a file built before that.
+      const sector = (m[6] != null && SECTORS[m[6]]) || sectorMap[m[0].toUpperCase()] || "Unclassified";
       let group = sectors.get(sector);
       if (!group) sectors.set(sector, (group = new Map()));
       let mgr = group.get(cik);

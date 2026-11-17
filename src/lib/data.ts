@@ -695,8 +695,18 @@ let sectorMapPromise: Promise<Record<string, string>> | null = null;
  */
 export function loadSectorMap(mf: Manifest): Promise<Record<string, string>> {
   if (!sectorMapPromise) {
-    sectorMapPromise = get<{ data: Record<string, string> }>("meta/sectors.json", mf)
-      .then((env) => env.data ?? {})
+    // The weekly list first (movers/sectors.json, kept by the Sectors job). It
+    // places funds, foreign companies and new listings the monthly one cannot,
+    // which left a quarter of all money traded "Unclassified". Same shape as
+    // meta/sectors.json, so the monthly one stands in when it is missing.
+    // Fetched without a build key: it is rewritten in place and short-cached.
+    sectorMapPromise = fetch(`${BASE}/movers/sectors.json`)
+      .then((r) => (r.ok && !(r.headers.get("content-type") ?? "").includes("text/html") ? r.json() : null))
+      .catch(() => null)
+      .then((weekly: { data?: Record<string, string> } | null) =>
+        weekly?.data && Object.keys(weekly.data).length
+          ? weekly.data
+          : get<{ data: Record<string, string> }>("meta/sectors.json", mf).then((env) => env.data ?? {}))
       .catch(() => ({}));
   }
   return sectorMapPromise;
@@ -712,8 +722,12 @@ export async function loadPeriodSectors(period: string, mf: Manifest): Promise<S
 // Movers — what each concentrated manager traded (the Sectors tab)
 // ---------------------------------------------------------------------------
 
-/** [ticker, action N/A/T/X, sharesChangePct, tradedUsd, weightBefore, weightAfter] */
-export type MoverMove = [string, "N" | "A" | "T" | "X", number | null, number, number | null, number];
+/**
+ * [ticker, action N/A/T/X, sharesChangePct, tradedUsd, weightBefore, weightAfter, sector]
+ * `sector` is a position in SECTORS (shared/sic.mjs); absent in files built
+ * before it was added.
+ */
+export type MoverMove = [string, "N" | "A" | "T" | "X", number | null, number, number | null, number, number?];
 /** [cik, name, valueLongUsd, positionsLong, moves] */
 export type MoverFund = [string, string, number, number, MoverMove[]];
 

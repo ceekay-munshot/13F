@@ -19,6 +19,7 @@ import {
   type Manifest, type Filer, type SectorFlow,
 } from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
+import { createSectorLookup } from "../../shared/sectors.mjs";
 
 const THRESHOLDS = [
   { key: "2", label: "≥2 funds", min: 2, hint: "Show a name as soon as two of your funds hold it." },
@@ -255,9 +256,12 @@ function SectorFlows({
 
   const mine = useMemo<SectorFlow[]>(() => {
     if (!funds) return [];
+    // The same rules the Sectors tab uses: BRKB finds BRK-B, and a fund the
+    // list does not name is placed by how the filer wrote it.
+    const sectorOf = createSectorLookup(sectorMap);
     const acc = new Map<string, SectorFlow>();
-    const bump = (ticker: string | null, traded: number, held: number) => {
-      const key = (ticker && sectorMap[ticker.toUpperCase()]) || "Unclassified";
+    const bump = (row: { ticker: string | null; name?: string | null; cls?: string | null }, traded: number, held: number) => {
+      const key = sectorOf(row);
       const e = acc.get(key) ?? { sector: key, bought: 0, sold: 0, net: 0, held: 0 };
       if (traded > 0) e.bought += traded;
       else if (traded < 0) e.sold += -traded;
@@ -277,13 +281,13 @@ function SectorFlows({
             : h.dShares != null && h.price != null
               ? h.dShares * h.price
               : 0;
-        bump(h.ticker, traded, h.value);
+        bump(h, traded, h.value);
       }
       // A position sold out entirely is gone from the holdings table and lives
       // only in `exits`. Omitting these counts every buy and no complete sale.
       for (const e of f.exits ?? []) {
         if (e.unit && e.unit !== "SH") continue;
-        bump(e.ticker, -(e.valuePrior ?? 0), 0);
+        bump(e, -(e.valuePrior ?? 0), 0);
       }
     }
     return [...acc.values()].sort((a, b) => b.net - a.net);

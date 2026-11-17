@@ -4,6 +4,9 @@
 import { describe, it, expect } from "vitest";
 import { encodeHoldings } from "../shared/artifacts.mjs";
 import { fundMoves, MOVERS_MAX_POSITIONS } from "../shared/movers.mjs";
+import { SECTORS } from "../shared/sic.mjs";
+
+const U = SECTORS.indexOf("Unclassified");
 
 const row = (o) => ({
   ticker: "AAA", name: "AAA INC", issuerId: "i1", cls: "COM", type: "", unit: "SH",
@@ -25,7 +28,7 @@ describe("fundMoves", () => {
       rows: [row({ ticker: "NVDA", action: "TRIMMED", shares: 6, value: 600, weight: 6,
                    dShares: -4, dSharesPct: -40, dWeightPp: -4 })],
     }));
-    expect(r.moves).toEqual([["NVDA", "T", -40, -400, 10, 6]]);
+    expect(r.moves).toEqual([["NVDA", "T", -40, -400, 10, 6, U]]);
   });
 
   it("counts a new position as all bought and a sale-out at last quarter's value", () => {
@@ -33,7 +36,18 @@ describe("fundMoves", () => {
       rows: [row({ ticker: "MU", action: "NEW", value: 500, weight: 5, dShares: null, dSharesPct: null, dWeightPp: null })],
       exits: [{ ticker: "AMAT", issuerId: "i9", type: "", unit: "SH", valuePrior: 700, weightPrior: 7 }],
     }));
-    expect(r.moves).toEqual([["MU", "N", null, 500, 0, 5], ["AMAT", "X", -100, -700, 7, 0]]);
+    expect(r.moves).toEqual([["MU", "N", null, 500, 0, 5, U], ["AMAT", "X", -100, -700, 7, 0, U]]);
+  });
+
+  it("places each trade in a sector, with the filed name to hand", () => {
+    const seen = [];
+    const sectorOf = (row) => { seen.push(row); return row.ticker === "NVDA" ? "Semiconductors" : "Bogus" };
+    const r = fundMoves(fund({
+      rows: [row({ ticker: "NVDA", action: "ADDED", dShares: 1, dSharesPct: 10 })],
+      exits: [{ ticker: null, name: "SANDISK CORP", issuerId: "i7", type: "", unit: "SH", valuePrior: 5, weightPrior: 1 }],
+    }), { sectorOf });
+    expect(r.moves.map((m) => SECTORS[m[6]])).toEqual(["Semiconductors", "Unclassified"]);
+    expect(seen[1]).toMatchObject({ ticker: null, name: "SANDISK CORP" });
   });
 
   it("leaves out unchanged holdings, options, and splits", () => {
@@ -50,7 +64,7 @@ describe("fundMoves", () => {
   it("counts a sale reported twice only once, at the smaller weight", () => {
     const exit = { ticker: "STX", issuerId: "i5", type: "", unit: "SH", valuePrior: 900 };
     const r = fundMoves(fund({ exits: [{ ...exit, weightPrior: 9 }, { ...exit, weightPrior: 4 }] }));
-    expect(r.moves).toEqual([["STX", "X", -100, -900, 4, 0]]);
+    expect(r.moves).toEqual([["STX", "X", -100, -900, 4, 0, U]]);
   });
 
   it("is only for focused managers", () => {

@@ -9,6 +9,10 @@ name: Build the Sectors tab
 # since its last build (see scripts/build-movers.mjs), so most runs take about
 # a minute.
 #
+# Once a week it also rebuilds the ticker -> sector list (movers/sectors.json),
+# which both the Sectors tab and Consensus's Sector flows read. The monthly one
+# left a quarter of all money traded "Unclassified"; see shared/sectors.mjs.
+#
 # It writes only under movers/, which nothing else writes, and never the
 # manifest. If it cannot read enough of the site to trust its answer it
 # publishes nothing and the tab keeps its last good copy.
@@ -21,6 +25,11 @@ on:
       - "Repair the shared indexes"
     types: [completed]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build everything but publish nothing (to try a change from a branch)'
+        type: boolean
+        default: false
 
 concurrency:
   group: 13f-movers
@@ -59,14 +68,39 @@ jobs:
       - name: Correctness gates
         run: npm run check
 
+      # Weekly, and a few seconds otherwise: it reads when the list was last
+      # built and stops there if that was under 7 days ago. The first build asks
+      # the SEC about ~2,000 companies one by one (about 12 minutes at 3 a
+      # second); after that only companies new since the last build are asked.
+      - name: Refresh the sector list (weekly)
+        id: sectors
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEC_RATE_LIMIT_RPS: '3'
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
+          PUBLISH: ${{ github.event.inputs.dry_run == 'true' && '' || '--publish' }}
+        run: |
+          node scripts/build-sectors.mjs --quarters=4 \
+            --previous="$SITE/data/movers/sectors.state.json" --fresh-days=7 \
+            --out=.build/sectors.json $PUBLISH
+
+      # Runs even if the sector list could not be refreshed: the last list is
+      # still good, and the job still ends red so the failure is seen.
       - name: Build and publish
+        if: ${{ !cancelled() }}
         env:
           SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ vars.R2_BUCKET || '13f' }}
-        run: node scripts/build-movers.mjs --origin="$SITE" --out=.build/movers --publish
+          PUBLISH: ${{ github.event.inputs.dry_run == 'true' && '' || '--publish' }}
+        # .build/sectors.json exists only when the step above rebuilt the list.
+        run: node scripts/build-movers.mjs --origin="$SITE" --out=.build/movers --sectors=.build/sectors.json $PUBLISH
 
       # One issue, opened once. This runs every half hour in filing season, and
       # an alert that repeats every half hour is one people learn to ignore.

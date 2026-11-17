@@ -99,7 +99,10 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '5'
-        run: node scripts/build-sectors.mjs --quarters=4
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
+        # --previous: the Sectors job's memory of companies already looked up
+        # one at a time, so this run only asks about ones new since then.
+        run: node scripts/build-sectors.mjs --quarters=4 --previous="$SITE/data/movers/sectors.state.json"
 
       - name: Note degraded enrichment
         if: steps.securities.outcome != 'success'
