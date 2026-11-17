@@ -159,6 +159,16 @@ describe("the monthly build folds through it", () => {
     expect(src).toContain("folded.set(period, foldQuarter(foldable))");
   });
 
+  it("names the fund it logs by `fund.cik` — there is no `cik` in that loop", () => {
+    // A bare `${cik}` shipped here and would have thrown "cik is not defined"
+    // the first time the monthly rebuild met a filing with names on the wrong
+    // codes (32 over four quarters), ending the build. The undefined-name check
+    // missed it because `cik` is declared elsewhere in the file, in another
+    // scope — it asks whether a name exists in the file, not where.
+    expect(src).toMatch(/misalignedNames\.push\(`\$\{fund\.cik\} \$\{period\}`\)/);
+    expect(src).not.toMatch(/\$\{cik\} \$\{period\}/);
+  });
+
   it("never reads a quarter's figures off the last filing loaded", () => {
     expect(src).not.toMatch(/foldable\[foldable\.length\s*-\s*1\]/);
     expect(src).not.toContain("last.table_value_total");

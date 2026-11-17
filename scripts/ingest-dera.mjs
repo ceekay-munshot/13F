@@ -717,7 +717,7 @@ await runJob(async () => {
         securities: SECURITIES, issuerIdFor,
       });
       const { changes, suppressed, structuralEvent, acts, turnover, rows: allRows, exits: allExits, meta } = q;
-      if (meta.foldWarnings.some((w) => w.code === NAMES_MISALIGNED)) misalignedNames.push(`${cik} ${period}`);
+      if (meta.foldWarnings.some((w) => w.code === NAMES_MISALIGNED)) misalignedNames.push(`${fund.cik} ${period}`);
 
       if (wantHoldings) {
         const rows = allRows;
