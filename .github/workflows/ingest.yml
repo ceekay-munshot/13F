@@ -135,10 +135,30 @@ jobs:
       - name: Correctness gates
         run: npm run check
 
+      # ONCE A DAY, NOT EVERY RUN. This reads six of the SEC's fails-to-deliver
+      # files, which change twice a month. At three runs a day re-reading them
+      # was harmless; since 17 Nov the ingest runs every half hour in filing
+      # season, and re-downloading the same files forty-eight times a day is
+      # not a polite use of sec.gov. The map is kept in the Actions cache under
+      # today's date: the first run of the day refreshes it, the rest reuse it.
+      # A cache miss only means a refresh, never a missing map.
+      - name: Today's date
+        id: day
+        run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse today's CUSIP to ticker map
+        id: securities-cache
+        uses: actions/cache@v4
+        with:
+          path: data/securities.json
+          key: securities-${{ steps.day.outputs.d }}
+          restore-keys: securities-
+
       # continue-on-error: this is a display column, not data. A transient SEC
       # 503 here must never cost the filings ingest that follows it.
       - name: Refresh CUSIP to ticker map
         id: securities
+        if: steps.securities-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
@@ -149,7 +169,7 @@ jobs:
         run: node scripts/build-securities.mjs --months=4
 
       - name: Note degraded enrichment
-        if: steps.securities.outcome != 'success'
+        if: steps.securities.outcome == 'failure'
         run: |
           echo "::warning::CUSIP->ticker refresh failed — holdings will show issuer names without tickers. Values and deltas are unaffected."
 
