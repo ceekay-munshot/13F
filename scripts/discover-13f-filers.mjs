@@ -78,13 +78,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, SecBlockedError, padCik } from "./_sec-fetch.mjs";
 import { parseCurrentFeed, parseFormIdx, parseSubmissions } from "./_sec-parse.mjs";
-import { addDays, parseISO, toISO, currentPeriod } from "../shared/calendar.mjs";
+import { addDays, parseISO, toISO, currentPeriod, filingSeason } from "../shared/calendar.mjs";
 import { WATCHLIST_CIKS } from "../shared/watchlist.mjs";
 import {
   alreadyRecorded,
   behindOnSite,
   crossOff,
   expectationsFor,
+  liveListProblem,
   mergeIndexDay,
   noteLiveFiling,
   readDay,
@@ -293,6 +294,8 @@ async function filersOn(sec, dateISO) {
  */
 async function liveFilings(sec, state) {
   const out = [];
+  // Counted so a list we can no longer read is noticed — see liveListProblem.
+  let seen = 0;
   for (let page = 0; page < LIVE_MAX_PAGES; page++) {
     // mayNotExist: browse-edgar is a busy dynamic script, not a static file. If
     // it alone refuses us, SecFetcher first proves whether this machine is
@@ -303,8 +306,11 @@ async function liveFilings(sec, state) {
       (await sec.get(SEC_URLS.currentFeed("13F", 100, page * 100), { as: "text", mayNotExist: true })).body ?? "";
     const entries = (body.match(/<entry>/g) ?? []).length;
     if (!entries) break;
+    seen += entries;
     const rows = parseCurrentFeed(body);
     out.push(...rows);
+    // Nothing on this page made sense: reading further pages cannot help.
+    if (!rows.length) break;
     const oldest = rows.at(-1)?.filing_date;
     if (oldest && state.days[oldest] && !state.days[oldest].live) break;
     // A whole page we already knew about: an earlier run read from here down.
@@ -314,7 +320,7 @@ async function liveFilings(sec, state) {
     if (rows.length && rows.every((r) => alreadyRecorded(state, r))) break;
     if (entries < 100) break;
   }
-  return out;
+  return { rows: out, entries: seen };
 }
 
 /** The published page for one fund, or null if it has none. Throws if unsure. */
@@ -364,6 +370,8 @@ const plan = {
   liveQueued: 0,
   /** Set when the latest-filings list could not be read; tonight's index still covers it. */
   liveError: null,
+  /** A problem with the live list that will not fix itself — raises the alarm. */
+  liveProblem: null,
   /** Client funds whose SEC filing list is ahead of their published page. */
   favouritesBehind: [],
   ciks: [],
@@ -477,19 +485,29 @@ async function run() {
   }
 
   // ---- and who has filed since, from the live list ------------------------
+  const season = filingSeason(TODAY).season;
   try {
-    const live = await liveFilings(sec, state);
+    const { rows: live, entries } = await liveFilings(sec, state);
     plan.liveSeen = live.length;
     for (const f of live) if (noteLiveFiling(state, f)) plan.liveQueued++;
-    note(`latest-filings list: ${live.length} 13F filing(s) since the last daily index, ${plan.liveQueued} new to us`);
+    note(
+      `latest-filings list: ${live.length} of ${entries} entr${entries === 1 ? "y" : "ies"} read, ` +
+        `${plan.liveQueued} filing(s) new to us`,
+    );
+    plan.liveProblem = liveListProblem({ entries, parsed: live.length, season });
   } catch (err) {
     if (err instanceof SecBlockedError) throw err;
     plan.liveError = err.message;
+    plan.liveProblem = liveListProblem({ entries: 0, parsed: 0, season, error: err });
     note(
       `::warning::could not read EDGAR's latest-filings list (${err.message}). Today's filings will be ` +
         "picked up from tonight's daily index instead — later, but nothing is lost.",
     );
   }
+  // Reported, not thrown: the run still does all of its work. The workflow's
+  // "live filing list is still readable" step reads this from the plan and
+  // ends the run red — after the publish — so somebody is told.
+  if (plan.liveProblem) note(`::error::${plan.liveProblem}`);
 
   // ---- and is any client fund's page behind the SEC? ----------------------
   //

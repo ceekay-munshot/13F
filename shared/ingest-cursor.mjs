@@ -90,6 +90,48 @@ export function noteLiveFiling(state, { cik, filing_date: date, accession_number
 }
 
 /**
+ * Is EDGAR's latest-filings list still something we can use?
+ *
+ * Returns a plain-English problem, or null. The live list fails SAFE — without
+ * it, filings still arrive from that night's daily index, and client funds are
+ * still checked one by one — which is exactly why it needs its own alarm: a
+ * silent fallback to "next day" is the 16 Nov 2026 outage again, just quieter.
+ *
+ * Only things that will not fix themselves are reported. A busy SEC (5xx) or a
+ * network blip costs one run its live list and the next run reads it again.
+ *
+ * @param {object} o
+ * @param {number} o.entries  <entry> elements seen across the pages read
+ * @param {number} o.parsed   how many of those parseCurrentFeed understood
+ * @param {string} o.season   filingSeason(today).season
+ * @param {{name?:string,status?:number}|null} [o.error]  what reading it threw, if it did
+ */
+export function liveListProblem({ entries, parsed, season, error = null }) {
+  const after = " Nothing is lost — filings still arrive from the SEC's nightly list, and client funds are " +
+    "still checked one by one — but everyone else now appears the next day instead of within the hour.";
+  if (error) {
+    if (error.name === "SecMissingError") {
+      return "The SEC refused its live list of filings while answering everything else normally, so the " +
+        "list's address has probably changed." + after;
+    }
+    const s = Number(error.status);
+    if (error.name === "SecFetchError" && s >= 400 && s < 500 && s !== 429) {
+      return `The SEC answered ${s} for its live list of filings, so the list's address has probably changed.` + after;
+    }
+    return null;
+  }
+  if (entries > 0 && parsed < entries / 2) {
+    return `The SEC's live list of filings held ${entries} entries and we could read ${parsed} of them, so its ` +
+      "format has probably changed." + after;
+  }
+  if (entries === 0 && (season === "ramp" || season === "peak")) {
+    return "The SEC's live list of filings came back empty in the middle of filing season, when hundreds of " +
+      "managers file every day, so it has probably moved or changed format." + after;
+  }
+  return null;
+}
+
+/**
  * Is this live-list entry already in the cursor — seen on the list before, or
  * on a day whose daily index is already in? Lets a run stop paging the list
  * once it reaches ground an earlier run covered.
