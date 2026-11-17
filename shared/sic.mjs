@@ -46,7 +46,11 @@ const RULES = [
 
   // --- health --------------------------------------------------------------
   [[2833, 2836], "Health Care"],             // pharma & biologics
-  [[3821, 3824], "Health Care"],
+  // 3821-3824 used to be Health Care as one block, which put Trane (3822,
+  // building climate controls) in Health Care. Only 3821 is lab apparatus.
+  [[3821, 3821], "Health Care"],
+  [[3822, 3822], "Industrials"],             // environmental controls
+  [[3823, 3824], "Electronics & Instruments"], // industrial measurement, meters
   [[3840, 3851], "Health Care"],             // medical devices
   [[8000, 8099], "Health Care"],
   [[5122, 5122], "Health Care"],
@@ -57,6 +61,11 @@ const RULES = [
   // everything, so folding it into "Financials" would silently misattribute it.
   [[6726, 6726], "Funds & ETFs"],
   [[6722, 6722], "Funds & ETFs"],
+  // Commodity pools — GLD, SLV, USO. A gold trust is a fund, not a broker.
+  [[6221, 6221], "Funds & ETFs"],
+  // 6199 is "finance services", the catch-all: card issuers, fintech lenders,
+  // and the bitcoin miners. "Banks & Lending" claimed too much for it.
+  [[6199, 6199], "Financials"],
   [[6798, 6798], "Real Estate"],             // REITs
   [[6500, 6599], "Real Estate"],
   [[6000, 6199], "Banks & Lending"],
@@ -103,6 +112,29 @@ const RULES = [
   [[7000, 7299], "Consumer Discretionary"],
   [[7900, 7999], "Consumer Discretionary"],
   [[8200, 8299], "Consumer Discretionary"],
+  // --- codes the list above did not reach ----------------------------------
+  // Each of these sent real companies to "Unclassified". Grouped the way the
+  // rest of this file groups their neighbours.
+  [[800, 899], "Materials"],                 // forestry
+  [[100, 999], "Consumer Staples"],          // farming, fishing
+  [[1400, 1499], "Materials"],               // quarrying
+  [[2400, 2499], "Materials"],               // lumber & wood
+  [[3580, 3599], "Industrials"],             // HVAC (Carrier, Lennox), Eaton
+  [[3670, 3671], "Electronics & Instruments"], // electronic components
+  [[3673, 3673], "Electronics & Instruments"],
+  [[3800, 3812], "Industrials"],             // defence & navigation electronics
+  [[3828, 3829], "Electronics & Instruments"],
+  [[3860, 3879], "Consumer Discretionary"],  // photographic, watches
+  [[7310, 7319], "Media & Publishing"],      // advertising
+  [[7300, 7369], "Industrials"],             // business services, staffing
+  [[7380, 7389], "Industrials"],             // business services, other
+  [[7500, 7599], "Consumer Discretionary"],  // car services & rental
+  [[7600, 7699], "Industrials"],             // repair services
+  [[7800, 7899], "Media & Publishing"],      // film & video
+  [[8100, 8199], "Industrials"],             // legal services
+  [[8300, 8399], "Health Care"],             // residential & social care
+  [[8900, 8999], "Industrials"],             // services, other
+  [[9995, 9995], "Financials"],              // shells and SPACs
 ];
 
 /** Every sector this file can emit. The UI colours and orders from this list. */

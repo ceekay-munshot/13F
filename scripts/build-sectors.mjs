@@ -6,6 +6,13 @@
 //
 //   node --env-file=.env scripts/build-sectors.mjs
 //   node --env-file=.env scripts/build-sectors.mjs --quarters=6
+//   node --env-file=.env scripts/build-sectors.mjs --previous=<url|file> --publish
+//
+//   --previous   last build's state (movers/sectors.state.json): its SIC
+//                look-ups are reused, so only companies new since then are asked.
+//   --fresh-days with --previous, do nothing if that build is younger than this.
+//   --publish    upload movers/sectors.json (what the dashboard reads) and
+//                movers/sectors.state.json (the look-up memory) to R2.
 //
 // ---------------------------------------------------------------------------
 // WHY THIS CHAIN, AND WHY IT IS CHEAP
@@ -28,17 +35,29 @@
 // So the whole map costs a handful of requests rather than thousands, and it is
 // rebuilt from scratch each run — there is no incremental state to drift.
 //
-// COVERAGE, STATED HONESTLY. A company only appears in the financial data sets
-// if it files financial statements there, so ETFs, foreign issuers filing 20-F
-// and some trusts will not resolve. Those land in "Unclassified" or, where the
-// SIC says so, "Funds & ETFs" — never silently folded into an operating sector,
-// because a misattributed holding is invisible once it is summed.
+// COVERAGE. A company only appears in the financial data sets if it files
+// financial statements there. On 17 Nov 2026 that left out a quarter of all
+// the money focused managers traded: every ETF, foreign filers (HDFC, Teva),
+// new listings (SpaceX, SK Hynix), and — for reasons the data sets do not say —
+// Exxon, Electronic Arts and Equity Residential. So two more sources fill in:
+//
+//   company_tickers_mf.json  every fund and ETF ticker.                1 request
+//   submissions API          the SIC on the company's own record, for
+//                            ONLY the companies still missing, and each
+//                            answer is remembered for the next build.  ~1/company
+//
+// A company that still cannot be placed stays "Unclassified" — never folded
+// into an operating sector, because a misattributed holding is invisible once
+// it is summed.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry } from "./_unzip.mjs";
 import { sectorForSic } from "../shared/sic.mjs";
+import { assembleSectorMap, looksLikeFund, normName } from "../shared/sectors.mjs";
+import { CACHE_CONTROL } from "../shared/artifacts.mjs";
+import { createR2 } from "./_r2.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -50,6 +69,30 @@ const args = Object.fromEntries(
 const OUT = args.out || "data/sectors.json";
 const CACHE = args.cache || ".cache";
 const QUARTERS = Number(args.quarters || 4);
+const PREVIOUS = typeof args.previous === "string" ? args.previous : null;
+const FRESH_DAYS = args["fresh-days"] ? Number(args["fresh-days"]) : null;
+// A ceiling, not a target: a normal build asks a few dozen. The first build
+// with no memory asks about two thousand, which at 3 a second is ~12 minutes.
+const MAX_LOOKUPS = Number(args["max-lookups"] || 4000);
+// DRY_RUN wins over --publish: a dry run must not be able to publish by mistake.
+const PUBLISH = Boolean(args.publish) && process.env.DRY_RUN !== "true";
+
+/** Last build's state, from a URL or a file. null if there is none yet. */
+async function readPrevious(where) {
+  if (!where) return null;
+  try {
+    if (/^https?:/.test(where)) {
+      const res = await fetch(`${where}${where.includes("?") ? "&" : "?"}fresh=${Date.now()}`, { signal: AbortSignal.timeout(60_000) });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(String(res.status));
+      return await res.json();
+    }
+    return existsSync(where) ? JSON.parse(readFileSync(where, "utf8")) : null;
+  } catch (err) {
+    log(`previous build unreadable (${err.message}) — asking about every gap again.`);
+    return null;
+  }
+}
 
 const log = (m) => console.log(m);
 
@@ -71,6 +114,15 @@ function recentDataSetQuarters(n) {
 }
 
 await runJob(async () => {
+  const previous = await readPrevious(PREVIOUS);
+  if (previous?.builtAt && FRESH_DAYS != null) {
+    const ageDays = (Date.now() - Date.parse(previous.builtAt)) / 86_400_000;
+    if (ageDays < FRESH_DAYS) {
+      log(`sector list built ${ageDays.toFixed(1)} days ago — fresh, nothing to do.`);
+      return;
+    }
+  }
+
   const sec = new SecFetcher({
     userAgent: process.env.SEC_USER_AGENT,
     rps: Number(process.env.SEC_RATE_LIMIT_RPS || 5),
@@ -83,15 +135,34 @@ await runJob(async () => {
   // ---- 1. ticker -> CIK ----------------------------------------------------
   const tickersRes = await sec.get(SEC_URLS.companyTickers(), { as: "json" });
   const tickerToCik = new Map();
+  const tickers = new Map();
   for (const row of Object.values(tickersRes.body ?? {})) {
     if (row?.ticker && row?.cik_str != null) {
-      tickerToCik.set(String(row.ticker).toUpperCase(), Number(row.cik_str));
+      const t = String(row.ticker).toUpperCase();
+      tickerToCik.set(t, Number(row.cik_str));
+      tickers.set(t, { cik: Number(row.cik_str), title: row.title ?? "" });
     }
   }
   log(`ticker->CIK: ${tickerToCik.size} registrants`);
 
+  // ---- 1b. every fund and ETF ticker ----------------------------------------
+  // Optional: without it ETFs still resolve by name, just less completely.
+  const fundSymbols = new Set();
+  try {
+    const mf = await sec.get(SEC_URLS.companyTickersMf(), { as: "json" });
+    const fields = mf.body?.fields ?? [];
+    const iSym = fields.indexOf("symbol");
+    for (const r of mf.body?.data ?? []) if (iSym >= 0 && r[iSym]) fundSymbols.add(String(r[iSym]).toUpperCase());
+    log(`fund and ETF tickers: ${fundSymbols.size}`);
+  } catch (err) {
+    if (err.name === "SecBlockedError") throw err;
+    log(`::warning::fund ticker list unavailable (${err.status ?? err.message}) — funds resolve by name only.`);
+  }
+
   // ---- 2. CIK -> SIC, from the financial statement data sets ---------------
   const cikToSic = new Map();
+  // Company name -> SIC, from the same files. Outlives a ticker: see assembleSectorMap.
+  const filedNames = new Map();
   let sets = 0;
   for (const q of recentDataSetQuarters(QUARTERS)) {
     const url = `https://www.sec.gov/files/dera/data/financial-statement-data-sets/${q}.zip`;
@@ -125,6 +196,7 @@ await runJob(async () => {
     const head = lines[0].split("\t").map((h) => h.trim().toLowerCase());
     const iCik = head.indexOf("cik");
     const iSic = head.indexOf("sic");
+    const iName = head.indexOf("name");
     if (iCik < 0 || iSic < 0) { log(`  ${q}: sub.txt has no cik/sic column`); continue; }
 
     let added = 0;
@@ -136,6 +208,7 @@ await runJob(async () => {
       // NEWEST WINS. Quarters are walked newest-first, so only fill a gap —
       // a company that reclassified should keep its most recent SIC.
       if (!cikToSic.has(cik)) { cikToSic.set(cik, sic); added++; }
+      if (iName >= 0) { const k = normName(c[iName]); if (k && !filedNames.has(k)) filedNames.set(k, sic); }
     }
     sets++;
     log(`  ${q}: +${added} new CIK->SIC (${cikToSic.size} total)`);
@@ -145,27 +218,78 @@ await runJob(async () => {
     log("::warning::no SIC data resolved — sector views will read Unclassified.");
   }
 
-  // ---- 3. join ------------------------------------------------------------
-  const sectors = {};
-  let resolved = 0;
-  for (const [ticker, cik] of tickerToCik) {
-    const sic = cikToSic.get(cik);
-    if (sic == null) continue;
-    sectors[ticker] = { sic, sector: sectorForSic(sic) };
-    resolved++;
+  // ---- 2b. the companies the data sets missed --------------------------------
+  // Asked one at a time, from the company's own record, and remembered: a
+  // company asked once is never asked again, whether it had a code or not.
+  const asked = new Map(Object.entries(previous?.sicByCik ?? {}).map(([k, v]) => [Number(k), Number(v) || 0]));
+  const sicOf = new Map(cikToSic);
+  for (const [cik, sic] of asked) if (!sicOf.has(cik) && sic) sicOf.set(cik, sic);
+
+  const gaps = [...new Set(
+    [...tickers.entries()]
+      .filter(([t, { cik, title }]) =>
+        !sicOf.has(cik) && !asked.has(cik) && !fundSymbols.has(t) && !looksLikeFund(title))
+      .map(([, { cik }]) => cik),
+  )];
+  const toAsk = gaps.slice(0, MAX_LOOKUPS);
+  log(`still missing: ${gaps.length} companies — asking about ${toAsk.length}` +
+      (asked.size ? ` (${asked.size} remembered from the last build)` : ""));
+  let found = 0;
+  for (const [i, cik] of toAsk.entries()) {
+    try {
+      const res = await sec.get(SEC_URLS.submissions(cik), { as: "json", mayNotExist: true });
+      const sic = Number(res.body?.sic) || 0;
+      asked.set(cik, sic);
+      if (sic) { sicOf.set(cik, sic); found++; }
+    } catch (err) {
+      if (err.name === "SecBlockedError") throw err;
+      // Not remembered: a failure is not an answer, so it is asked again next time.
+      if (err.status === 404 || err.name === "SecMissingError") asked.set(cik, 0);
+    }
+    if ((i + 1) % 250 === 0) log(`  asked ${i + 1}/${toAsk.length}, ${found} placed`);
   }
+  log(`  ${found} of ${toAsk.length} placed from their own SEC record`);
+
+  // ---- 3. join ------------------------------------------------------------
+  const { sectors, names } = assembleSectorMap({ tickers, fundSymbols, sicOf, sectorForSic, filedNames });
+  const resolved = Object.keys(sectors).length;
 
   const bySector = {};
   for (const v of Object.values(sectors)) bySector[v.sector] = (bySector[v.sector] ?? 0) + 1;
 
+  const builtAt = new Date().toISOString();
+  const sicByCik = Object.fromEntries([...asked.entries()].map(([k, v]) => [k, v]));
   mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, JSON.stringify({
-    generatedAt: new Date().toISOString(),
-    source: "SEC company_tickers.json + DERA financial statement data sets (sub.txt)",
+    generatedAt: builtAt,
+    source: "SEC company_tickers.json + company_tickers_mf.json + DERA financial statement data sets (sub.txt) + submissions API for the rest",
     dataSets: sets,
     count: resolved,
     sectors,
+    names,
+    sicByCik,
   }));
+
+  if (PUBLISH) {
+    // Both short-cached: they are rewritten in place each week.
+    const r2 = createR2({
+      headersFor: (key, body) => ({
+        "content-type": "application/json",
+        "content-length": String(body.length),
+        "cache-control": CACHE_CONTROL.manifest,
+      }),
+    });
+    // The list the dashboard reads — the same shape as meta/sectors.json, so
+    // either can stand in for the other.
+    await r2.put("movers/sectors.json", Buffer.from(JSON.stringify({
+      v: 1, kind: "sector-map", builtAt,
+      data: Object.fromEntries(Object.entries(sectors).map(([t, v]) => [t, v.sector])),
+    })));
+    // The pipeline's memory: names for holdings with no ticker, and every
+    // company already asked about.
+    await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({ v: 1, builtAt, names, sicByCik })));
+    log("published movers/sectors.json and movers/sectors.state.json");
+  }
 
   log(`\n${"=".repeat(60)}`);
   log(`${resolved} tickers classified from ${sets} data set(s), ${sec.requestCount} SEC requests`);

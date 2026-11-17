@@ -7,6 +7,7 @@
 //   node scripts/build-movers.mjs --out=.build/movers              # build only
 //   node scripts/build-movers.mjs --out=.build/movers --publish    # and upload
 //   node scripts/build-movers.mjs --out=.build/movers --limit=200  # sample, never published
+//   node scripts/build-movers.mjs --sectors=.build/sectors.json     # a sector list built this run
 //
 // It reads over plain HTTPS from the live origin, like rebuild-indexes.mjs, so
 // what runs in CI can be run and checked by hand first. Zero SEC requests.
@@ -20,10 +21,12 @@
 // the manifest. If it cannot read enough of the site to be sure of its answer
 // it publishes nothing and the tab keeps showing the last good file.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fundMoves, moversPath, moversSeenPath, MOVERS_MAX_POSITIONS, MOVERS_MIN_POSITIONS, MOVERS_VERSION } from "../shared/movers.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
+import { createSectorLookup } from "../shared/sectors.mjs";
+import { SECTORS } from "../shared/sic.mjs";
 import { createR2, pool } from "./_r2.mjs";
 
 const args = Object.fromEntries(
@@ -38,7 +41,8 @@ const OUT = args.out || ".build/movers";
 const PERIODS = Number(args.periods || 2);
 const LIMIT = args.limit ? Number(args.limit) : Infinity;
 const CONCURRENCY = Number(args.concurrency || 24);
-const PUBLISH = Boolean(args.publish) && LIMIT === Infinity;
+// DRY_RUN wins over --publish: a dry run must not be able to publish by mistake.
+const PUBLISH = Boolean(args.publish) && LIMIT === Infinity && process.env.DRY_RUN !== "true";
 // More read failures than this and the answer is not trustworthy enough to publish.
 const MAX_FAILED_SHARE = 0.02;
 // Bypasses the edge cache for the two files that change in place.
@@ -72,6 +76,30 @@ for (const f of filersEnv?.data ?? []) if (f.hasHoldings !== false) names.set(f.
 for (const cik of Object.keys(mf.funds ?? {})) if (!names.has(cik)) names.set(cik, cik);
 const ciks = [...names.keys()].sort().slice(0, LIMIT);
 
+// THE SECTOR LIST. The weekly one this job keeps (movers/sectors.json) when it
+// exists — it places funds, foreign companies and new listings the monthly one
+// cannot — and the monthly one otherwise. The names are for holdings filed
+// with no ticker.
+//
+// --sectors=<file> is a list build-sectors.mjs has just written in this same
+// run: used directly, so a dry run shows what a new list would do before any
+// of it is published.
+const local = typeof args.sectors === "string" && existsSync(args.sectors)
+  ? JSON.parse(readFileSync(args.sectors, "utf8"))
+  : null;
+const weekly = local
+  ? { builtAt: local.generatedAt, data: Object.fromEntries(Object.entries(local.sectors ?? {}).map(([t, v]) => [t, v.sector])) }
+  : await get(`movers/sectors.json?${FRESH}`).catch(() => null);
+const sectorEnv = weekly ?? await get(`meta/sectors.json?b=${mf.buildId}`).catch(() => null);
+const sectorState = local
+  ? { names: local.names }
+  : weekly ? await get(`movers/sectors.state.json?${FRESH}`).catch(() => null) : null;
+const sectorOf = createSectorLookup(sectorEnv?.data ?? {}, { names: sectorState?.names ?? null });
+// Rows kept from the last build were placed with the list that was current
+// then. A new list means every fund is placed again.
+const sectorListAt = weekly?.builtAt ?? `monthly:${mf.buildId}`;
+log(`sector list: ${weekly ? `weekly, built ${weekly.builtAt}` : "monthly"} · ${Object.keys(sectorEnv?.data ?? {}).length} tickers`);
+
 const periods = (mf.periods ?? [])
   .filter((p) => (p.funds ?? 0) > 0)
   .map((p) => p.period)
@@ -102,7 +130,8 @@ for (const period of periods) {
   // A different rule or threshold means last run's rows answer a different
   // question. Start again rather than mix them.
   const reusable = prevSeen?.version === MOVERS_VERSION
-    && prevSeen?.maxPositions === MOVERS_MAX_POSITIONS && prevSeen?.minPositions === MOVERS_MIN_POSITIONS;
+    && prevSeen?.maxPositions === MOVERS_MAX_POSITIONS && prevSeen?.minPositions === MOVERS_MIN_POSITIONS
+    && prevSeen?.sectorListAt === sectorListAt;
   const seenBefore = reusable ? prevSeen.keys ?? {} : {};
   const rowsBefore = new Map(reusable ? (prev?.funds ?? []).map((f) => [f[0], f]) : []);
 
@@ -136,7 +165,7 @@ for (const period of periods) {
       seen[cik] = [key, null];
       return;
     }
-    const r = fundMoves(env);
+    const r = fundMoves(env, { sectorOf });
     seen[cik] = [key, r.positions ?? null];
     if (r.skip) {
       skips[r.skip] = (skips[r.skip] ?? 0) + 1;
@@ -148,6 +177,17 @@ for (const period of periods) {
   const funds = [...rows.values()].sort((a, b) => b[2] - a[2]);
   tally.included = funds.length;
   const moves = funds.reduce((a, f) => a + f[4].length, 0);
+  // How much of the money traded still has no sector — the number this list exists to keep small.
+  const unc = SECTORS.indexOf("Unclassified");
+  let tradedAll = 0, tradedUnc = 0;
+  for (const f of funds) for (const m of f[4]) { tradedAll += Math.abs(m[3]); if (m[6] === unc) tradedUnc += Math.abs(m[3]); }
+  log(`${period}: ${(100 * tradedUnc / Math.max(1, tradedAll)).toFixed(1)}% of money traded is Unclassified`);
+  {
+    const left = new Map();
+    for (const f of funds) for (const m of f[4]) if (m[6] === unc) left.set(m[0], (left.get(m[0]) ?? 0) + Math.abs(m[3]));
+    const top = [...left.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25);
+    log(`  largest still unplaced: ${top.map(([t, v]) => `${t} $${(v / 1e6).toFixed(0)}M`).join(", ")}`);
+  }
   log(`${period}: ${funds.length} concentrated managers, ${moves} trades · ` +
       `read ${tally.read}, reused ${tally.reused}, not filed ${tally.notFiled}, failed ${tally.failed} · ` +
       `left out ${JSON.stringify(skips)}`);
@@ -159,12 +199,13 @@ for (const period of periods) {
     // so an unchanged rebuild is byte-identical and is not re-uploaded.
     asOf: mf.generatedAt ?? null,
     fields: ["cik", "name", "valueLongUsd", "positionsLong", "moves"],
-    moveFields: ["ticker", "action", "sharesChangePct", "tradedUsd", "weightBefore", "weightAfter"],
+    moveFields: ["ticker", "action", "sharesChangePct", "tradedUsd", "weightBefore", "weightAfter", "sector"],
+    sectors: SECTORS,
     funds,
   };
   const seenBody = {
     v: 1, kind: "period-movers-seen", period, version: MOVERS_VERSION,
-    maxPositions: MOVERS_MAX_POSITIONS, minPositions: MOVERS_MIN_POSITIONS, keys: seen,
+    maxPositions: MOVERS_MAX_POSITIONS, minPositions: MOVERS_MIN_POSITIONS, sectorListAt, keys: seen,
   };
 
   for (const [path, obj] of [[moversPath(period), body], [moversSeenPath(period), seenBody]]) {

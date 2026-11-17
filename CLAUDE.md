@@ -125,6 +125,32 @@ they send to the SEC (the US financial regulator) every three months.
   value, e.g. Opendoor's three warrant series), and one filed its puts as
   shares. The 19 correct themselves at the next monthly rebuild after merge.
 
+- **17 Nov 2026 — "Unclassified" went from a quarter of all money traded to
+  half a percent.** On the Sectors tab it was $38.65B sold / $50.80B bought
+  in Q3; on Consensus's Sector flows it held $101.87B. Now $1.32B / $0.55B and
+  $1.94B (0.2% of value held). Four causes, all fixed:
+  1. **Funds and ETFs had no sector** (half of it). They go in "Funds &
+     ETFs", from the SEC's own list of fund tickers and from how filers write
+     fund names ("SPDR … ETF TR", "ISHARES TR").
+  2. **The sector list missed companies** (over a third): new listings
+     (SpaceX, SK Hynix), foreign companies (HDFC, Teva), and companies bought
+     out this year that funds still sold (Electronic Arts, Janus Henderson).
+     Each missing company is now looked up on its own SEC record, once, and
+     remembered; a bought-out company is found by its name in its last filing.
+  3. **Holdings filed with no ticker** are placed by company name.
+  4. **BRKB in a filing is BRK-B at the SEC** — both spellings now match.
+
+  Also corrected while there: Trane was in Health Care, Visa and Mastercard
+  would have landed in Industrials (the SEC files them, Uber, Alibaba and
+  Airbnb under a catch-all "business services" code — about 35 such big names
+  are now placed by what they sell, listed in `shared/sectors.mjs`), HVAC
+  makers and Eaton had no sector, and bitcoin miners were "Banks & Lending".
+
+  The list is rebuilt weekly by the Sectors job ("Build the Sectors tab") and
+  read by both tabs; the monthly build reuses its look-ups. Checked with two
+  dry runs of that job on GitHub — which can now be run without publishing
+  anything — before merging.
+
 - **17 Nov 2026 — a fund whose own filing puts company names on the wrong
   lines no longer gets the wrong tickers.** Found while checking a client's
   question: Lightrock's page said COHU next to a CareTrust REIT holding. Our

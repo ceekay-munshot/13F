@@ -495,6 +495,8 @@ export const SEC_URLS = {
 
   companyTickers: () => "https://www.sec.gov/files/company_tickers.json",
   companyTickersExchange: () => "https://www.sec.gov/files/company_tickers_exchange.json",
+  /** Every fund and ETF share class with a ticker: cik, seriesId, classId, symbol. */
+  companyTickersMf: () => "https://www.sec.gov/files/company_tickers_mf.json",
 
   /**
    * Liveness probe target. MUST be a static, CDN-served file — see the comment
