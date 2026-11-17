@@ -55,7 +55,7 @@ import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry } from "./_unzip.mjs";
 import { sectorForSic } from "../shared/sic.mjs";
-import { assembleSectorMap, looksLikeFund } from "../shared/sectors.mjs";
+import { assembleSectorMap, looksLikeFund, normName } from "../shared/sectors.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { createR2 } from "./_r2.mjs";
 
@@ -161,6 +161,8 @@ await runJob(async () => {
 
   // ---- 2. CIK -> SIC, from the financial statement data sets ---------------
   const cikToSic = new Map();
+  // Company name -> SIC, from the same files. Outlives a ticker: see assembleSectorMap.
+  const filedNames = new Map();
   let sets = 0;
   for (const q of recentDataSetQuarters(QUARTERS)) {
     const url = `https://www.sec.gov/files/dera/data/financial-statement-data-sets/${q}.zip`;
@@ -194,6 +196,7 @@ await runJob(async () => {
     const head = lines[0].split("\t").map((h) => h.trim().toLowerCase());
     const iCik = head.indexOf("cik");
     const iSic = head.indexOf("sic");
+    const iName = head.indexOf("name");
     if (iCik < 0 || iSic < 0) { log(`  ${q}: sub.txt has no cik/sic column`); continue; }
 
     let added = 0;
@@ -205,6 +208,7 @@ await runJob(async () => {
       // NEWEST WINS. Quarters are walked newest-first, so only fill a gap —
       // a company that reclassified should keep its most recent SIC.
       if (!cikToSic.has(cik)) { cikToSic.set(cik, sic); added++; }
+      if (iName >= 0) { const k = normName(c[iName]); if (k && !filedNames.has(k)) filedNames.set(k, sic); }
     }
     sets++;
     log(`  ${q}: +${added} new CIK->SIC (${cikToSic.size} total)`);
@@ -247,7 +251,7 @@ await runJob(async () => {
   log(`  ${found} of ${toAsk.length} placed from their own SEC record`);
 
   // ---- 3. join ------------------------------------------------------------
-  const { sectors, names } = assembleSectorMap({ tickers, fundSymbols, sicOf, sectorForSic });
+  const { sectors, names } = assembleSectorMap({ tickers, fundSymbols, sicOf, sectorForSic, filedNames });
   const resolved = Object.keys(sectors).length;
 
   const bySector = {};

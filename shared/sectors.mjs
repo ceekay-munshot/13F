@@ -78,6 +78,42 @@ export const FUNDS = "Funds & ETFs";
 export const UNCLASSIFIED = "Unclassified";
 
 /**
+ * Companies the SEC files under a catch-all code that says nothing about what
+ * they sell, placed by what they sell instead.
+ *
+ *   7389  "business services, not elsewhere classified" — Visa, Uber, Alibaba
+ *   7320  "credit reporting"                             — S&P Global, Moody's
+ *   7340  "services to buildings"                        — Airbnb
+ *   7370  "computer programming"                         — SpaceX
+ *
+ * Without this, Visa and Mastercard read as Industrials beside staffing firms,
+ * and SpaceX as software. Kept short on purpose: only names big enough to
+ * move a sector total, and only where the code is a catch-all — a company
+ * with a specific code keeps it, even where an index provider would differ.
+ */
+export const PLACED_BY_BUSINESS = {
+  // payments
+  V: "Financials", MA: "Financials", PYPL: "Financials", FISV: "Financials", FI: "Financials",
+  GPN: "Financials", DLO: "Financials", RELY: "Financials", WU: "Financials",
+  // marketplaces, delivery, travel
+  MELI: "Consumer Discretionary", PDD: "Consumer Discretionary", BABA: "Consumer Discretionary",
+  JD: "Consumer Discretionary", SE: "Consumer Discretionary", DASH: "Consumer Discretionary",
+  EBAY: "Consumer Discretionary", ETSY: "Consumer Discretionary", CART: "Consumer Discretionary",
+  ABNB: "Consumer Discretionary", TCOM: "Consumer Discretionary",
+  // ride-hailing
+  UBER: "Transport & Logistics", LYFT: "Transport & Logistics",
+  // ratings and index data
+  SPGI: "Capital Markets", MCO: "Capital Markets", MSCI: "Capital Markets",
+  // IT services and analytics
+  ACN: "Software & IT Services", FICO: "Software & IT Services", AKAM: "Software & IT Services",
+  IT: "Software & IT Services",
+  // property listings and data
+  Z: "Real Estate", ZG: "Real Estate", CSGP: "Real Estate",
+  // rockets and satellites
+  SPCX: "Industrials",
+};
+
+/**
  * Build a lookup over a ticker -> sector list.
  *
  * `names` is optional: normalised company name -> sector, for holdings filed
@@ -121,17 +157,22 @@ export function createSectorLookup(map, { names = null } = {}) {
  *   sicOf        cik -> SIC code, or 0 for "asked, none on file"
  *   sectorForSic the SIC -> sector rule (shared/sic.mjs)
  *
+ *   filedNames   normName -> SIC, from the financial data sets' own company
+ *                names. These outlive a ticker: a company bought out this
+ *                year (Electronic Arts, Janus Henderson) has left the ticker
+ *                list but its last 10-Q is still there, and funds still sold it.
+ *
  * Returns { sectors: ticker -> { sic, sector }, names: normName -> sector }.
  *
  * Every ticker with punctuation also gets its bare spelling (BRK-B -> BRKB),
  * because that is how 13F holdings arrive, and consumers that look tickers up
  * exactly — the monthly build's own sector totals — then match too.
  */
-export function assembleSectorMap({ tickers, fundSymbols, sicOf, sectorForSic }) {
+export function assembleSectorMap({ tickers, fundSymbols, sicOf, sectorForSic, filedNames = new Map() }) {
   const sectors = {};
   for (const [ticker, { cik, title }] of tickers) {
     const sic = sicOf.get(cik) || null;
-    let sector = sic ? sectorForSic(sic) : null;
+    let sector = PLACED_BY_BUSINESS[ticker] ?? (sic ? sectorForSic(sic) : null);
     // A fund the SEC lists as one, or a registrant whose name says so, is a
     // fund — unless its own industry code says it is an operating company.
     if ((!sector || sector === UNCLASSIFIED) && (fundSymbols.has(ticker) || looksLikeFund(title))) sector = FUNDS;
@@ -154,12 +195,15 @@ export function assembleSectorMap({ tickers, fundSymbols, sicOf, sectorForSic })
   // companies normalise to with DIFFERENT sectors is dropped, not guessed.
   const names = {};
   const clash = new Set();
-  for (const [ticker, { title }] of tickers) {
-    const s = sectors[ticker]?.sector;
-    const k = normName(title);
-    if (!s || s === UNCLASSIFIED || !k || clash.has(k)) continue;
-    if (names[k] && names[k] !== s) { clash.add(k); delete names[k]; continue; }
+  const add = (k, s) => {
+    if (!s || s === UNCLASSIFIED || !k || clash.has(k)) return;
+    if (names[k] && names[k] !== s) { clash.add(k); delete names[k]; return; }
     names[k] = s;
-  }
+  };
+  for (const [ticker, { title }] of tickers) add(normName(title), sectors[ticker]?.sector);
+  // Names from the financial data sets, for companies no longer in the ticker
+  // list. Only where the list itself had nothing to say about that name.
+  const listed = new Set(Object.keys(names));
+  for (const [k, sic] of filedNames) if (!listed.has(k)) add(k, sectorForSic(sic));
   return { sectors, names };
 }

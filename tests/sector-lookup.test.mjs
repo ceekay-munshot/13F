@@ -90,3 +90,44 @@ describe("assembleSectorMap", () => {
     expect(names[normName("SAME NAME CORP")]).toBeUndefined();
   });
 });
+
+describe("catch-all codes and bought-out companies", () => {
+  const tickers = new Map([
+    ["V", { cik: 10, title: "VISA INC." }],
+    ["UBER", { cik: 11, title: "Uber Technologies, Inc" }],
+    ["SPGI", { cik: 12, title: "S&P Global Inc." }],
+    ["ACME", { cik: 13, title: "ACME STAFFING INC" }],
+  ]);
+  const sicOf = new Map([[10, 7389], [11, 7389], [12, 7320], [13, 7363]]);
+  const filedNames = new Map([[normName("ELECTRONIC ARTS INC."), 7372], [normName("Acme Staffing Inc"), 2834]]);
+  const { sectors, names } = assembleSectorMap({ tickers, fundSymbols: new Set(), sicOf, sectorForSic, filedNames });
+
+  it("places well-known catch-all companies by what they sell", () => {
+    expect(sectors.V.sector).toBe("Financials");
+    expect(sectors.UBER.sector).toBe("Transport & Logistics");
+    expect(sectors.SPGI.sector).toBe("Capital Markets");
+  });
+  it("keeps the code's own answer for everyone else in it", () => {
+    expect(sectors.ACME.sector).toBe("Industrials");
+  });
+  it("finds a company that has left the ticker list by its filed name", () => {
+    const look = createSectorLookup({}, { names });
+    expect(look({ ticker: "EA", name: "ELECTRONIC ARTS INC", cls: "COM" })).toBe("Software & IT Services");
+  });
+  it("lets the ticker list's own name win over an older filed name", () => {
+    expect(names[normName("ACME STAFFING INC")]).toBe("Industrials");
+  });
+});
+
+describe("industry codes that used to be misread", () => {
+  it("puts climate controls, HVAC and Eaton in Industrials, not Health Care or nowhere", () => {
+    expect(sectorForSic(3822)).toBe("Industrials"); // Trane
+    expect(sectorForSic(3585)).toBe("Industrials"); // Carrier, Lennox
+    expect(sectorForSic(3590)).toBe("Industrials"); // Eaton
+    expect(sectorForSic(3821)).toBe("Health Care"); // lab apparatus stays
+  });
+  it("puts the finance catch-all in Financials, not Banks & Lending", () => {
+    expect(sectorForSic(6199)).toBe("Financials");
+    expect(sectorForSic(6021)).toBe("Banks & Lending");
+  });
+});
