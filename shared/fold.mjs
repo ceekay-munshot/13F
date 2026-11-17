@@ -102,16 +102,22 @@ export function foldFilings(filings) {
       combined = false;
     } else if (type === "NEW HOLDINGS") {
       const repeat = repeatedShare(rows, f.rows || []);
-      if (repeat.share >= RELISTED_BOOK_SHARE || repeat.sameSharesValueShare >= RELISTED_BOOK_SHARE) {
+      if (
+        repeat.share >= RELISTED_BOOK_SHARE ||
+        repeat.sameSharesValueShare >= RELISTED_BOOK_SHARE ||
+        repeat.sameLinesValueShare >= RELISTED_BOOK_SHARE
+      ) {
         // A full re-filing wearing the wrong label. Taken as what it is, and
         // said out loud, because it overrides what the filer wrote.
+        const pct = (x) => `${(x * 100).toFixed(0)}%`;
         warnings.push({
           code: "new_holdings_relists_book",
           detail:
             `${f.accession_number} is labelled NEW HOLDINGS but repeats ${repeat.repeated} of the ` +
             `${repeat.of} positions already reported, ` +
-            `${(repeat.sameSharesValueShare * 100).toFixed(0)}% of the book by value at identical share ` +
-            `counts; treated as RESTATEMENT`,
+            `${pct(repeat.sameSharesValueShare)} of the book by value at identical share counts, ` +
+            `${pct(repeat.sameLinesValueShare)} line for line whatever the security code; ` +
+            `treated as RESTATEMENT`,
         });
         rows = [...(f.rows || [])];
         applied.push("replace");
@@ -157,37 +163,50 @@ export function foldFilings(filings) {
 
 /**
  * At or above this share of the book, a NEW HOLDINGS amendment is read as a full
- * re-filing rather than an addition. Two measures, either one enough:
+ * re-filing rather than an addition. Three measures, any one enough:
  *
  *   POSITIONS  the share of the positions already reported that the amendment
  *              names again, at any size.
  *   VALUE      the share of the book's value that the amendment repeats with
  *              the SAME share count — the same holding, reported again.
+ *   LINES      the share of the book's value in lines the amendment repeats to
+ *              the dollar AND the share, whatever security code it puts on
+ *              them — a re-send that corrects the codes but not the numbers.
  *
- * MEASURED, 17 Nov 2026, on 101 NEW HOLDINGS amendments that had a book before
- * them — every one in the dashboard's filings feeds for Q4 2025 to Q3 2026, plus
- * those behind the funds whose Q3 exit lists showed doubles — each read from the
- * filing itself on EDGAR. The two kinds do not overlap:
+ * MEASURED, 17 Nov 2026, twice, each amendment against the book before it.
  *
- *   42 re-filings, in 39 fund-quarters. 41 repeat 61-100% of the positions already
- *     reported. Arbiter Partners' 2026-Q2 original and both its "new holdings"
- *     amendments each list the same 42-44 positions worth ~$190M; trusting the
- *     label published 127 positions worth $576M, and the one it later sold
- *     appeared three times. Arini Capital's original omitted a $491M position;
- *     its amendment added it AND re-listed the other 27, so each of those 27
- *     appeared twice with weights a factor of two apart (CZR: 7.40% of the
- *     incomplete book, 3.67% of the whole one — the right one). The 42nd (CIK
- *     0001032814, 2026-Q2) is why there is a second measure: it repeats only 17
- *     of 53 positions, but they are its 17 largest, share for share — 99% of a
- *     $3.78B book — and adding them would have doubled it.
+ * 101 amendments read from EDGAR — those the dashboard listed for Q4 2025 to Q3
+ * 2026, plus those behind the funds whose Q3 exit lists showed doubles. 42 were
+ * re-filings, 59 additions. Arbiter Partners' 2026-Q2 original and both its "new
+ * holdings" amendments each list the same 42-44 positions worth ~$190M; trusting
+ * the label published 127 positions worth $576M, and the one it later sold
+ * appeared three times. Arini Capital's original omitted a $491M position; its
+ * amendment added it AND re-listed the other 27, so each of those 27 appeared
+ * twice with weights a factor of two apart (CZR: 7.40% of the incomplete book,
+ * 3.67% of the whole one — the right one). CIK 0001032814, 2026-Q2, is why VALUE
+ * exists: it repeats only 17 of 53 positions, but they are its 17 largest, share
+ * for share — 99% of a $3.78B book — and adding them would have doubled it.
  *
- *   59 genuine additions. Most repeat nothing: they add positions that were
+ * All 247 in the SEC's quarterly bulk data sets for Dec 2024-Feb 2025 and Sep
+ * 2025-May 2026 that had a book before them, 212 fund-quarters:
+ *
+ *   67 re-filings. 65 repeat 58-100% of the positions. The other two are why
+ *     LINES exists. GFS Advisors' 2026-Q1 original put its security codes on the
+ *     wrong lines (Adobe's value and share count under a Vanguard fund's code);
+ *     the amendment fixed the codes and changed no number, $784,681,342 both
+ *     times. Matched by code, only 39% of positions recur and the quarter came
+ *     out doubled. Line for line, 98.5% of the book's value does. Strategic
+ *     Wealth Investment Group, 2024-Q4, is the same shape: 31% by code, 98.2%
+ *     line for line, $905.1M both times.
+ *
+ *   180 additions. Most repeat nothing: they add positions that were
  *     withheld. Some name securities the book already holds — the withheld part
- *     of a partly disclosed position — at most 37% of the positions, and almost
- *     never at the same share count (0.3% of the book's value at most), which
- *     is what an addition to an existing position looks like.
+ *     of a partly disclosed position — at most 37% of the positions (HighPoint
+ *     Advisor Group, 2025-Q4). The highest on VALUE and LINES is 22%: ECP
+ *     ControlCo, whose one-line amendments each name one position of a
+ *     four-position book again at the same size.
  *
- * Half sits well inside both gaps. Both are shares of the BOOK, not of the
+ * Half sits inside every gap. All three are shares of the BOOK, not of the
  * amendment: an addition of five rows that all name existing securities is 100%
  * repeated by its own measure and still an addition.
  */
@@ -217,16 +236,19 @@ function byPosition(rows) {
 /**
  * How much of the book an amendment repeats — see RELISTED_BOOK_SHARE.
  *
- * @returns {{repeated: number, of: number, share: number, sameSharesValueShare: number}}
+ * @returns {{repeated: number, of: number, share: number, sameSharesValueShare: number, sameLinesValueShare: number}}
  *   `repeated` of the book's `of` positions also appear in the amendment, and
  *   `share` is that fraction. `sameSharesValueShare` is the fraction of the
  *   book's value held in positions the amendment repeats at the identical share
- *   count. All zero for an empty book: an amendment with nothing before it
- *   repeats nothing.
+ *   count. `sameLinesValueShare` is the fraction of the book's value in lines
+ *   the amendment repeats with the identical value and share count, whatever
+ *   code either filing put on them; each amendment line answers for one book
+ *   line at most. All zero for an empty book: an amendment with nothing before
+ *   it repeats nothing.
  */
 export function repeatedShare(book, amendmentRows) {
   const before = byPosition(book);
-  if (!before.size) return { repeated: 0, of: 0, share: 0, sameSharesValueShare: 0 };
+  if (!before.size) return { repeated: 0, of: 0, share: 0, sameSharesValueShare: 0, sameLinesValueShare: 0 };
   let bookValue = 0;
   for (const b of before.values()) bookValue += b.value;
 
@@ -243,7 +265,24 @@ export function repeatedShare(book, amendmentRows) {
     of: before.size,
     share: repeated / before.size,
     sameSharesValueShare: bookValue > 0 ? sameSharesValue / bookValue : 0,
+    sameLinesValueShare: bookValue > 0 ? sameLinesValue(book, amendmentRows) / bookValue : 0,
   };
+}
+
+/** The book's value in lines the amendment repeats to the dollar and the share, matched one to one. */
+function sameLinesValue(book, amendmentRows) {
+  const lineKey = (h) => `${h.value_usd || 0}|${h.ssh_prnamt || 0}`;
+  const unmatched = new Map();
+  for (const h of amendmentRows) unmatched.set(lineKey(h), (unmatched.get(lineKey(h)) ?? 0) + 1);
+  let value = 0;
+  for (const h of book) {
+    const k = lineKey(h);
+    const left = unmatched.get(k) ?? 0;
+    if (!left) continue;
+    unmatched.set(k, left - 1);
+    value += h.value_usd || 0;
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------

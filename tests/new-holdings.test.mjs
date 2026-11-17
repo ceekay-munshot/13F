@@ -143,7 +143,7 @@ describe("where the line between a re-filing and an addition sits", () => {
     // partly confidential positions.
     const big = Array.from({ length: 40 }, (_, i) => holding({ cusip: cusipAt(i), value: 100, shares: 10 }));
     const add = big.slice(0, 5).map((h) => holding({ cusip: h.cusip, value: 30, shares: 3 }));
-    expect(repeatedShare(big, add)).toEqual({ repeated: 5, of: 40, share: 0.125, sameSharesValueShare: 0 });
+    expect(repeatedShare(big, add)).toEqual({ repeated: 5, of: 40, share: 0.125, sameSharesValueShare: 0, sameLinesValueShare: 0 });
     const { rows } = foldFilings([
       { accession_number: "o", acceptance_datetime: "2026-08-10T00:00:00Z", is_amendment: false, rows: big },
       { accession_number: "a", acceptance_datetime: "2026-08-20T00:00:00Z", is_amendment: true, amendment_type: "NEW HOLDINGS", rows: add },
@@ -209,6 +209,66 @@ describe("where the line between a re-filing and an addition sits", () => {
 
   it("an amendment with nothing before it repeats nothing", () => {
     expect(repeatedShare([], base).share).toBe(0);
+  });
+});
+
+describe("a re-send that corrects the security codes but not the numbers", () => {
+  // GFS Advisors (CIK 0001427263), 2026-Q1. The original put most of its
+  // security codes on the wrong lines — Adobe's value and share count sat under
+  // a Vanguard fund's code. Eleven days later it re-sent the report, ticked
+  // "adds new holdings", with the codes fixed and every number unchanged:
+  // $784,681,342 both times. Matched by code, only 62 of 159 positions recur,
+  // so the fold added the two and published the quarter at $1.57B.
+  //
+  // Here: forty lines, the 25 largest filed under wrong codes the first time.
+  const numbers = Array.from({ length: 40 }, (_, i) => ({ value: 1_000 * (i + 1), shares: 37 * (i + 1) + 5 }));
+  const TOTAL = numbers.reduce((a, n) => a + n.value, 0); // 820,000
+  const wrongCodes = numbers.map((n, i) => holding({ cusip: cusipAt(i < 15 ? i : 100 + i), value: n.value, shares: n.shares }));
+  const rightCodes = numbers.map((n, i) => holding({ cusip: cusipAt(i), value: n.value, shares: n.shares }));
+  const GFS_Q1 = [
+    { accession_number: "0001427263-26-000003", acceptance_datetime: "2026-04-30T16:00:00.000Z", is_amendment: false, table_value_total: TOTAL, rows: wrongCodes },
+    { accession_number: "0001427263-26-000004", acceptance_datetime: "2026-05-11T16:00:00.000Z", is_amendment: true, amendment_type: "NEW HOLDINGS", table_value_total: TOTAL, rows: rightCodes },
+  ];
+
+  it("hides from both measures that go by code", () => {
+    const r = repeatedShare(wrongCodes, rightCodes);
+    expect(r.share).toBeLessThan(RELISTED_BOOK_SHARE);
+    expect(r.sameSharesValueShare).toBeLessThan(RELISTED_BOOK_SHARE);
+    expect(r.sameLinesValueShare).toBe(1);
+  });
+
+  it("is folded as a re-filing: the corrected book once, not both copies", () => {
+    const { rows, reportedTotalUsd, warnings } = foldFilings(GFS_Q1);
+    expect(rows).toHaveLength(40);
+    expect(rows.map((h) => h.cusip)).toEqual(rightCodes.map((h) => h.cusip));
+    expect(summarizeHoldings(rows).value_long_usd).toBe(TOTAL);
+    expect(reportedTotalUsd).toBe(TOTAL);
+    expect(warnings.find((w) => w.code === "new_holdings_relists_book").detail).toMatch(/100% line for line/);
+  });
+
+  it("matches each amendment line to one book line at most", () => {
+    // Four book lines with the same numbers under four codes, and an amendment
+    // of one such line: it repeats one of them, not all four.
+    const four = ["A", "B", "C", "D"].map((c) => holding({ cusip: c, value: 100, shares: 10 }));
+    expect(repeatedShare(four, [holding({ cusip: "Z", value: 100, shares: 10 })]).sameLinesValueShare).toBe(0.25);
+  });
+
+  it("naming one position of four again at the same size is still an addition", () => {
+    // CIK 0001707921 (ECP ControlCo), three quarters of 2025: the closest
+    // addition on both value measures — one line of a four-line book, at the
+    // same size, 21-22% of its value. Below half, the label is believed.
+    const book4 = [390, 225, 200, 185].map((v, i) => holding({ cusip: cusipAt(i), value: v, shares: v * 3 }));
+    const again = [holding({ cusip: cusipAt(1), value: 225, shares: 675 })];
+    const r = repeatedShare(book4, again);
+    expect(r.sameSharesValueShare).toBeCloseTo(0.225, 10);
+    expect(r.sameLinesValueShare).toBeCloseTo(0.225, 10);
+    const { rows, warnings } = foldFilings([
+      { accession_number: "o", acceptance_datetime: "2026-08-10T00:00:00Z", is_amendment: false, rows: book4 },
+      { accession_number: "a", acceptance_datetime: "2026-08-20T00:00:00Z", is_amendment: true, amendment_type: "NEW HOLDINGS", rows: again },
+    ]);
+    expect(rows).toHaveLength(4);
+    expect(rows.find((h) => h.cusip === cusipAt(1)).ssh_prnamt).toBe(1350);
+    expect(warnings.map((w) => w.code)).not.toContain("new_holdings_relists_book");
   });
 });
 
