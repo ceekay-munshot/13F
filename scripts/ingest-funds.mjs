@@ -99,6 +99,32 @@ const FUNDS = fundsArg !== null
 const BUDGET_S = Math.max(0, Number(args["budget-seconds"] || 0));
 const OUT_COMPLETED = typeof args["out-completed"] === "string" ? args["out-completed"] : null;
 
+/**
+ * THE FILINGS THAT QUEUED EACH FUND, which this run must actually see.
+ *
+ * `{ "0001061165": ["0000919574-26-008115"], … }`, written by the planner.
+ *
+ * Since 17 Nov 2026 a fund can be queued from EDGAR's latest-filings list
+ * minutes after it files. Its own filing list (the submissions API) is a
+ * different service, and for a few minutes can still be the old one. Reading
+ * the old one and calling the fund finished would cross it off the queue
+ * WITHOUT the filing that queued it — and nothing would queue it again. So a
+ * fund whose expected filing is not in its list yet is DEFERRED: left in the
+ * queue for the next run, not finished, not failed.
+ *
+ * Absent file or absent fund: no expectation, exactly as before.
+ */
+const EXPECT = (() => {
+  const path = typeof args.expect === "string" ? args.expect : null;
+  if (!path || !existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) ?? {};
+  } catch {
+    return {};
+  }
+})();
+const OUT_DEFERRED = typeof args["out-deferred"] === "string" ? args["out-deferred"] : null;
+
 const log = (m) => console.log(m);
 
 /**
@@ -353,6 +379,8 @@ await runJob(async () => {
   // these may advance the ingest cursor — so a run cut short by its budget, a
   // block, or a crash never marks work done that it did not do.
   const completed = [];
+  /** Funds whose expected filing their SEC list does not show yet. Still queued. */
+  const deferred = [];
   const startedAt = Date.now();
   const elapsed = () => (Date.now() - startedAt) / 1000;
   let stoppedEarly = false;
@@ -391,6 +419,17 @@ await runJob(async () => {
     try {
       const subs = parseSubmissions((await sec.get(SEC_URLS.submissions(cik), { as: "json" })).body);
       const displayName = fund.name || subs.name || cik;
+
+      // Not visible in its own filing list yet — see EXPECT. Before anything is
+      // written, so a deferred fund leaves no half-built artifact behind.
+      const expected = EXPECT[cik] ?? [];
+      const listed = new Set(subs.filings.map((f) => f.accession_number));
+      const notYet = expected.filter((a) => !listed.has(a));
+      if (notYet.length) {
+        deferred.push(cik);
+        log(`  ${displayName}: the SEC's filing list does not show ${notYet.join(", ")} yet — left queued for the next run`);
+        continue;
+      }
 
       // Amendments are frequently filed under a FILER AGENT's accession prefix —
       // Cantillon's three restatements are 0000899140-, not its own 0001279936-.
@@ -705,6 +744,12 @@ await runJob(async () => {
     mkdirSync(dirname(OUT_COMPLETED), { recursive: true });
     writeFileSync(OUT_COMPLETED, completed.join(","));
   }
+  // Deferred is a third outcome, neither done nor broken — the workflow counts
+  // it so a run whose only work was "not visible yet" is not reported as idle.
+  if (OUT_DEFERRED) {
+    mkdirSync(dirname(OUT_DEFERRED), { recursive: true });
+    writeFileSync(OUT_DEFERRED, deferred.join(","));
+  }
   writeHeadersFile("public");
 
   const s = writer.summary();
@@ -714,6 +759,7 @@ await runJob(async () => {
   log(
     `${completed.length}/${FUNDS.length} fund(s) completed in ${Math.round(elapsed())}s` +
     (stoppedEarly ? ` (budget ${BUDGET_S}s reached — the rest are queued for the next run)` : "") +
+    (deferred.length ? ` · ${deferred.length} not yet in their own SEC filing list, left queued` : "") +
     (problems.length ? ` · ${problems.length} skipped or flagged` : ""),
   );
   log(`${sec.requestCount} SEC requests` + (sec.missingCount ? ` · ${sec.missingCount} path(s) absent (403-as-404)` : ""));

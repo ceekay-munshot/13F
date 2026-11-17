@@ -168,33 +168,64 @@ if (mf) {
   //     "we are not reading the filings".
   const cur = periods.find((p) => p.period === season.period);
   if (cur?.known) {
-    const pct = cur.known ? (cur.funds ?? 0) / cur.known : 1;
-    notes.push(`${periodLabel(cur.period)} coverage: ${cur.funds} of ${cur.known} managers EDGAR has published (${(pct * 100).toFixed(0)}%)`);
+    // GRADE THE QUEUE, NOT `known - funds`.
+    //
+    // `funds` counts holdings pages; `known` counts every manager who filed,
+    // including the ~2,000 a quarter who file only a NOTICE ("my positions are
+    // in someone else's report") and so never get a holdings page. That gap
+    // never closes. On 16 Nov 2026 it read "1,451 filings not ingested" and
+    // had said so every day for over a week — an alarm that is always on is
+    // an alarm nobody reads, and it was not read on the day it mattered.
+    //
+    // `pending` is the ingest cursor's own count of managers still queued.
+    // Builds from before it was published fall back to the old comparison.
+    const queued = Number.isFinite(cur.pending) ? cur.pending : cur.known - (cur.funds ?? 0);
+    const pct = (cur.known - queued) / cur.known;
+    notes.push(
+      `${periodLabel(cur.period)} coverage: ${cur.known - queued} of ${cur.known} managers EDGAR has published ` +
+      `are read (${(pct * 100).toFixed(0)}%), ${queued} queued` +
+      (Number.isFinite(cur.pending) ? "" : " — estimated; this build does not say how many are queued"),
+    );
     // 90%: filings that arrive within the hour are legitimately not in yet, and
     // a manager whose filing we quarantined is deliberately absent.
     if (pct < 0.9) {
       fail(
-        `${periodLabel(cur.period)}: **${cur.funds} of ${cur.known}** managers who have filed are on the dashboard ` +
-        `(${(pct * 100).toFixed(0)}%). ${cur.known - (cur.funds ?? 0)} filings the SEC has published are not ingested. ` +
-        `If the ingest is running this clears itself within a day or two — check that the last few runs of ` +
-        `\`Ingest 13F filings\` are green and that their summaries show the number climbing.`,
+        `${periodLabel(cur.period)}: **${queued} of ${cur.known}** managers who have filed are still waiting to be ` +
+        `read (${(100 - pct * 100).toFixed(0)}%). The ingest drains about 800 a run, so in filing season this ` +
+        `should clear within a few hours — check that the last few runs of \`Ingest 13F filings\` are green.`,
       );
-    }
-    // And the counter itself has to be moving. It is written by the same-day job
-    // on every run, so a stale one means that job is not running at all — which
-    // no other check here can see, because everything else it publishes would
-    // simply stay as it was.
-    if (cur.knownAsOf) {
-      const hours = Math.round((Date.parse(today + "T23:59:59Z") - Date.parse(cur.knownAsOf)) / 3_600_000);
-      if (hours > 36) {
-        fail(`The same-day ingest has not recorded a filing count since ${cur.knownAsOf} (${hours}h ago). It runs every three hours, so it is not running.`);
-      }
     }
   } else if (season.season === "ramp" || season.season === "peak" || season.season === "tail") {
     notes.push(
       "No `known` count on the current period — the same-day ingest has not published one yet, " +
       "so coverage cannot be graded against the SEC this run.",
     );
+  }
+
+  // 3c. IS THE INGEST ACTUALLY BEING STARTED?
+  //
+  //     Asked of GitHub, not inferred from the data. This used to read the age
+  //     of `knownAsOf` — but that only moves when a run publishes something, so
+  //     a healthy run with nothing new to read looked exactly like a dead one,
+  //     and it said "it is not running" for two days in a row while it ran.
+  //
+  //     The workflow passes when the ingest last STARTED. In filing season it is
+  //     due every half hour (see shared/watch.mjs); three hours without a start
+  //     means neither GitHub's timer nor the watcher is starting it.
+  const lastStart = typeof args["last-ingest-start"] === "string" ? Date.parse(args["last-ingest-start"]) : NaN;
+  if (Number.isFinite(lastStart)) {
+    const hours = (Date.now() - lastStart) / 3_600_000;
+    const limit = season.season === "quiet" ? 8 : 3;
+    notes.push(`The ingest last started ${hours.toFixed(1)}h ago (alarm at ${limit}h in ${season.season} season).`);
+    if (hours > limit) {
+      fail(
+        `The ingest has not started for **${hours.toFixed(1)} hours**. It is due every ` +
+        `${season.season === "quiet" ? "two hours" : "half hour to hour"} — check that ` +
+        `\`Keep the ingest on time\` is running in the Actions tab.`,
+      );
+    }
+  } else if (args["last-ingest-start"] !== undefined) {
+    notes.push("Could not tell when the ingest last started — GitHub did not say.");
   }
 
   // 4. Quarantine and parse problems recorded by the last ingest.

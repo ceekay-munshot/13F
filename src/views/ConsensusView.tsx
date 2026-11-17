@@ -15,7 +15,7 @@ import { buildConsensus, sortConsensus, buildAnchor, type ConsensusRow, type Fun
 import { TickerDrawer } from "../components/TickerDrawer";
 import { downloadCsv, type CsvColumn } from "../lib/csv";
 import {
-  loadFundPeriodAll, loadFundSummary, loadSectorMap, loadPeriodSectors, MissingArtifactError,
+  loadFundPeriodAll, loadFundSummary, loadSectorMap, loadPeriodSectors, MissingArtifactError, queuedFor,
   type Manifest, type Filer, type SectorFlow,
 } from "../lib/data";
 import { recentPeriods } from "../../shared/calendar.mjs";
@@ -657,7 +657,9 @@ export function ConsensusView({
   // while it exceeds what we hold, absence from our copy says nothing about the
   // manager and the sentence has to say so.
   const periodRow = mf.periods.find((p) => p.period === period);
-  const stillIngesting = (periodRow?.known ?? 0) > (periodRow?.funds ?? 0);
+  // The pipeline's own queue, not `known - funds` — that never closes, because
+  // managers who file only a notice never get a holdings page. See queuedFor.
+  const stillIngesting = (queuedFor(periodRow) ?? 0) > 0;
   const allAbsent = (funds ?? []).filter((f) => f.missing && !f.failed);
   // Notices come out first: they are a fact from the filing, and the two buckets
   // below are guesses from a backlog count. A guess must not describe a fund we

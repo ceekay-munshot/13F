@@ -56,7 +56,7 @@
 import { XMLParser } from "fast-xml-parser";
 import { SecFetcher, SEC_URLS, padCik, runJob } from "./_sec-fetch.mjs";
 import { WATCHLIST_CIKS } from "../shared/watchlist.mjs";
-import { judge, coverReadings, chooseComparisonPeriod } from "../shared/witness.mjs";
+import { judge, coverReadings, chooseComparisonPeriod, ageText } from "../shared/witness.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -165,7 +165,7 @@ await runJob(async () => {
       disagree.push({
         name,
         what: `EDGAR has a 13F-HR for ${choice.missing.period} (accepted ` +
-              `${String(choice.missing.accepted).slice(0, 10)}, ${Math.floor(choice.missing.daysOld)} days ago), ` +
+              `${String(choice.missing.accepted).slice(0, 10)}, ${ageText(choice.missing.daysOld)}), ` +
               `but our newest for this manager is ${choice.ourNewest ?? "nothing at all"}.` +
               (unreadable ? ` (our summary does not exist: ${unreadable})` : ""),
       });

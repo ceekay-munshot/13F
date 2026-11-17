@@ -50,6 +50,14 @@ name: Ingest 13F filings
 # exits in about a minute. Harmless, and during filing season it is strictly
 # better for same-day freshness. If it is ever preferred back at three hours,
 # it is a one-line change with no other consequence.
+#
+# THE TIMER BELOW IS NOT WHAT KEEPS THIS ON TIME ANY MORE (17 Nov 2026).
+# GitHub kept about one of its slots in four — three runs a day, and twelve
+# hours between two of them on Q3's deadline day. `Keep the ingest on time`
+# (watch.yml) now starts this job by request, every half hour in filing season;
+# this timer stays as a second way in. And discovery no longer waits for the
+# nightly index: it reads EDGAR's latest-filings list as well, so a filing made
+# in the morning is queued by the next run.
 # ---------------------------------------------------------------------------
 on:
   schedule:
@@ -127,10 +135,30 @@ jobs:
       - name: Correctness gates
         run: npm run check
 
+      # ONCE A DAY, NOT EVERY RUN. This reads six of the SEC's fails-to-deliver
+      # files, which change twice a month. At three runs a day re-reading them
+      # was harmless; since 17 Nov the ingest runs every half hour in filing
+      # season, and re-downloading the same files forty-eight times a day is
+      # not a polite use of sec.gov. The map is kept in the Actions cache under
+      # today's date: the first run of the day refreshes it, the rest reuse it.
+      # A cache miss only means a refresh, never a missing map.
+      - name: Today's date
+        id: day
+        run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse today's CUSIP to ticker map
+        id: securities-cache
+        uses: actions/cache@v4
+        with:
+          path: data/securities.json
+          key: securities-${{ steps.day.outputs.d }}
+          restore-keys: securities-
+
       # continue-on-error: this is a display column, not data. A transient SEC
       # 503 here must never cost the filings ingest that follows it.
       - name: Refresh CUSIP to ticker map
         id: securities
+        if: steps.securities-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
@@ -141,7 +169,7 @@ jobs:
         run: node scripts/build-securities.mjs --months=4
 
       - name: Note degraded enrichment
-        if: steps.securities.outcome != 'success'
+        if: steps.securities.outcome == 'failure'
         run: |
           echo "::warning::CUSIP->ticker refresh failed — holdings will show issuer names without tickers. Values and deltas are unaffected."
 
@@ -172,11 +200,17 @@ jobs:
       # have not read yet are read; whoever filed and has not been published is
       # offered up, newest-day-first for a reserved share so same-day freshness is
       # never starved by a backlog, oldest-first for the rest so the backlog drains.
+      #
+      # Since 17 Nov 2026 it also reads EDGAR's latest-filings list, so a fund
+      # that files at nine in the morning is queued by the next run rather than
+      # after that night's index; and it checks each client fund's own SEC filing
+      # list against its published page. SITE is that page.
       - name: Plan this run
         id: plan
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           SEC_RATE_LIMIT_RPS: '3'
+          SITE: ${{ vars.SITE_URL || 'https://13f-eo2.pages.dev' }}
         run: |
           mkdir -p .cache
           if [ -n "${{ github.event.inputs.funds }}" ]; then
@@ -198,6 +232,7 @@ jobs:
               --out=.cache/ciks.txt \
               --out-priority=.cache/priority.txt \
               --out-rest=.cache/rest.txt \
+              --out-expect=.cache/expect.json \
               --out-plan=.cache/plan.json > /dev/null
           fi
           # A hand-dispatched fund list is one pass, not two.
@@ -262,6 +297,8 @@ jobs:
             --periods=${{ github.event.inputs.periods || '2' }} \
             --funds-file=.cache/priority.txt \
             --budget-seconds=600 \
+            --expect=.cache/expect.json \
+            --out-deferred=.cache/deferred-priority.txt \
             --out-completed=.cache/completed-priority.txt \
             --out=.build/priority | tee /tmp/ingest.log
 
@@ -324,6 +361,8 @@ jobs:
             --periods=${{ github.event.inputs.periods || '2' }} \
             --funds-file=.cache/rest.txt \
             --budget-seconds=2100 \
+            --expect=.cache/expect.json \
+            --out-deferred=.cache/deferred.txt \
             --out-completed=.cache/completed.txt \
             --out=.build/data | tee /tmp/ingest.log
 
@@ -336,8 +375,12 @@ jobs:
           count() { tr ',' '\n' < "$1" 2>/dev/null | grep -c . || true; }
           A=$(count .cache/completed-priority.txt)
           B=$(count .cache/completed.txt)
-          echo "completed $((A + B)) of ${{ steps.plan.outputs.selected }} planned (${A} client funds, ${B} others)"
-          if [ "$((A + B))" -eq 0 ]; then
+          # Deferred: queued from the latest-filings list minutes ago, and the
+          # fund's own SEC filing list does not show the filing yet. Left in the
+          # queue on purpose — that is the system being careful, not idle.
+          D=$(( $(count .cache/deferred-priority.txt) + $(count .cache/deferred.txt) ))
+          echo "completed $((A + B)) of ${{ steps.plan.outputs.selected }} planned (${A} client funds, ${B} others); ${D} not visible at the SEC yet"
+          if [ "$((A + B + D))" -eq 0 ]; then
             echo "::error::${{ steps.plan.outputs.selected }} filers were queued and none were ingested."
             exit 1
           fi
@@ -400,6 +443,13 @@ jobs:
         # mark a filer done whose artifacts did not land. On a dispatch with an
         # explicit fund list there is no cursor to advance.
         run: |
+          # Every fund in this pass may have been deferred (see the assertion
+          # above). Then there is nothing to publish, and the next run — which
+          # re-reads the latest-filings list — picks them up.
+          if [ ! -s .cache/completed.txt ]; then
+            echo "::notice::no fund in this pass finished; nothing to publish yet."
+            exit 0
+          fi
           ARGS="--dir=.build/data --ciks-file=.cache/completed.txt --plan=.cache/plan.json"
           if [ "${{ steps.plan.outputs.dispatch }}" != "true" ]; then
             ARGS="$ARGS --state=.cache/day-cursor.next.json"
@@ -502,8 +552,18 @@ jobs:
               ...context.repo, state: 'open', labels: label,
             });
             if (existing.data.length) {
+              // At most one comment per six hours. This job now runs every half
+              // hour in filing season, and a fault that persists would otherwise
+              // send a notification every thirty minutes — which is how an alarm
+              // gets muted. The open issue already says it is still failing.
+              const issue = existing.data[0];
+              const quietFor = (Date.now() - Date.parse(issue.updated_at)) / 3_600_000;
+              if (quietFor < 6) {
+                core.info(`issue #${issue.number} was updated ${quietFor.toFixed(1)}h ago; not adding another comment yet`);
+                return;
+              }
               await github.rest.issues.createComment({
-                ...context.repo, issue_number: existing.data[0].number, body,
+                ...context.repo, issue_number: issue.number, body,
               });
             } else {
               await github.rest.issues.create({ ...context.repo, title, body, labels: [label] });

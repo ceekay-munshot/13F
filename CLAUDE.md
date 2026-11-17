@@ -52,7 +52,12 @@ they send to the SEC (the US financial regulator) every three months.
   of included managers, which is stable across quarters. **Not yet built.**
 
 - **The yellow "filed for Q3 2026 but still queued to be read" banner is
-  guessing, and the guess is nearly always "yes".** Found 11 Nov 2026. It named
+  guessing, and the guess is nearly always "yes".** *Half fixed on 17 Nov 2026
+  — see Done.* The pipeline now publishes its true queue size, so the banner
+  disappears once everything filed has been read, and the number it shows is
+  real. What is still a guess: while the queue is not empty, the Fund tab can
+  only say "this may be one of them" about a fund with no data, because the
+  pipeline publishes how many are queued, not which. Original note: found 11 Nov 2026. It named
   Berkshire Hathaway and 12 others as filed-but-unread two days before the
   deadline, when most of them very likely had not filed yet.
 
@@ -72,6 +77,50 @@ they send to the SEC (the US financial regulator) every three months.
   "This quarter is still loading" banner and the Fund tab use the same test.
 
 ### Done
+
+- **17 Nov 2026 — a fund that files in the morning is now on the dashboard
+  within the hour, not the next day.** A client emailed: Lone Pine filed on
+  Monday 16 Nov (Q3's deadline) and the dashboard still said "we have not read
+  Q3 2026 for Lone Pine yet" after several refreshes. Eleven of the fourteen
+  client funds filed that day; none of them were showing.
+
+  Three things were wrong, and all three had to be wrong at once:
+  1. **We only learned about a filing from the SEC's nightly list**, which
+     comes out at about 10pm New York time. However often we checked during the
+     day, a morning filing did not exist as far as the pipeline knew.
+  2. **GitHub was not running the updater when asked.** It was set for every
+     two hours and actually ran every five to twelve — three times a day. On
+     the deadline day the gap was twelve hours, and the nightly list came out
+     seven minutes after a run had started.
+  3. **The alarms had been crying wolf.** The daily check had gone off every
+     day for over a week (71 comments on one issue), saying 1,451 filings were
+     unread — they were managers who only file a short notice and never get a
+     holdings page — and that the updater was "not running" when it was. The
+     check that compares client funds with the SEC waited two days before
+     calling a missing filing a problem.
+
+  Fixed:
+  - The updater now also reads the SEC's **live list of filings**, which shows
+    a filing minutes after it is made. That night's full list is still read
+    and compared, so anything the live list missed is caught.
+  - Every run asks the SEC directly about **each client fund** and compares it
+    with what the dashboard shows. If the SEC has a newer quarter, that fund is
+    fetched first, whatever else the pipeline believes.
+  - A small helper (**"Keep the ingest on time"**) now starts the updater
+    itself: every half hour around a deadline, hourly after, every two hours
+    otherwise. It does not depend on GitHub's timer firing on time.
+  - The client-fund check now raises the alarm after **six hours**, not two
+    days. The daily check now counts the real queue, asks GitHub when the
+    updater last ran, and stops repeating the same alert every half hour.
+  - The page uses the real queue too, so it stops saying "still loading"
+    once everything has been read.
+  - A new automatic check (`same-day-discovery`) fails the build if any of
+    this is removed.
+
+  On the day: the updater was started by hand at 04:31 UTC on 17 Nov, and all
+  thirteen client funds that had filed for Q3 were on the live site within
+  minutes. Cantillon is the fourteenth: it has not filed for Q3 at all, which
+  the SEC confirms.
 
 - **11 Nov 2026 — the page no longer falls apart when you zoom out, or on a
   phone or tablet.** You zoomed out and saw a blank third of the screen on the
