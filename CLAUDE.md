@@ -87,18 +87,18 @@ they send to the SEC (the US financial regulator) every three months.
   not. The same-day update already did this correctly. The monthly rebuild put
   the wrong figure back every month.
 
-  Measured on the SEC's March-quarter file: 70 of 8,472 fund-quarters change,
+  Measured on the SEC's March-quarter file: 69 of 8,472 fund-quarters change,
   nothing else does. 58 now show the corrected total (Janus Henderson $201.7B →
   $209.4B; First Eagle $75.6B → $59.0B), and 11 now show the first report plus
   what it added (Inspire Investing $0.50B → $1.71B). The "filed on" date is now
   the latest filing's, as the same-day update has it. Live after the next
   monthly rebuild following merge.
 
-  The 70th, GFS Advisors, shows a gap in the "sent twice" fix below. Its
-  re-sent March report fixed which stock each line belonged to, so matching
-  line by stock the check saw a different report and added the two. Its March
-  holdings are counted twice, and its total now says so instead of hiding it.
-  **Not yet fixed.** Reported to the session that owns that fix.
+  Found on the way, and fixed with it: the monthly rebuild would have stopped
+  with an error the first time it met a filing with company names on the wrong
+  lines (the Lightrock fix further down). One line named the fund by a word
+  that did not exist there. The automatic check for that missed it, because
+  the same word is used in an unrelated part of the file.
 
 - **17 Nov 2026 — a fund that sends its report twice is no longer counted
   twice.** Some managers re-send their whole quarterly report but tick the box
