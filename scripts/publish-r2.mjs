@@ -80,7 +80,11 @@ const sendSigned = r2.send;
 // so without this line the monthly prune would delete the entire store of
 // record: 345 MB that costs a day of SEC downloads to replace, and whose whole
 // purpose is to survive a bad publish.
-const PROTECTED_PREFIXES = ["state/", "source/"];
+//
+// `movers/` is the Sectors tab's data, written by scripts/build-movers.mjs and
+// by nothing else. No build of this script ever contains it, so every prune
+// would otherwise delete it and blank the tab until the next rebuild.
+const PROTECTED_PREFIXES = ["state/", "source/", "movers/"];
 
 // Work this run was supposed to do and did not. See shared/unfinished.mjs for
 // why this is deferred to the end of the run rather than thrown immediately.

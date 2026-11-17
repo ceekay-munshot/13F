@@ -307,7 +307,8 @@ export function ScopeBar({
   period: string;
   onPeriod: (p: string) => void;
   longsOnly: boolean;
-  onLongsOnly: (v: boolean) => void;
+  /** Omit on a view the switch does not affect, and it is not shown. */
+  onLongsOnly?: (v: boolean) => void;
   right?: React.ReactNode;
   /** Manifest filer count, used while the index is still in flight. */
   universeCount?: number;
@@ -376,7 +377,7 @@ export function ScopeBar({
           universally means long equity, and an option row's value is notional
           rather than exposure — for a manager like Citadel including it would
           more than quadruple the apparent book. */}
-      <Hint
+      {onLongsOnly && <Hint
         text={
           longsOnly
             ? "Counting shares only, which is the honest default. Click to also include options."
@@ -386,7 +387,7 @@ export function ScopeBar({
         <Chip active={longsOnly} onClick={() => onLongsOnly(!longsOnly)}>
           {longsOnly ? "Longs only ✓" : "+ Options"}
         </Chip>
-      </Hint>
+      </Hint>}
 
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>{right}</div>
     </div>

@@ -78,6 +78,25 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **17 Nov 2026 — new Sectors tab, before Consensus.** Answers "which focused
+  managers sold (or bought) chips — or any sector — this quarter, and who?"
+  Left: every sector, with how much focused managers sold, bought and net, and
+  how many sold or bought. Click one, and the right side lists the managers,
+  biggest first, with each stock they traded ("NVDA −40%", "AMAT sold out").
+  Type a ticker to see only that stock's buyers or sellers. Click a name to
+  open the fund.
+
+  "Focused" means 5 to 40 stocks (switchable to 20 or 30). Left out, because
+  their selling is not a view on a sector: books that are mostly options, books
+  more than half in one stock, companies reporting their own stakes (NVIDIA,
+  Uber…), and funds whose changes the dashboard already withholds.
+
+  The data is built by a new automatic job ("Build the Sectors tab") that runs
+  after every update and only re-reads funds that changed. It covers the two
+  latest quarters. Built from the live site on the day: 1,325 managers for Q3
+  2026, 1,370 for Q2. If the job fails it opens one issue and the tab keeps
+  its last good copy.
+
 - **17 Nov 2026 — a fund that files in the morning is now on the dashboard
   within the hour, not the next day.** A client emailed: Lone Pine filed on
   Monday 16 Nov (Q3's deadline) and the dashboard still said "we have not read
