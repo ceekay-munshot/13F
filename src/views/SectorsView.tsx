@@ -13,6 +13,7 @@ import { t, ACTION_COLORS } from "../theme";
 import { usd, periodLabel } from "../lib/format";
 import { loadMovers, loadSectorMap, type Manifest, type Movers, type MoverMove } from "../lib/data";
 import { SECTORS } from "../../shared/sic.mjs";
+import { AI_THEME, inAiTheme } from "../../shared/themes.mjs";
 
 const CAPS = ["20", "30", "40"] as const;
 type Cap = (typeof CAPS)[number];
@@ -46,27 +47,38 @@ interface SectorRow {
   managers: Manager[];
 }
 
-/** Every focused manager's trades, grouped by sector, for one stock cap. */
+/**
+ * Every focused manager's trades, grouped by sector, for one stock cap.
+ *
+ * Plus one theme row, AI & semis, which a trade joins as well as its own
+ * sector: the SEC's codes spread that trade over four sectors (see
+ * shared/themes.mjs), so no sector row could answer "who cut AI and chips?".
+ */
 function bySector(movers: Movers, sectorMap: Record<string, string>, cap: number): SectorRow[] {
   const sectors = new Map<string, Map<string, Manager>>();
-  for (const [cik, name, value, positions, moves] of movers.funds) {
-    if (positions > cap) continue;
-    for (const m of moves) {
+  const add = (group: string, fund: Movers["funds"][number], m: MoverMove) => {
+    const [cik, name, value, positions] = fund;
+    let byFund = sectors.get(group);
+    if (!byFund) sectors.set(group, (byFund = new Map()));
+    let mgr = byFund.get(cik);
+    if (!mgr) {
+      mgr = { cik, name, value, positions, bought: 0, sold: 0, net: 0, weight: 0, moves: [] };
+      byFund.set(cik, mgr);
+    }
+    if (m[3] > 0) mgr.bought += m[3];
+    else mgr.sold -= m[3];
+    mgr.net += m[3];
+    mgr.weight += fundShare(m);
+    mgr.moves.push(m);
+  };
+  for (const fund of movers.funds) {
+    if (fund[3] > cap) continue;
+    for (const m of fund[4]) {
       // Placed by the pipeline, which had the filed name and share class to go
       // on; the ticker alone is the fallback for a file built before that.
       const sector = (m[6] != null && SECTORS[m[6]]) || sectorMap[m[0].toUpperCase()] || "Unclassified";
-      let group = sectors.get(sector);
-      if (!group) sectors.set(sector, (group = new Map()));
-      let mgr = group.get(cik);
-      if (!mgr) {
-        mgr = { cik, name, value, positions, bought: 0, sold: 0, net: 0, weight: 0, moves: [] };
-        group.set(cik, mgr);
-      }
-      if (m[3] > 0) mgr.bought += m[3];
-      else mgr.sold -= m[3];
-      mgr.net += m[3];
-      mgr.weight += fundShare(m);
-      mgr.moves.push(m);
+      add(sector, fund, m);
+      if (inAiTheme(m[0], sector)) add(AI_THEME, fund, m);
     }
   }
   return [...sectors.entries()].map(([sector, group]) => {
@@ -137,10 +149,14 @@ export function SectorsView({
     return () => { cancelled = true; };
   }, [period, mf]);
 
-  const rows = useMemo(
-    () => (movers && sectorMap ? bySector(movers, sectorMap, Number(cap)).sort(SORTERS[sort]) : []),
-    [movers, sectorMap, cap, sort],
-  );
+  // The theme row stays first whatever the sort, and is what the tab opens on:
+  // "who cut AI and chips?" is the question it was built for.
+  const rows = useMemo(() => {
+    if (!movers || !sectorMap) return [];
+    const all = bySector(movers, sectorMap, Number(cap));
+    const theme = all.filter((r) => r.sector === AI_THEME);
+    return [...theme, ...all.filter((r) => r.sector !== AI_THEME).sort(SORTERS[sort])];
+  }, [movers, sectorMap, cap, sort]);
   const current = rows.find((r) => r.sector === picked) ?? rows[0] ?? null;
   const peak = Math.max(1, ...rows.map((r) => Math.abs(r.net)));
 
@@ -246,15 +262,22 @@ export function SectorsView({
               <tbody>
                 {rows.map((r) => {
                   const on = r.sector === current?.sector;
+                  const theme = r.sector === AI_THEME;
                   return (
                     // The whole row is the target for a pointer; the button in the
                     // first cell is the same action for a keyboard or a screen
                     // reader, which a clickable <tr> is invisible to.
-                    <tr key={r.sector} className="sector-row" data-active={on} onClick={() => setPicked(r.sector)}>
+                    <tr
+                      key={r.sector}
+                      className={theme ? "sector-row theme-row" : "sector-row"}
+                      data-active={on}
+                      onClick={() => setPicked(r.sector)}
+                    >
                       <td style={{ maxWidth: 220 }}>
                         <button className="sector-pick" aria-pressed={on} onClick={() => setPicked(r.sector)}>
                           {r.sector}
                         </button>
+                        {theme && <span className="theme-note">Chips, chip tools, memory, AI infra</span>}
                         <span
                           className="net-bar"
                           style={{

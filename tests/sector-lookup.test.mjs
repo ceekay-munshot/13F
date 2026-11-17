@@ -131,3 +131,36 @@ describe("industry codes that used to be misread", () => {
     expect(sectorForSic(6021)).toBe("Banks & Lending");
   });
 });
+
+describe("preferreds, shorthand names, investment vehicles", () => {
+  const look = createSectorLookup(
+    { BA: "Industrials", NEE: "Utilities", ORCL: "Software & IT Services", GM: "Industrials" },
+    { names: { [normName("Wells Fargo & Company/MN")]: "Banks & Lending", [normName("Occidental Petroleum Corp")]: "Energy",
+               [normName("Abbott Laboratories")]: "Health Care", [normName("Ascendis Pharma A/S")]: "Health Care" } },
+  );
+  it("places a preferred share with its issuer", () => {
+    expect(look({ ticker: "BAPRA" })).toBe("Industrials");
+    expect(look({ ticker: "NEEPRV" })).toBe("Utilities");
+    expect(look({ ticker: "ORCLPRD" })).toBe("Software & IT Services");
+  });
+  it("reads a ticker the filer wrote into the name", () => {
+    expect(look({ ticker: null, name: "General Motors Co (GM)" })).toBe("Industrials");
+  });
+  it("finds the issuer behind a coupon, and expands shorthand", () => {
+    expect(look({ ticker: null, name: "WELLS FARGO CO 7.5Percen" })).toBe("Banks & Lending");
+    expect(look({ ticker: null, name: "OCCIDENTAL PETE CORP" })).toBe("Energy");
+    expect(look({ ticker: null, name: "ABBOTT LABS" })).toBe("Health Care");
+    expect(look({ ticker: null, name: "ASCENDIS PHARMA" })).toBe("Health Care");
+  });
+  it("keeps a company whose name starts with a number", () => {
+    expect(normName("3M CO")).toBe("3M");
+  });
+  it("calls a listed name with no industry code and a fund-like name a fund", () => {
+    const { sectors } = assembleSectorMap({
+      tickers: new Map([["FSK", { cik: 1, title: "FS KKR Capital Corp" }], ["ODDCO", { cik: 2, title: "ODD COMPANY INC" }]]),
+      fundSymbols: new Set(), sicOf: new Map(), sectorForSic,
+    });
+    expect(sectors.FSK.sector).toBe("Funds & ETFs");
+    expect(sectors.ODDCO).toBeUndefined();
+  });
+});

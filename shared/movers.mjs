@@ -55,7 +55,7 @@ export const MOVERS_MAX_SINGLE_WEIGHT = 50;
  * rows for any fund whose data has not changed, so without this a change to
  * the rules would only reach funds that happened to file again.
  */
-export const MOVERS_VERSION = 2; // 2: every move carries its sector
+export const MOVERS_VERSION = 3; // 2: every move carries its sector. 3: preferreds and abbreviated names placed
 
 export const moversPath = (period) => `movers/${period}.json`;
 /** Which funds the last build looked at, and under which build key. */

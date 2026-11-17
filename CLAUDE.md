@@ -138,6 +138,18 @@ they send to the SEC (the US financial regulator) every three months.
   value, e.g. Opendoor's three warrant series), and one filed its puts as
   shares. The 19 correct themselves at the next monthly rebuild after merge.
 
+- **17 Nov 2026 (later) — the Sectors tab now answers "who cut AI and chips?"
+  directly.** The owner's original question could not be read off it: the
+  SEC's codes split the AI trade over four sectors (chips in Semiconductors,
+  SanDisk/Seagate/WDC in Computers & Hardware, Nebius/CoreWeave in Software,
+  Vertiv/Coherent in Electronics), and Semiconductors sat at the bottom
+  because focused managers net bought it. A pinned **"AI & semis"** row now
+  gathers all of it, opens by default, and lists the sellers on the right —
+  Trivest, WT Asset Management, Lone Pine, Amanah, Whale Rock, H&H. It is a
+  hand-kept THEME (`shared/themes.mjs`), kept apart from the SEC sectors.
+  Also: preferred shares go with their issuer, shorthand names are expanded,
+  lending funds go to Funds & ETFs — Unclassified 0.5% → 0.3% of Q3 trading.
+
 - **17 Nov 2026 — "Unclassified" went from a quarter of all money traded to
   half a percent.** On the Sectors tab it was $38.65B sold / $50.80B bought
   in Q3; on Consensus's Sector flows it held $101.87B. Now $1.32B / $0.55B and

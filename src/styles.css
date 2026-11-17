@@ -400,6 +400,12 @@
   font: inherit; font-weight: 600; color: inherit; text-align: left;
 }
 .sector-pick:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; border-radius: 3px; }
+
+/* The AI & semis theme row: pinned first, set apart from the SEC's sectors
+ * below it by a heavier rule, and its button in the accent colour. */
+.theme-row td { border-bottom: 2px solid #e0e7ff; }
+.theme-row .sector-pick { color: #4338ca; }
+.theme-note { display: block; font-size: 10.5px; color: #9ca3af; margin-top: 1px; font-weight: 400; }
 .sector-row td { transition: background-color 120ms ease; }
 .sector-row[data-active="true"] td,
 .sector-row[data-active="true"] td:first-child { background: #eef2ff; }

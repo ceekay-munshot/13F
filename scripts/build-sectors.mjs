@@ -55,7 +55,7 @@ import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry } from "./_unzip.mjs";
 import { sectorForSic } from "../shared/sic.mjs";
-import { assembleSectorMap, looksLikeFund, normName } from "../shared/sectors.mjs";
+import { assembleSectorMap, looksLikeFund, normName, SECTOR_LIST_VERSION } from "../shared/sectors.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { createR2 } from "./_r2.mjs";
 
@@ -115,7 +115,8 @@ function recentDataSetQuarters(n) {
 
 await runJob(async () => {
   const previous = await readPrevious(PREVIOUS);
-  if (previous?.builtAt && FRESH_DAYS != null) {
+  // A list built under older rules is rebuilt now, not after its week is up.
+  if (previous?.builtAt && FRESH_DAYS != null && previous.listVersion === SECTOR_LIST_VERSION) {
     const ageDays = (Date.now() - Date.parse(previous.builtAt)) / 86_400_000;
     if (ageDays < FRESH_DAYS) {
       log(`sector list built ${ageDays.toFixed(1)} days ago — fresh, nothing to do.`);
@@ -282,12 +283,12 @@ await runJob(async () => {
     // The list the dashboard reads — the same shape as meta/sectors.json, so
     // either can stand in for the other.
     await r2.put("movers/sectors.json", Buffer.from(JSON.stringify({
-      v: 1, kind: "sector-map", builtAt,
+      v: 1, kind: "sector-map", builtAt, listVersion: SECTOR_LIST_VERSION,
       data: Object.fromEntries(Object.entries(sectors).map(([t, v]) => [t, v.sector])),
     })));
     // The pipeline's memory: names for holdings with no ticker, and every
     // company already asked about.
-    await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({ v: 1, builtAt, names, sicByCik })));
+    await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({ v: 1, builtAt, listVersion: SECTOR_LIST_VERSION, names, sicByCik })));
     log("published movers/sectors.json and movers/sectors.state.json");
   }
 
