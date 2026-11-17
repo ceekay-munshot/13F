@@ -7,11 +7,16 @@
 import { t } from "../theme";
 import { Hint } from "./Hint";
 
-export type ViewId = "consensus" | "fund" | "filings";
+export type ViewId = "sectors" | "consensus" | "fund" | "filings";
 
 // The `hint` is the answer to "what am I looking at" for someone who has never
 // used this before — no 13F vocabulary, no reference to the other tabs.
 const VIEWS: { id: ViewId; label: string; hint: string }[] = [
+  {
+    id: "sectors",
+    label: "Sectors",
+    hint: "Which focused managers — 40 stocks or fewer — bought or sold each sector this quarter. Click a sector to see who.",
+  },
   {
     id: "consensus",
     label: "Consensus",
@@ -131,7 +136,7 @@ export function Header({
             return (
               <Hint key={v.id} text={v.hint}>
                 <button
-                  className="pressable"
+                  className="pressable app-tab"
                   onClick={() => onView(v.id)}
                   // Hovering a tab is the cue to fetch its code, so the click
                   // renders instead of waiting on a download.
@@ -139,8 +144,10 @@ export function Header({
                   onFocus={() => onPrefetchView?.(v.id)}
                   aria-pressed={active}
                   style={{
-                    border: "none", cursor: "pointer", borderRadius: 6, padding: "4px 12px",
-                    fontSize: 12, fontWeight: 600, fontFamily: "inherit",
+                    // Padding and size live in .app-tab so four tabs can tighten
+                    // to fit a phone beside the badge.
+                    border: "none", cursor: "pointer", borderRadius: 6,
+                    fontWeight: 600, fontFamily: "inherit",
                     background: active ? "#fff" : "transparent",
                     color: active ? t.textPrimary : t.textMuted,
                     boxShadow: active ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
