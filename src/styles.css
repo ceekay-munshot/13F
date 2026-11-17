@@ -369,6 +369,22 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * A holding whose filed name contradicts its code (FundView, Holdings card).
+ *
+ * The name itself is the explanation's trigger — no extra badge. A dotted
+ * underline is the convention for "there is more to say about this word", and
+ * amber is the page's colour for "this number comes with a caveat". Static: it
+ * marks a fact about the data, so nothing about it should move.
+ * ------------------------------------------------------------------------- */
+.name-mismatch {
+  display: inline-block; max-width: 240px; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; cursor: help;
+  text-decoration: underline dotted #d97706; text-decoration-thickness: 1.5px; text-underline-offset: 3px;
+}
+.name-mismatch:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; border-radius: 3px; }
+
+/* ---------------------------------------------------------------------------
  * Sectors tab.
  *
  * The sector rows are the tab's navigation, so they behave like buttons: a

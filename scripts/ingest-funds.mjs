@@ -22,7 +22,7 @@ import {
   decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor,
 } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
-import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers, NAMES_MISALIGNED } from "../shared/emit.mjs";
 import {
   currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel,
 } from "../shared/calendar.mjs";
@@ -636,6 +636,13 @@ await runJob(async () => {
           hasHoldings: true,
           positions: rows.length,
         }));
+
+        // Not a problem of ours, so not in `problems` (which the watchdog grades
+        // as a failure rate) — but rare enough to always say.
+        const misaligned = meta.foldWarnings.find((w) => w.code === NAMES_MISALIGNED);
+        if (misaligned) {
+          log(`  ${displayName} ${periodLabel(period)}: names and codes out of line on ${misaligned.lines} lines — tickers withheld there`);
+        }
 
         const flagNote = suppressed ? `  [${meta.structuralEvent ?? meta.priorState}]` : "";
         if (VERBOSE) {
