@@ -78,6 +78,34 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **17 Nov 2026 — a fund whose own filing puts company names on the wrong
+  lines no longer gets the wrong tickers.** Found while checking a client's
+  question: Lightrock's page said COHU next to a CareTrust REIT holding. Our
+  ticker step was right; Lightrock's filing is not. On 12 of its 35 lines the
+  company name and the code beside it belong to different companies (CareTrust's
+  name on Cohu's code, Cabot's on CareTrust's, and so on down a block). Its
+  last four filings all have the same fault.
+
+  The dashboard now spots this. The giveaway is a chain: one company's name on
+  a second company's code, whose own line carries a third company's name.
+  Ordinary quirks (renamed companies, abbreviations, funds typed as "Blackrock")
+  never form that chain. Checked against 36,371 real filings over four
+  quarters: 32 have the fault (Lightrock, Franklin Resources, BNP Paribas and
+  29 more) and no correct filing was flagged.
+
+  On those lines the page now shows the company name as the fund filed it, with
+  no ticker, because we cannot tell which column is right. Nothing is hidden:
+  values, share counts and totals are unchanged. Hovering the name says which
+  company's code it was filed under, and one line on the Holdings card says how
+  many lines are affected. Funds with a correct filing look exactly as before.
+
+  Known limit: two small filings over the four quarters had their codes jumbled
+  at random rather than shifted, and this does not catch them. The test that
+  would catch them also flagged a fund with correct codes, so it was left out.
+
+  Once merged, the live site picks this up the next time each affected fund is
+  re-read, and for every fund at the monthly rebuild on the 3rd.
+
 - **17 Nov 2026 — new Sectors tab, before Consensus.** Answers "which focused
   managers sold (or bought) chips — or any sector — this quarter, and who?"
   Left: every sector, with how much focused managers sold, bought and net, and

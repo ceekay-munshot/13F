@@ -102,7 +102,16 @@ export interface FundPeriodMeta {
    * so the UI can say so instead of showing a silently shorter list.
    */
   exitsWithheld?: number;
-  foldWarnings: { code: string; detail: string }[];
+  /**
+   * `names_misaligned` also carries `lines` (how many) and `rows`: each line's
+   * name as filed, with the ticker its code belongs to. See shared/emit.mjs.
+   */
+  foldWarnings: {
+    code: string;
+    detail: string;
+    lines?: number;
+    rows?: { name: string; codeTicker: string | null }[];
+  }[];
   accessions: string[];
   value_long_usd: number;
   value_options_usd: number;
