@@ -78,6 +78,26 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **17 Nov 2026 — a fund that sends its report twice is no longer counted
+  twice.** Some managers re-send their whole quarterly report but tick the box
+  that says "these are extra holdings only". We believed the box and added the
+  copies together, so the quarter showed the book two or three times over
+  (Arbiter Partners' June: 127 positions worth $576M, really 44 worth $197M)
+  and anything sold the next quarter appeared once per copy in "Exited", each
+  with a different percentage.
+
+  Now a "new holdings" amendment that repeats at least half the positions
+  already reported, or repeats share-for-share at least half the money, is
+  treated as the re-sent report it is. Measured on 101 real ones from the SEC:
+  42 re-sent reports and 59 real additions, with a wide gap between them. When
+  two filings really do combine, the result now has one row per holding and
+  percentages against the whole quarter.
+
+  Of the 46 funds whose September "Exited" list looked doubled, 19 were this.
+  26 were not doubles at all (different securities sharing an ID prefix and a
+  value, e.g. Opendoor's three warrant series), and one filed its puts as
+  shares. The 19 correct themselves at the next monthly rebuild after merge.
+
 - **17 Nov 2026 — a fund that files in the morning is now on the dashboard
   within the hour, not the next day.** A client emailed: Lone Pine filed on
   Monday 16 Nov (Q3's deadline) and the dashboard still said "we have not read
