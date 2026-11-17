@@ -34,9 +34,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "no
 import { SecFetcher, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
-import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
+import { PRIOR_STATE } from "../shared/fold.mjs";
+import { foldQuarter } from "./_source-load.mjs";
 import { SERIES_FIELDS } from "../shared/series-fields.mjs";
-import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers, NAMES_MISALIGNED } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow, noticeEntry, NAMES_MISALIGNED } from "../shared/emit.mjs";
 import { currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel, deraWindowFor } from "../shared/calendar.mjs";
 import { paths, envelope, manifest, encodeHoldings, buildIdFrom, ROWS_PER_PAGE } from "../shared/artifacts.mjs";
 import { ArtifactWriter, writeHeadersFile } from "./_artifact-writer.mjs";
@@ -586,7 +587,6 @@ await runJob(async () => {
   const filingsByPeriod = new Map();
   /** period -> sector -> { bought, sold, held } in USD, across EVERY filer. */
   const sectorFlows = new Map();
-  let latestAcceptance = "";
   let holdingsWritten = 0;
   // Fund-quarters whose filing has its names and codes out of line. Logged, not
   // treated as a failure: the filing is wrong, not the build.
@@ -639,26 +639,10 @@ await runJob(async () => {
         });
         continue;
       }
-      const res = foldFilings(foldable.map((f) => ({
-        accession_number: f.accession,
-        // DERA has no acceptance time, so same-day amendments tie and the fold
-        // falls back to accession order. Stated, not hidden.
-        acceptance_datetime: f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
-        is_amendment: f.is_amendment,
-        amendment_type: f.amendment_type,
-        rows: f.held,
-      })));
-      const last = foldable[foldable.length - 1];
-      const summary = summarizeHoldings(res.rows);
-      folded.set(period, {
-        noticeOnly: false, holdings: res.rows, accessions: res.accessions,
-        includedManagers: mergeManagers(foldable),
-        warnings: res.warnings, summary, value_long_usd: summary.value_long_usd,
-        reported_total_usd: last.table_value_total,
-        confidentialOmitted: foldable.some((f) => f.is_confidential_omitted),
-        acceptance: last.filing_date ? `${last.filing_date}T12:00:00.000Z` : null,
-      });
-      if (last.filing_date > latestAcceptance) latestAcceptance = last.filing_date;
+      // The cover total and the acceptance time come from the fold and the
+      // latest filing, never from the last element of `foldable`, which is load
+      // order. See foldQuarter.
+      folded.set(period, foldQuarter(foldable));
     }
 
     for (const period of periodsAsc) {

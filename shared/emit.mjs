@@ -310,6 +310,19 @@ export function seriesEntry({ period, cur, meta, pages, hasHoldings, positions }
 }
 
 /**
+ * When one filing was accepted, as well as either source can say.
+ *
+ * The two paths timestamp differently and both land in the same artifacts: the
+ * same-day path has a real acceptance time, the bulk path has only a filing
+ * DATE, which it renders as noon UTC everywhere. One rule, so an ordering or an
+ * `acceptedAt` means the same thing whichever source wrote the quarter. Null
+ * when the filing carries neither.
+ */
+export function acceptanceStamp(f) {
+  return f.acceptance_datetime ?? (f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null);
+}
+
+/**
  * One row of a quarter's filings feed.
  *
  * ---------------------------------------------------------------------------
@@ -378,12 +391,7 @@ export function filingRow({ cik, name, code = null, filing, summary, acceptedAt 
  */
 export function noticeEntry({ period, filings = [] }) {
   const nts = filings.filter((f) => f.notice);
-  // The two paths timestamp differently and both land here: the same-day path
-  // has a real acceptance time, the bulk path has only a filing DATE, which it
-  // renders as noon UTC everywhere else. Resolved the same way here so the
-  // ordering below means the same thing whichever source wrote the quarter.
-  const stamp = (f) =>
-    f.acceptance_datetime ?? (f.filing_date ? `${f.filing_date}T12:00:00.000Z` : "");
+  const stamp = (f) => acceptanceStamp(f) ?? "";
   // Latest wins, so a manager who filed a notice and then amended it is
   // described by the amendment — the most recent statement of where the
   // holdings went.
