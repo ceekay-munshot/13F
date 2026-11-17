@@ -78,6 +78,31 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **17 Nov 2026 — a fund that sends its report twice is no longer counted
+  twice.** Some managers re-send their whole quarterly report but tick the box
+  that says "these are extra holdings only". We believed the box and added the
+  copies together, so the quarter showed the book two or three times over
+  (Arbiter Partners' June: 127 positions worth $576M, really 44 worth $197M)
+  and anything sold the next quarter appeared once per copy in "Exited", each
+  with a different percentage.
+
+  Now a "new holdings" amendment is treated as the re-sent report it is when
+  it repeats at least half of what was already reported, judged three ways:
+  the same companies, the same companies at the same share counts, or the
+  same lines to the dollar and the share whatever company code is on them. The
+  third catches a re-send that only fixes the codes (GFS Advisors' March: codes
+  on the wrong lines the first time, every number identical the second, and
+  counted twice until this). Checked on all 247 in the SEC's own bulk files
+  across four three-month batches: 67 re-sent reports and 180 real additions.
+  No real addition gets past 37% on any of the three tests, and every re-send
+  reaches at least 58% on one of them. When two filings really do combine, the
+  result now has one row per holding and percentages against the whole quarter.
+
+  Of the 46 funds whose September "Exited" list looked doubled, 19 were this.
+  26 were not doubles at all (different securities sharing an ID prefix and a
+  value, e.g. Opendoor's three warrant series), and one filed its puts as
+  shares. The 19 correct themselves at the next monthly rebuild after merge.
+
 - **17 Nov 2026 — a fund whose own filing puts company names on the wrong
   lines no longer gets the wrong tickers.** Found while checking a client's
   question: Lightrock's page said COHU next to a CareTrust REIT holding. Our

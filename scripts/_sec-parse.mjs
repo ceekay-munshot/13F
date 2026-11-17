@@ -10,6 +10,7 @@
 // a Worker isolate has 128 MB. Functions only ever receive pre-normalized JSON.
 
 import { XMLParser } from "fast-xml-parser";
+import { weighHoldings } from "../shared/fold.mjs";
 
 // removeNSPrefix is the whole reason this dependency exists. Namespace prefixes
 // are NOT stable across filers: Bridgewater emits <ns1:infoTable> while Citadel
@@ -554,28 +555,11 @@ export function aggregateHoldings(rows, units) {
     if (!acc.figi && r.figi) acc.figi = r.figi;
   }
 
-  const out = [...byKey.values()];
-
-  // Weight denominators. Long equity only — never a denominator that mixes
-  // option notional with equity market value. Post-2023 filers are inconsistent
-  // about whether an option row's value is fair value or underlying notional,
-  // and large filers commonly report notional, so a mixed denominator inflates
-  // the book and deflates every weight by an amount that varies per fund.
-  const valueLong = out
-    .filter((h) => h.put_call === "" && h.ssh_prnamt_type === "SH")
-    .reduce((a, h) => a + h.value_usd, 0);
-
-  for (const h of out) {
-    // NULLIF-equivalent: 167 of 315,211 measured rows have value = 0, rare
-    // enough to miss in fixtures and common enough to appear in production.
-    h.weight_pct = valueLong > 0 ? (h.value_usd / valueLong) * 100 : null;
-    h.implied_price =
-      h.put_call === "" && h.ssh_prnamt_type === "SH" && h.ssh_prnamt > 0
-        ? h.value_usd / h.ssh_prnamt
-        : null;
-  }
-
-  return out;
+  // Weights and implied prices, against this filing's long-equity total. The
+  // formula lives in shared/fold.mjs because the amendment fold needs it too:
+  // when it combines two filings into one quarter, the weights each filing got
+  // here are shares of the wrong total and have to be computed again.
+  return weighHoldings([...byKey.values()]);
 }
 
 /** Portfolio-level totals, each with an explicit and separate denominator. */
