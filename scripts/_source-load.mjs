@@ -29,6 +29,8 @@
 
 import { gunzipSync } from "node:zlib";
 import { aggregateHoldings, summarizeHoldings, decideValueUnits, reconcileTotal, issuerIdFor } from "./_sec-parse.mjs";
+import { foldFilings } from "../shared/fold.mjs";
+import { acceptanceStamp, mergeManagers } from "../shared/emit.mjs";
 
 /**
  * One archived EDGAR filing, in the shape the DERA loader produces.
@@ -164,4 +166,70 @@ export async function mergeEdgarSource(filings, { r2, prefix, securities = {}, l
     }
   }
   return { listed, merged, replaced, unreadable, ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// One fund-quarter, folded
+// ---------------------------------------------------------------------------
+
+/**
+ * Fold the filings a fund made for one quarter into the record the emit layer
+ * publishes — the monthly build's half of what scripts/ingest-funds.mjs does
+ * inline for the same-day build. Here, not in ingest-dera.mjs, so it can be
+ * tested: importing that script runs a whole build.
+ *
+ * `foldable` is in the builder's shape (see normalizeEdgarFiling), notices and
+ * quarantined filings already removed, and IN LOAD ORDER — bulk window, line in
+ * the file, then archived copies. That is not the order the SEC accepted them.
+ *
+ * So nothing here may read "the last one". Two fields did:
+ *
+ *   reported_total_usd  was `foldable[foldable.length - 1].table_value_total`.
+ *                       For an amended quarter that could be the ORIGINAL's
+ *                       cover total, published beside rows the fold took from
+ *                       the restatement that replaced it. And a genuine NEW
+ *                       HOLDINGS amendment's total covers only what it adds, so
+ *                       no single filing's total is the quarter's. It now comes
+ *                       from the fold, which makes the same replace-or-add
+ *                       decision for the total as for the rows — including the
+ *                       one that reads a re-sent report wearing a NEW HOLDINGS
+ *                       label as a replacement. The same-day build already did.
+ *
+ *   acceptance          was the last-loaded filing's date. Now the latest
+ *                       filing's, as the same-day build has it.
+ *
+ * @param {Array} foldable  one fund's usable filings for one quarter, any order
+ */
+export function foldQuarter(foldable) {
+  // REAL TIMES ONLY WHEN EVERY FILING HAS ONE. An archived copy carries the
+  // real acceptance time — the reason it replaces the bulk copy at all, per the
+  // top of this file — and this used to discard it and hand the fold noon on
+  // the filing date, so two filings made on one day still tied and fell back to
+  // accession order.
+  //
+  // But a quarter mixing real times with a stand-in noon would be ordered by a
+  // guess dressed as a fact: a restatement accepted at 09:00 would sort ahead of
+  // a bulk-only original that was really accepted at 08:00. Filings on
+  // different days order the same either way; on one day, with any time
+  // unknown, a tie is the honest answer, and the fold reports it (fold_tie).
+  const timed = foldable.every((f) => f.acceptance_datetime);
+  const res = foldFilings(foldable.map((f) => ({
+    accession_number: f.accession,
+    acceptance_datetime: timed
+      ? f.acceptance_datetime
+      : f.filing_date ? `${f.filing_date}T12:00:00.000Z` : null,
+    is_amendment: f.is_amendment,
+    amendment_type: f.amendment_type,
+    table_value_total: f.table_value_total,
+    rows: f.held,
+  })));
+  const summary = summarizeHoldings(res.rows);
+  return {
+    noticeOnly: false, holdings: res.rows, accessions: res.accessions,
+    includedManagers: mergeManagers(foldable),
+    warnings: res.warnings, summary, value_long_usd: summary.value_long_usd,
+    reported_total_usd: res.reportedTotalUsd,
+    confidentialOmitted: foldable.some((f) => f.is_confidential_omitted),
+    acceptance: foldable.map(acceptanceStamp).filter(Boolean).sort().pop() ?? null,
+  };
 }
