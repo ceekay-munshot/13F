@@ -13,6 +13,7 @@ import {
   crossOff,
   emptyDay,
   expectationsFor,
+  liveListProblem,
   mergeIndexDay,
   noteLiveFiling,
   readDay,
@@ -236,6 +237,44 @@ describe("a client fund whose page is behind the SEC", () => {
     expect(state.days["2026-11-13"].all).toContain(BRK);
     expect(requeue(state, { cik: BRK, filing_date: "2026-11-13", accession_number: "acc-1" })).toBe(true);
     expect(state.days["2026-11-13"].pending).toEqual([BRK]);
+  });
+});
+
+describe("the alarm for a live list we can no longer use", () => {
+  // Without the live list everything still arrives, a day late — which is the
+  // 16 Nov outage again, quieter. These are the cases that must be told.
+
+  it("is quiet when the list reads normally", () => {
+    expect(liveListProblem({ entries: 3645, parsed: 3645, season: "peak" })).toBeNull();
+  });
+
+  it("goes off when the SEC changes the list's format", () => {
+    // Exactly what a format change looks like: entries arrive, none make sense.
+    const garbled = FEED.replace(/<title>13F/g, "<title>Form 13F");
+    const parsed = parseCurrentFeed(garbled).length;
+    expect(parsed).toBe(0);
+    const msg = liveListProblem({ entries: 4, parsed, season: "quiet" });
+    expect(msg).toMatch(/format has probably changed/);
+    expect(msg).toMatch(/Nothing is lost/);
+  });
+
+  it("goes off when the list is empty in filing season, but not between seasons", () => {
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "peak" })).toMatch(/came back empty/);
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "ramp" })).toMatch(/came back empty/);
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "quiet" })).toBeNull();
+  });
+
+  it("goes off when the list's address stops working", () => {
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "quiet", error: { name: "SecFetchError", status: 404 } }))
+      .toMatch(/answered 404/);
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "quiet", error: { name: "SecMissingError", status: 403 } }))
+      .toMatch(/address has probably changed/);
+  });
+
+  it("stays quiet for a busy SEC or a network blip — the next run reads it again", () => {
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "peak", error: { name: "SecFetchError", status: 503 } })).toBeNull();
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "peak", error: { name: "SecFetchError", status: 429 } })).toBeNull();
+    expect(liveListProblem({ entries: 0, parsed: 0, season: "peak", error: { name: "TypeError" } })).toBeNull();
   });
 });
 

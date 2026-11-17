@@ -518,6 +518,15 @@ function guardSameDayPublish() {
     if (!/SEC_URLS\.currentFeed\(/.test(src) || !/noteLiveFiling\(/.test(src)) {
       fail(guard, d, "the planner no longer reads EDGAR's latest-filings list. Without it a filing made in the morning is invisible until that night's index — the 16 Nov 2026 outage.");
     }
+    // The live list fails SAFE, back to next-day. So losing it must be loud.
+    const ingestYml = join(ROOT, ".github/workflows/ingest.yml");
+    if (
+      !/liveListProblem\(/.test(src) ||
+      !existsSync(ingestYml) ||
+      !/live filing list is still readable[\s\S]*?liveProblem/.test(readFileSync(ingestYml, "utf8"))
+    ) {
+      fail(guard, d, "nothing raises the alarm when EDGAR's latest-filings list stops being readable. The planner would fall back to next-day without telling anyone.");
+    }
     const check = /is any client fund's page behind the SEC\?[\s\S]*?requeue\(/.exec(src)?.[0] ?? "";
     if (!check) {
       fail(guard, d, "the planner no longer compares each client fund's SEC filing list with its published page.");

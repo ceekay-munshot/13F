@@ -97,7 +97,14 @@ jobs:
     # backstop for everything around it — checkout, gates, the plan, and the
     # publish. Generous because a backlog run is a long one, bounded because a
     # hung job should fail rather than burn six hours.
-    timeout-minutes: 60
+    #
+    # 90, not 60 (17 Nov 2026). A deadline-day run spent 35 minutes fetching,
+    # 20 archiving the filings it fetched (one upload at a time — now eight),
+    # and reached its publish with three minutes of the hour left. A run cut
+    # off mid-publish banks nothing, so the next run re-fetches the same 800
+    # and hits the same wall. The watcher never starts a second run while one
+    # is going, so a longer run costs nothing but its own minutes.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -501,6 +508,29 @@ jobs:
         run: node scripts/regression-gate.mjs --origin="$SITE" --compare=.cache/before.json
 
 
+      # THE SEC'S LIVE FILING LIST IS STILL READABLE.
+      #
+      # Same-day freshness depends on EDGAR's latest-filings list. If the SEC
+      # changes its format or address, the planner quietly falls back to the
+      # nightly index — nothing is lost, but filings arrive a day late, which is
+      # the 16 Nov 2026 outage again with nobody told. So the planner records
+      # any problem that will not fix itself (see liveListProblem), and this
+      # step turns it red, after the publish, so the useful work still lands.
+      - name: The SEC's live filing list is still readable
+        if: ${{ !cancelled() && steps.plan.outputs.blocked != 'true' && steps.plan.outputs.dispatch != 'true' }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync(".cache/plan.json", "utf8"));
+            if (!p.liveProblem) {
+              console.log(`live filing list read: ${p.liveSeen ?? 0} filing(s), ${p.liveQueued ?? 0} new`);
+              process.exit(0);
+            }
+            fs.writeFileSync(".cache/alarm.md", p.liveProblem);
+            console.log(`::error::${p.liveProblem}`);
+            process.exit(1);
+          '
+
       # AND AGREE WITH AN INDEPENDENT WITNESS.
       #
       # Every other check in this pipeline asks a question about ourselves, and
@@ -537,7 +567,11 @@ jobs:
           script: |
             const label = '13f-ingest-failure';
             const title = '13F ingest is failing';
+            // A plain-English reason first, when a step left one.
+            let reason = '';
+            try { reason = require('fs').readFileSync('.cache/alarm.md', 'utf8').trim(); } catch {}
             const body = [
+              ...(reason ? [`**${reason}**`, ''] : []),
               `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               '',
               'A SEC 403 no longer fails this job: it is reported as a warning, nothing is lost, and',

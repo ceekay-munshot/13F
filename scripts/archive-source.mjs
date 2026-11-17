@@ -38,7 +38,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { SOURCE_PREFIX, EDGAR_PREFIX, windowsFrom, windowsToDrop, edgarSourceKey, edgarQuartersSupersededBy } from "../shared/source-archive.mjs";
-import { createR2 } from "./_r2.mjs";
+import { createR2, pool } from "./_r2.mjs";
 import { createRegister } from "../shared/unfinished.mjs";
 import { listEntries } from "./_unzip.mjs";
 import { SecFetcher } from "./_sec-fetch.mjs";
@@ -238,6 +238,7 @@ if (args["sync-edgar"]) {
   const dir = String(args["sync-edgar"]);
   let sent = 0, already = 0, bytes = 0;
   const periods = existsSync(dir) ? readdirSync(dir) : [];
+  const todo = [];
   for (const period of periods) {
     const pdir = join(dir, period);
     if (!statSync(pdir).isDirectory()) continue;
@@ -247,10 +248,19 @@ if (args["sync-edgar"]) {
       const size = statSync(join(pdir, file)).size;
       if (archived.get(key) === size) { already++; continue; }
       if (DRY) { console.log(`  would archive filing ${period}/${accession}`); sent++; continue; }
-      await r2.put(key, readFileSync(join(pdir, file)));
-      sent++; bytes += size;
+      todo.push({ key, path: join(pdir, file), size });
     }
   }
+  // EIGHT AT A TIME, NOT ONE. On 17 Nov 2026 a deadline-day run spent twenty
+  // minutes here uploading ~1,600 small files one after another, reached its
+  // publish step with three minutes left on the job's hour, and was stopped
+  // part-way through publishing. Each upload is independent and the R2 client
+  // signs every request on its own, so a small pool is safe — the same pool
+  // publish-r2.mjs uses.
+  await pool(todo, 8, async (f) => {
+    await r2.put(f.key, readFileSync(f.path));
+    sent++; bytes += f.size;
+  });
   console.log(`\n${sent} filing record(s) archived${already ? `, ${already} already held` : ""}` +
               `${bytes ? ` · ${mb(bytes)}` : ""}`);
 }
