@@ -9,6 +9,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Cell, Tooltip, Treemap,
 } from "recharts";
 import { WidgetCard, ViewToggle, CaveatStrip } from "../components/WidgetCard";
+import { Hint } from "../components/Hint";
 import { Kpi, KpiRow } from "../components/Kpi";
 import { ChartSkeleton, TableSkeleton, EmptyState, ErrorState, PartialNotice, NoticeState } from "../components/states";
 import { t, ACTION_COLORS, type Action } from "../theme";
@@ -662,6 +663,22 @@ export function FundView({
    */
   const originMissing = meta?.foldWarnings?.some((w) => w.code === "origin_missing") ?? false;
 
+  /**
+   * `names_misaligned`: the filing's name column and code column are out of
+   * line, so on some lines the ticker (which we look up from the code) belonged
+   * to a different company from the name. Lightrock filed CARETRUST REIT under
+   * Cohu's code and the page said COHU.
+   *
+   * The ingest has already withheld the ticker on those lines; what is left
+   * here is to say why a line shows a name and no ticker. One sentence on the
+   * card, and on each line the name itself explains, on hover or focus, whose
+   * code it was filed under.
+   */
+  const namesMisaligned = meta?.foldWarnings?.find((w) => w.code === "names_misaligned");
+  // A plain Map, not useMemo: this runs below the early returns above, where a
+  // hook would change the hook count between renders. It is a few dozen entries.
+  const codeTickerOf = new Map((namesMisaligned?.rows ?? []).map((r) => [r.name, r.codeTicker]));
+
   return (
     <>
       <KpiRow>
@@ -1028,11 +1045,21 @@ export function FundView({
             />
           }
           caveat={
-            meta?.confidentialOmitted ? (
-              <CaveatStrip>
-                This filing has confidential omissions — some positions were withheld. The reported
-                value is a floor, not the full book.
-              </CaveatStrip>
+            meta?.confidentialOmitted || namesMisaligned ? (
+              <>
+                {meta?.confidentialOmitted && (
+                  <CaveatStrip>
+                    This filing has confidential omissions — some positions were withheld. The reported
+                    value is a floor, not the full book.
+                  </CaveatStrip>
+                )}
+                {namesMisaligned && (
+                  <CaveatStrip>
+                    This filing’s company names and codes don’t line up on {count(namesMisaligned.lines ?? null)}{" "}
+                    lines, so those show the name as filed, underlined, instead of a ticker.
+                  </CaveatStrip>
+                )}
+              </>
             ) : undefined
           }
         >
@@ -1053,8 +1080,22 @@ export function FundView({
                   {filtered.map((h, i) => (
                     <tr key={`${h.issuerId}-${h.type}-${i}`}>
                       <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        <span style={{ fontWeight: 600 }}>{h.ticker ?? h.name}</span>
-                        {h.ticker && <span style={{ color: t.textHint, marginLeft: 6, fontSize: 11 }}>{h.name}</span>}
+                        {h.flags?.includes("NAME_CODE_MISMATCH") ? (
+                          <Hint
+                            text={
+                              codeTickerOf.get(h.name)
+                                ? `The filer named this “${h.name}” but gave it the code for ${codeTickerOf.get(h.name)}. We can’t tell which is right, so no ticker is shown.`
+                                : `The filer’s name for this line doesn’t match its code, so no ticker is shown.`
+                            }
+                          >
+                            <span className="name-mismatch" tabIndex={0}>{h.name}</span>
+                          </Hint>
+                        ) : (
+                          <>
+                            <span style={{ fontWeight: 600 }}>{h.ticker ?? h.name}</span>
+                            {h.ticker && <span style={{ color: t.textHint, marginLeft: 6, fontSize: 11 }}>{h.name}</span>}
+                          </>
+                        )}
                       </td>
                       <td
                         title={h.cls ?? undefined}

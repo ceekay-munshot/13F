@@ -34,6 +34,12 @@
 
 import { computeChanges, summarizeActions, computeTurnover, PRIOR_STATE } from "./fold.mjs";
 import { periodLabel } from "./calendar.mjs";
+import { checkIssuerNames } from "./issuer-names.mjs";
+
+/** On a line whose filed name contradicts its code. See shared/issuer-names.mjs. */
+export const NAME_MISMATCH_FLAG = "NAME_CODE_MISMATCH";
+/** The fold warning a misaligned filing carries. */
+export const NAMES_MISALIGNED = "names_misaligned";
 
 /**
  * One holding, as the dashboard's column-oriented format wants it.
@@ -42,9 +48,17 @@ import { periodLabel } from "./calendar.mjs";
  * places, the percentage deltas to 3. Both copies had exactly these, which is
  * how you can tell they were the same code.
  */
-export function artifactRow(h, ch) {
+export function artifactRow(h, ch, { nameMismatch = false } = {}) {
   return {
-    ticker: h.ticker ?? null,
+    // WITHHELD, NOT GUESSED, when the filing contradicts itself.
+    //
+    // The ticker is ours — looked up from the code the filer typed. On a filing
+    // whose names and codes are out of line (Lightrock filed CARETRUST REIT
+    // under Cohu's code) that lookup puts a confident, wrong label on the line.
+    // Which column is wrong cannot be told from the filing, so neither is
+    // chosen: the line shows the name exactly as filed and no ticker. Value,
+    // shares and the issuer id stay — those are what was filed.
+    ticker: nameMismatch ? null : h.ticker ?? null,
     name: h.name_of_issuer,
     issuerId: h.issuerId,
     cls: h.title_of_class,
@@ -60,7 +74,7 @@ export function artifactRow(h, ch) {
     dValue: ch?.d_value ?? null,
     dValuePct: ch?.d_value_pct == null ? null : Number(ch.d_value_pct.toFixed(3)),
     dWeightPp: ch?.d_weight_pp == null ? null : Number(ch.d_weight_pp.toFixed(4)),
-    flags: ch?.flags ?? null,
+    flags: nameMismatch ? [...(ch?.flags ?? []), NAME_MISMATCH_FLAG] : ch?.flags ?? null,
   };
 }
 
@@ -70,16 +84,46 @@ export function artifactRow(h, ch) {
  * `unit` matters: without it a client filtering to long equity cannot tell an
  * exited share position from an exited bond.
  */
-export function exitRow(c, { securities = {}, issuerIdFor }) {
+export function exitRow(c, { securities = {}, issuerIdFor, nameMismatch = false }) {
   const s = securities[c.cusip];
   return {
-    ticker: s?.ticker ?? null,
+    // Same rule as artifactRow, applied to the PRIOR quarter's filing, which is
+    // where an exited line was last reported.
+    ticker: nameMismatch ? null : s?.ticker ?? null,
     name: c.name_of_issuer,
     issuerId: s?.issuerId ?? (issuerIdFor ? issuerIdFor(c.cusip) : null),
     type: c.put_call,
     unit: c.ssh_prnamt_type ?? "SH",
     valuePrior: c.value_prior,
     weightPrior: c.weight_prior,
+  };
+}
+
+/**
+ * The lines of one quarter whose ticker must be withheld, as `cusip|name`
+ * keys, or null when the filing's names and codes agree.
+ *
+ * Only a filing the check calls MISALIGNED loses any tickers. A name that
+ * disagrees with its code on an ordinary filing is nearly always a rename or an
+ * abbreviation (0.9% of all lines), and its ticker is right.
+ */
+function untrustedLines(check) {
+  if (!check?.misaligned) return null;
+  return new Set(check.mismatched.map((m) => `${m.cusip}|${m.filedName}`));
+}
+
+/** The fold warning for a misaligned filing — what the Fund page explains. */
+function namesWarning(check) {
+  const eg = check.displaced[0];
+  return {
+    code: NAMES_MISALIGNED,
+    detail:
+      `${check.disagree} of ${check.checked} lines name a different company from the code ` +
+      `they were filed under (e.g. "${eg.filedName}" under ${eg.ticker}'s code). ` +
+      `Tickers are withheld on those lines.`,
+    lines: check.disagree,
+    // Name as filed -> the ticker its code belongs to, for the hover on each line.
+    rows: check.mismatched.map((m) => ({ name: m.filedName, codeTicker: m.ticker })),
   };
 }
 
@@ -161,14 +205,27 @@ export function fundQuarter({
     changes,
   );
 
+  // Do the names on this filing agree with its codes? See shared/issuer-names.mjs.
+  // The prior quarter is checked too, because that is where an exit's line was
+  // last reported.
+  const names = checkIssuerNames(cur.holdings, securities);
+  const untrusted = untrustedLines(names);
+  const priorUntrusted =
+    priorState === PRIOR_STATE.OK && prior ? untrustedLines(checkIssuerNames(prior.holdings, securities)) : null;
+  const lineKey = (x) => `${x.cusip}|${x.name_of_issuer}`;
+
   const changeByKey = new Map(changes.map((c) => [`${c.cusip}|${c.put_call}`, c]));
   const rows = cur.holdings
-    .map((h) => artifactRow(h, changeByKey.get(`${h.cusip}|${h.put_call}`)))
+    .map((h) =>
+      artifactRow(h, changeByKey.get(`${h.cusip}|${h.put_call}`), {
+        nameMismatch: Boolean(untrusted?.has(lineKey(h))),
+      }),
+    )
     .sort((a, b) => b.value - a.value);
 
   const exits = changes
     .filter((c) => c.action === "EXITED")
-    .map((c) => exitRow(c, { securities, issuerIdFor }))
+    .map((c) => exitRow(c, { securities, issuerIdFor, nameMismatch: Boolean(priorUntrusted?.has(lineKey(c))) }))
     .sort((a, b) => (b.valuePrior ?? 0) - (a.valuePrior ?? 0));
 
   const meta = {
@@ -178,7 +235,9 @@ export function fundQuarter({
     structuralEvent,
     structuralDetail: structural?.detail ?? null,
     confidentialOmitted: Boolean(cur.confidentialOmitted),
-    foldWarnings: cur.warnings ?? [],
+    // Appended only when the filing is misaligned, so every other artifact is
+    // byte-for-byte what it was.
+    foldWarnings: untrusted ? [...(cur.warnings ?? []), namesWarning(names)] : cur.warnings ?? [],
     // KEY ORDER IS PART OF THE CONTRACT, and this pair is why.
     //
     // JSON.stringify emits keys in insertion order, so reordering these two

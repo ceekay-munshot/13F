@@ -102,7 +102,16 @@ export interface FundPeriodMeta {
    * so the UI can say so instead of showing a silently shorter list.
    */
   exitsWithheld?: number;
-  foldWarnings: { code: string; detail: string }[];
+  /**
+   * `names_misaligned` also carries `lines` (how many) and `rows`: each line's
+   * name as filed, with the ticker its code belongs to. See shared/emit.mjs.
+   */
+  foldWarnings: {
+    code: string;
+    detail: string;
+    lines?: number;
+    rows?: { name: string; codeTicker: string | null }[];
+  }[];
   accessions: string[];
   value_long_usd: number;
   value_options_usd: number;
@@ -697,4 +706,47 @@ export function loadSectorMap(mf: Manifest): Promise<Record<string, string>> {
 export async function loadPeriodSectors(period: string, mf: Manifest): Promise<SectorFlow[]> {
   const env = await get<{ data: SectorFlow[] }>(`period/${period}/sectors.json`, mf);
   return env.data ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Movers — what each concentrated manager traded (the Sectors tab)
+// ---------------------------------------------------------------------------
+
+/** [ticker, action N/A/T/X, sharesChangePct, tradedUsd, weightBefore, weightAfter] */
+export type MoverMove = [string, "N" | "A" | "T" | "X", number | null, number, number | null, number];
+/** [cik, name, valueLongUsd, positionsLong, moves] */
+export type MoverFund = [string, string, number, number, MoverMove[]];
+
+export interface Movers {
+  period: string;
+  maxPositions: number;
+  minPositions: number;
+  funds: MoverFund[];
+}
+
+const moversMemo = new Map<string, Promise<Movers | null>>();
+
+/**
+ * Every concentrated manager's trades for one quarter, or null when the file
+ * has not been built for that quarter.
+ *
+ * Fetched WITHOUT a build key. Unlike every other artifact this file is
+ * rewritten in place after each ingest, and is published with the manifest's
+ * one-minute cache for that reason — so the plain URL is always at most a
+ * minute old.
+ */
+export function loadMovers(period: string): Promise<Movers | null> {
+  let p = moversMemo.get(period);
+  if (!p) {
+    p = fetch(`${BASE}/movers/${period}.json`).then((r) => {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new DataError(`movers/${period}.json`, r.status);
+      if ((r.headers.get("content-type") ?? "").includes("text/html")) return null;
+      return r.json() as Promise<Movers>;
+    });
+    // A failure is retried on the next visit; an answer is kept.
+    p.catch(() => moversMemo.delete(period));
+    moversMemo.set(period, p);
+  }
+  return p;
 }

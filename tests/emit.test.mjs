@@ -13,7 +13,10 @@
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { artifactRow, exitRow, turnoverFor, fundQuarter, seriesEntry, filingRow, noticeEntry } from "../shared/emit.mjs";
+import {
+  artifactRow, exitRow, turnoverFor, fundQuarter, seriesEntry, filingRow, noticeEntry,
+  NAME_MISMATCH_FLAG, NAMES_MISALIGNED,
+} from "../shared/emit.mjs";
 import { PRIOR_STATE } from "../shared/fold.mjs";
 
 const holding = (over = {}) => ({
@@ -352,5 +355,101 @@ describe("a notice quarter", () => {
       ] })],
     });
     expect(e.managers).toEqual([{ cik: "0002026053", name: "PERSHING SQUARE INC." }]);
+  });
+});
+
+describe("a filing whose names and codes are out of line", () => {
+  // Lightrock's shift, in miniature: each code carries the next company's name.
+  // Tickers are what the ingest attached from the code, exactly as it does.
+  const SEC = {
+    "X-COHU": { ticker: "COHU", name: "COHU INC" },
+    "X-CTRE": { ticker: "CTRE", name: "CARETRUST REIT INC COM STK (MD" },
+    "X-CBT": { ticker: "CBT", name: "CABOT CORP" },
+    "X-BC": { ticker: "BC", name: "BRUNSWICK CORP" },
+    "X-AAPL": { ticker: "AAPL", name: "APPLE INC;COM NPV" },
+  };
+  const line = (cusip, name, value) =>
+    holding({ cusip, name_of_issuer: name, ticker: SEC[cusip].ticker, value_usd: value, issuerId: `i-${cusip}` });
+  const shifted = () => [
+    line("X-COHU", "CARETRUST REIT INC", 5),
+    line("X-CTRE", "CABOT CORP", 4),
+    line("X-CBT", "BRUNSWICK CORP", 3),
+    line("X-BC", "AVANTOR INC", 2),
+    line("X-AAPL", "APPLE INC", 1),
+  ];
+  const quarter = (holdings, over = {}) =>
+    fundQuarter({
+      period: "2026-09-30", priorPeriod: "2026-06-30",
+      cur: folded({ holdings }), prior: null, priorState: PRIOR_STATE.NONE,
+      securities: SEC, issuerIdFor: () => "iX", ...over,
+    });
+
+  it("withholds the ticker on every line whose name contradicts its code", () => {
+    const { rows } = quarter(shifted());
+    const by = Object.fromEntries(rows.map((r) => [r.name, r]));
+    for (const n of ["CARETRUST REIT INC", "CABOT CORP", "BRUNSWICK CORP", "AVANTOR INC"]) {
+      expect(by[n].ticker, n).toBeNull();
+      expect(by[n].flags, n).toContain(NAME_MISMATCH_FLAG);
+    }
+  });
+
+  it("keeps the ticker where name and code agree", () => {
+    const { rows } = quarter(shifted());
+    const apple = rows.find((r) => r.name === "APPLE INC");
+    expect(apple.ticker).toBe("AAPL");
+    expect(apple.flags).toBeNull();
+  });
+
+  it("keeps everything that was filed: value, shares, issuer id", () => {
+    const { rows } = quarter(shifted());
+    const care = rows.find((r) => r.name === "CARETRUST REIT INC");
+    expect(care).toMatchObject({ value: 5, shares: 5_000, issuerId: "i-X-COHU" });
+  });
+
+  it("says so in the fold warnings, with the code each line was filed under", () => {
+    const { meta } = quarter(shifted());
+    const w = meta.foldWarnings.find((x) => x.code === NAMES_MISALIGNED);
+    expect(w.lines).toBe(4);
+    expect(w.detail).toContain("4 of 5 lines");
+    expect(w.rows).toContainEqual({ name: "CARETRUST REIT INC", codeTicker: "COHU" });
+  });
+
+  it("changes nothing on an ordinary filing — not a ticker, not a warning", () => {
+    const fine = [line("X-COHU", "COHU INC", 2), line("X-AAPL", "APPLE INC", 1)];
+    const q = quarter(fine);
+    expect(q.rows.map((r) => r.ticker)).toEqual(["COHU", "AAPL"]);
+    expect(q.rows.every((r) => r.flags === null)).toBe(true);
+    expect(q.meta.foldWarnings).toEqual([]);
+  });
+
+  it("does not touch a lone renamed line on an ordinary filing", () => {
+    // One name disagreeing with its code is a rename or an abbreviation far
+    // more often than an error, and its ticker is right.
+    const q = quarter([line("X-COHU", "SOME OLD NAME INC", 2), line("X-AAPL", "APPLE INC", 1)]);
+    expect(q.rows.find((r) => r.name === "SOME OLD NAME INC").ticker).toBe("COHU");
+  });
+
+  it("withholds an exit's ticker when the PRIOR filing was the misaligned one", () => {
+    // The exited line was last reported on the prior filing; that is where its
+    // name and code disagreed.
+    const prior = folded({ holdings: shifted() });
+    const cur = folded({ holdings: [line("X-AAPL", "APPLE INC", 1)] });
+    const q = fundQuarter({
+      period: "2026-09-30", priorPeriod: "2026-06-30", cur, prior, priorState: PRIOR_STATE.OK,
+      securities: SEC, issuerIdFor: () => "iX",
+    });
+    const care = q.exits.find((e) => e.name === "CARETRUST REIT INC");
+    expect(care.ticker).toBeNull();
+    // The current filing is fine, so it carries no warning of its own.
+    expect(q.meta.foldWarnings).toEqual([]);
+  });
+
+  it("keeps the fold's own warnings ahead of it", () => {
+    const q = fundQuarter({
+      period: "2026-09-30", priorPeriod: "2026-06-30",
+      cur: folded({ holdings: shifted(), warnings: [{ code: "origin_missing", detail: "x" }] }),
+      prior: null, priorState: PRIOR_STATE.NONE, securities: SEC, issuerIdFor: () => "iX",
+    });
+    expect(q.meta.foldWarnings.map((w) => w.code)).toEqual(["origin_missing", NAMES_MISALIGNED]);
   });
 });

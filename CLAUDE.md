@@ -86,17 +86,69 @@ they send to the SEC (the US financial regulator) every three months.
   and anything sold the next quarter appeared once per copy in "Exited", each
   with a different percentage.
 
-  Now a "new holdings" amendment that repeats at least half the positions
-  already reported, or repeats share-for-share at least half the money, is
-  treated as the re-sent report it is. Measured on 101 real ones from the SEC:
-  42 re-sent reports and 59 real additions, with a wide gap between them. When
-  two filings really do combine, the result now has one row per holding and
-  percentages against the whole quarter.
+  Now a "new holdings" amendment is treated as the re-sent report it is when
+  it repeats at least half of what was already reported, judged three ways:
+  the same companies, the same companies at the same share counts, or the
+  same lines to the dollar and the share whatever company code is on them. The
+  third catches a re-send that only fixes the codes (GFS Advisors' March: codes
+  on the wrong lines the first time, every number identical the second, and
+  counted twice until this). Checked on all 247 in the SEC's own bulk files
+  across four three-month batches: 67 re-sent reports and 180 real additions.
+  No real addition gets past 37% on any of the three tests, and every re-send
+  reaches at least 58% on one of them. When two filings really do combine, the
+  result now has one row per holding and percentages against the whole quarter.
 
   Of the 46 funds whose September "Exited" list looked doubled, 19 were this.
   26 were not doubles at all (different securities sharing an ID prefix and a
   value, e.g. Opendoor's three warrant series), and one filed its puts as
   shares. The 19 correct themselves at the next monthly rebuild after merge.
+
+- **17 Nov 2026 — a fund whose own filing puts company names on the wrong
+  lines no longer gets the wrong tickers.** Found while checking a client's
+  question: Lightrock's page said COHU next to a CareTrust REIT holding. Our
+  ticker step was right; Lightrock's filing is not. On 12 of its 35 lines the
+  company name and the code beside it belong to different companies (CareTrust's
+  name on Cohu's code, Cabot's on CareTrust's, and so on down a block). Its
+  last four filings all have the same fault.
+
+  The dashboard now spots this. The giveaway is a chain: one company's name on
+  a second company's code, whose own line carries a third company's name.
+  Ordinary quirks (renamed companies, abbreviations, funds typed as "Blackrock")
+  never form that chain. Checked against 36,371 real filings over four
+  quarters: 32 have the fault (Lightrock, Franklin Resources, BNP Paribas and
+  29 more) and no correct filing was flagged.
+
+  On those lines the page now shows the company name as the fund filed it, with
+  no ticker, because we cannot tell which column is right. Nothing is hidden:
+  values, share counts and totals are unchanged. Hovering the name says which
+  company's code it was filed under, and one line on the Holdings card says how
+  many lines are affected. Funds with a correct filing look exactly as before.
+
+  Known limit: two small filings over the four quarters had their codes jumbled
+  at random rather than shifted, and this does not catch them. The test that
+  would catch them also flagged a fund with correct codes, so it was left out.
+
+  Once merged, the live site picks this up the next time each affected fund is
+  re-read, and for every fund at the monthly rebuild on the 3rd.
+
+- **17 Nov 2026 — new Sectors tab, before Consensus.** Answers "which focused
+  managers sold (or bought) chips — or any sector — this quarter, and who?"
+  Left: every sector, with how much focused managers sold, bought and net, and
+  how many sold or bought. Click one, and the right side lists the managers,
+  biggest first, with each stock they traded ("NVDA −40%", "AMAT sold out").
+  Type a ticker to see only that stock's buyers or sellers. Click a name to
+  open the fund.
+
+  "Focused" means 5 to 40 stocks (switchable to 20 or 30). Left out, because
+  their selling is not a view on a sector: books that are mostly options, books
+  more than half in one stock, companies reporting their own stakes (NVIDIA,
+  Uber…), and funds whose changes the dashboard already withholds.
+
+  The data is built by a new automatic job ("Build the Sectors tab") that runs
+  after every update and only re-reads funds that changed. It covers the two
+  latest quarters. Built from the live site on the day: 1,325 managers for Q3
+  2026, 1,370 for Q2. If the job fails it opens one issue and the tab keeps
+  its last good copy.
 
 - **17 Nov 2026 — a fund that files in the morning is now on the dashboard
   within the hour, not the next day.** A client emailed: Lone Pine filed on

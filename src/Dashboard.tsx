@@ -59,10 +59,12 @@ function withChunkReload<T>(load: () => Promise<T>): () => Promise<T> {
 const importFund = () => import("./views/FundView");
 const importConsensus = () => import("./views/ConsensusView");
 const importFilings = () => import("./views/FilingsView");
+const importSectors = () => import("./views/SectorsView");
 
 const FundView = lazy(withChunkReload(() => importFund().then((m) => ({ default: m.FundView }))));
 const ConsensusView = lazy(withChunkReload(() => importConsensus().then((m) => ({ default: m.ConsensusView }))));
 const FilingsView = lazy(withChunkReload(() => importFilings().then((m) => ({ default: m.FilingsView }))));
+const SectorsView = lazy(withChunkReload(() => importSectors().then((m) => ({ default: m.SectorsView }))));
 
 /**
  * Start downloading a view's chunk when the pointer touches its tab.
@@ -74,6 +76,7 @@ const FilingsView = lazy(withChunkReload(() => importFilings().then((m) => ({ de
  * turns out wrong costs one file the user was likely to need anyway.
  */
 const VIEW_IMPORTS: Record<ViewId, () => Promise<unknown>> = {
+  sectors: importSectors,
   fund: importFund,
   consensus: importConsensus,
   filings: importFilings,
@@ -328,7 +331,8 @@ export default function Dashboard() {
               period={period}
               onPeriod={setPeriod}
               longsOnly={longsOnly}
-              onLongsOnly={setLongsOnly}
+              // The Sectors tab counts stock only, always.
+              onLongsOnly={view === "sectors" ? undefined : setLongsOnly}
               universeCount={mf.counts.filers}
             />
 
@@ -388,6 +392,13 @@ export default function Dashboard() {
                 group={consensusFunds}
                 onPeriod={setPeriod}
                 onFund={setCik}
+              />
+            ) : view === "sectors" ? (
+              <SectorsView
+                period={period}
+                mf={mf}
+                refreshing={refreshing}
+                onFund={(c) => { setCik(c); setView("fund"); }}
               />
             ) : view === "consensus" ? (
               <ConsensusView

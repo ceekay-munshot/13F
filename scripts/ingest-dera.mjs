@@ -36,7 +36,7 @@ import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
 import { SERIES_FIELDS } from "../shared/series-fields.mjs";
-import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers } from "../shared/emit.mjs";
+import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers, NAMES_MISALIGNED } from "../shared/emit.mjs";
 import { currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel, deraWindowFor } from "../shared/calendar.mjs";
 import { paths, envelope, manifest, encodeHoldings, buildIdFrom, ROWS_PER_PAGE } from "../shared/artifacts.mjs";
 import { ArtifactWriter, writeHeadersFile } from "./_artifact-writer.mjs";
@@ -588,6 +588,9 @@ await runJob(async () => {
   const sectorFlows = new Map();
   let latestAcceptance = "";
   let holdingsWritten = 0;
+  // Fund-quarters whose filing has its names and codes out of line. Logged, not
+  // treated as a failure: the filing is wrong, not the build.
+  const misalignedNames = [];
 
   ranked.forEach(({ fund }, idx) => {
     // TWO gates. A fund is stored if it is large enough or on the watchlist; a
@@ -730,6 +733,7 @@ await runJob(async () => {
         securities: SECURITIES, issuerIdFor,
       });
       const { changes, suppressed, structuralEvent, acts, turnover, rows: allRows, exits: allExits, meta } = q;
+      if (meta.foldWarnings.some((w) => w.code === NAMES_MISALIGNED)) misalignedNames.push(`${cik} ${period}`);
 
       if (wantHoldings) {
         const rows = allRows;
@@ -982,6 +986,10 @@ await runJob(async () => {
   // which is the same class of wrong answer as publishing the fragment.
   if (droppedPartial) {
     log(`${droppedPartial} fund-quarters dropped: their filing window was not loaded, so only stragglers were present`);
+  }
+  if (misalignedNames.length) {
+    log(`${misalignedNames.length} fund-quarters filed with names and codes out of line (tickers withheld on those lines): ` +
+        `${misalignedNames.slice(0, 20).join(", ")}${misalignedNames.length > 20 ? " …" : ""}`);
   }
   log(`${s.files + 1} files · ${(s.gzBytes / 1048576).toFixed(1)} MB`);
   log(`${sec.requestCount} SEC requests`);

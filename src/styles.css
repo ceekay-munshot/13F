@@ -82,6 +82,7 @@
 /* Page-level header. */
 .app-header { gap: 16px; padding: 0 24px; }
 .app-header-controls { gap: 12px; }
+.app-tab { padding: 4px 12px; font-size: 12px; }
 
 @media (max-width: 1023px) {
   .card-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
@@ -115,6 +116,10 @@
    * keeps its colour and its hover text when the words go. */
   .app-header-title { display: none; }
   .freshness-detail { display: none; }
+  /* Four tabs, the badge, the status dot and refresh on a 375px phone. */
+  .app-tab { padding: 4px 8px; font-size: 11.5px; }
+  .app-header { gap: 8px; padding: 0 10px; }
+  .app-header-controls { gap: 6px; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -361,4 +366,102 @@
  * the movement. */
 @media (prefers-reduced-motion: reduce) {
   .hint-bubble { animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * A holding whose filed name contradicts its code (FundView, Holdings card).
+ *
+ * The name itself is the explanation's trigger — no extra badge. A dotted
+ * underline is the convention for "there is more to say about this word", and
+ * amber is the page's colour for "this number comes with a caveat". Static: it
+ * marks a fact about the data, so nothing about it should move.
+ * ------------------------------------------------------------------------- */
+.name-mismatch {
+  display: inline-block; max-width: 240px; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; cursor: help;
+  text-decoration: underline dotted #d97706; text-decoration-thickness: 1.5px; text-underline-offset: 3px;
+}
+.name-mismatch:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; border-radius: 3px; }
+
+/* ---------------------------------------------------------------------------
+ * Sectors tab.
+ *
+ * The sector rows are the tab's navigation, so they behave like buttons: a
+ * pointer, a focus ring, and a resting state for the one that is open. Only
+ * background colour changes on them — a transform on a table row breaks the
+ * sticky first column.
+ * ------------------------------------------------------------------------- */
+.sectors-scroll { max-height: 640px; overflow: auto; }
+
+.sector-row { cursor: pointer; }
+.sector-pick {
+  border: none; background: none; padding: 0; margin: 0; cursor: pointer;
+  font: inherit; font-weight: 600; color: inherit; text-align: left;
+}
+.sector-pick:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; border-radius: 3px; }
+.sector-row td { transition: background-color 120ms ease; }
+.sector-row[data-active="true"] td,
+.sector-row[data-active="true"] td:first-child { background: #eef2ff; }
+.sector-row[data-active="true"] td:first-child { box-shadow: inset 3px 0 0 #4f46e5; }
+.sector-row:active td { background: #e0e7ff; }
+@media (hover: hover) and (pointer: fine) {
+  .data-table tbody tr.sector-row[data-active="true"]:hover td { background: #e8ebfe; }
+}
+
+/* The bar grows from the left, drawn with scaleX so a change of stock cap
+ * never re-lays-out the table. */
+.net-bar {
+  display: block; height: 3px; width: 100%; margin-top: 4px; border-radius: 2px;
+  opacity: 0.75; transform-origin: left center;
+  transition: transform 200ms var(--ease-out);
+}
+
+/* Sortable column headings: plain text until pointed at. */
+.th-sort {
+  border: none; background: none; padding: 0; margin: 0; cursor: pointer;
+  font: inherit; color: inherit;
+}
+.th-sort[data-active="true"] { color: #111827; }
+.th-sort[data-active="true"]::after { content: " ↓"; color: #4f46e5; }
+.th-sort:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; border-radius: 3px; }
+@media (hover: hover) and (pointer: fine) {
+  .th-sort:hover { color: #111827; }
+}
+
+.sectors-search {
+  font-size: 12px; font-family: inherit; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid rgba(229, 231, 235, 0.8); width: 100%; max-width: 320px;
+  color: #111827; background: #fff; outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.sectors-search:focus { border-color: #c7d2fe; box-shadow: 0 0 0 3px #eef2ff; }
+
+.fund-link {
+  border: none; background: none; padding: 0; margin: 0; cursor: pointer;
+  font: inherit; font-weight: 600; color: #111827; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; display: block;
+}
+.fund-link:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; border-radius: 3px; }
+@media (hover: hover) and (pointer: fine) {
+  .fund-link:hover { color: #4338ca; text-decoration: underline; text-underline-offset: 2px; }
+}
+
+.move-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 180px; }
+.move-chip {
+  font-size: 11px; line-height: 1; padding: 4px 6px; border-radius: 6px; white-space: nowrap;
+  background: #f9fafb; border: 1px solid #f0f1f3;
+}
+.move-chip b { color: #111827; font-weight: 600; }
+
+.show-more {
+  border: 1px solid #e5e7eb; background: #fff; color: #374151; cursor: pointer;
+  font: inherit; font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 8px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .show-more:hover { background: #f9fafb; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .net-bar, .sector-row td { transition: none; }
 }
