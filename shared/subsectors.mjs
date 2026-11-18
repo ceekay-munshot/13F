@@ -118,6 +118,12 @@ const TREE = {
     subs: [
       // The ten largest US bank holding companies the SEC files as banks.
       ["Large US banks", [], ["JPM", "BAC", "C", "WFC", "USB", "PNC", "TFC", "COF", "BK", "STT"]],
+      // Banks abroad, held as US-listed shares. A third of the money in banks.
+      ["Foreign banks", [], [
+        "HDB", "IBN", "BSBR", "BBD", "ITUB", "GGAL", "INTR", "BAP", "BSAC", "CIB", "BMA", "SUPV", "BCH",
+        "IFS", "UBS", "DB", "ING", "SAN", "BBVA", "HSBC", "BCS", "LYG", "NWG", "MUFG", "SMFG", "MFG",
+        "KB", "SHG", "WF", "RY", "TD", "BMO", "BNS", "CM", "BLX",
+      ]],
       ["Regional & other banks", [r(6000, 6099)]],
       ["Mortgage lenders", [r(6160, 6169)]],
       ["Consumer & business lenders", [r(6100, 6159)]],
@@ -164,7 +170,7 @@ const TREE = {
       ]],
       ["Industrial & storage", [], [
         "PLD", "REXR", "EGP", "FR", "STAG", "TRNO", "LXP", "COLD", "PSA", "EXR", "CUBE", "NSA",
-        "ILPT", "PLYM", "IIPR",
+        "ILPT", "PLYM", "IIPR", "LINE",
       ]],
       ["Health care REITs", [], [
         "WELL", "VTR", "OHI", "DOC", "SBRA", "CTRE", "NHI", "HR", "MPW", "AHR", "LTC", "CHCT", "DHC",
@@ -173,6 +179,10 @@ const TREE = {
         "SPG", "O", "KIM", "REG", "FRT", "NNN", "ADC", "MAC", "SKT", "BRX", "KRG", "AKR", "FCPT",
         "EPRT", "NTST", "GTY", "BXP", "VNO", "SLG", "KRC", "CUZ", "HIW", "DEI", "ARE", "PDM", "OPI",
         "BDN", "JBGS", "PGRE", "ESRT", "HPP",
+      ]],
+      ["Hotel & gaming REITs", [], [
+        "VICI", "GLPI", "EPR", "HST", "RHP", "SVC", "APLE", "DRH", "PEB", "INN", "CLDT", "RLJ", "XHR",
+        "SHO", "PK", "BHR",
       ]],
       ["Mortgage REITs", [], [
         "AGNC", "NLY", "STWD", "BXMT", "RITM", "ABR", "TWO", "ARI", "LADR", "DX", "ORC", "EFC",
@@ -243,7 +253,7 @@ const TREE = {
     ],
   },
   "Consumer Discretionary": {
-    other: "Other consumer",
+    other: "Education & other consumer",
     subs: [
       ["Online retail & marketplaces", [r(5961)], [
         "MELI", "PDD", "BABA", "JD", "SE", "DASH", "EBAY", "ETSY", "CART",
@@ -254,9 +264,9 @@ const TREE = {
       ["Travel & leisure", [r(7000, 7099), r(7900, 7999)], ["ABNB", "TCOM"]],
       ["Apparel & home goods", [r(2200, 2399), r(2500, 2599), r(3020, 3021), r(3100, 3199), r(3860, 3879), r(3900, 3999)]],
       ["Wholesale & distribution", [r(5000, 5199)]],
-      // Tyres and plastics (Goodyear, Entegris) sit here: SIC files them with
-      // shoes, and they are not shoes.
-      ["Other consumer", [r(3000, 3019), r(3022, 3099), r(7200, 7299), r(7500, 7599), r(8200, 8299)]],
+      // Schools and tutoring are most of it. Tyres and plastics (Goodyear,
+      // Entegris) sit here too: SIC files them with shoes, and they are not shoes.
+      ["Education & other consumer", [r(8200, 8299), r(7200, 7299), r(7500, 7599), r(3000, 3019), r(3022, 3099)]],
     ],
   },
   "Consumer Staples": {
@@ -360,11 +370,13 @@ const FUND_TICKERS = {
     "SCHD", "SCHX", "SCHB", "SCHG", "ITOT", "SPLG", "SPYM", "SPYG", "SPYV", "MGK", "USMV", "MTUM",
     "QUAL", "VLUE", "DGRW", "JEPI", "JEPQ", "BKLC", "BKMC", "DFAC", "DFSV", "DFAT", "DFAU", "DUHP",
     "AVLV", "FNDX", "DYNF", "JHML", "SPMO", "RSPT", "COWZ", "OEF", "XLG", "VV", "SPTM", "DCOR",
+    "FNDA", "IWS", "IWP", "VTHR", "SPMD", "SPSM", "IWL", "IWC", "AVUV", "IVVW",
   ],
   "International": [
     "EFA", "IEFA", "VEA", "VWO", "IEMG", "EEM", "VXUS", "IXUS", "ACWI", "VEU", "VT", "VGK", "VPL",
     "EWJ", "EWY", "EWZ", "EWT", "MCHI", "FXI", "KWEB", "INDA", "EFG", "EFV", "SPDW", "AVDE", "URTH",
     "DFAI", "DFIV", "DFEM", "SCHF", "IDEV", "EWG", "EWU", "EWC", "EWW", "BKUI", "DXUV",
+    "BKIE", "AAXJ", "ASHR", "EZU", "EIS", "EPOL", "AVEM", "DFAE",
   ],
   "Bonds & credit": [
     "AGG", "BND", "BNDX", "TLT", "TLH", "IEF", "SHY", "SHV", "BIL", "SGOV", "TIP", "STIP", "SCHP",
@@ -373,13 +385,13 @@ const FUND_TICKERS = {
     "USIG", "SLQD", "GOVT", "USFR", "TFLO", "JPST", "MINT", "FLOT", "BOXX", "EMB", "JEMB", "EMLC",
     "XEMD", "BKAG", "BHYB", "JAAA", "IAGG", "FBND", "PYLD", "VBIL", "XBB", "XFIV", "XTRE", "TUA",
     "TLTW", "PFF", "MBB", "VMBS", "BSV", "BIV", "SCHO", "SCHR", "SCHZ", "IUSB", "TRTY", "DFCF",
-    "CWB", "LMBS", "FLRT", "VTIP", "IGLB", "ARCC", "FSK", "OBDC", "MAIN", "BXSL", "OCSL", "TSLX",
+    "CWB", "LMBS", "FLRT", "VTIP", "IGLB", "SJNK", "ARCC", "FSK", "OBDC", "MAIN", "BXSL", "OCSL", "TSLX",
   ],
   "Sector & thematic": [
     "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC", "SMH", "SOXX",
     "XBI", "IBB", "KRE", "KBE", "KBWB", "ITB", "XHB", "ARKK", "IGV", "VGT", "XOP", "OIH", "IYR",
     "VNQ", "CIBR", "IGF", "COPX", "URA", "TAN", "ICLN", "LIT", "XAR", "ITA", "VHT", "VFH", "VDE",
-    "IYW", "FTEC", "SKYY", "BOTZ", "AIQ", "DRAM", "ARMS", "MAGS", "DFAR", "AMLP", "GRID",
+    "IYW", "FTEC", "SKYY", "BOTZ", "AIQ", "DRAM", "ARMS", "MAGS", "DFAR", "AMLP", "GRID", "FNCL", "XRT",
   ],
   "Gold, commodities & crypto": [
     "GLD", "GLDM", "IAU", "SGOL", "AAAU", "SLV", "SIVR", "PSLV", "PHYS", "GDX", "GDXJ", "SIL",

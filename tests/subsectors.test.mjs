@@ -38,6 +38,7 @@ describe("subsectorForSic", () => {
     expect(subsectorForSic(2836)).toBe("Biotech"); // AMGN, GILD
     expect(subsectorForSic(3841)).toBe("Medical devices"); // BSX, SYK
     expect(subsectorForSic(6021)).toBe("Regional & other banks");
+    expect(subsectorByTicker("HDB", "Banks & Lending")).toBe("Foreign banks");
     expect(subsectorForSic(6141)).toBe("Consumer & business lenders"); // AFRM, SLM
     expect(subsectorForSic(7372)).toBe("Software"); // MSFT, ORCL
     expect(subsectorForSic(7370)).toBe("Internet & data services"); // META, GOOGL
