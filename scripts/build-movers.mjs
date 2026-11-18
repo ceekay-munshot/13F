@@ -103,8 +103,10 @@ const subs = local
   : unpackSubsectors(sectorState);
 const placeOf = createPlacer(sectorEnv?.data ?? {}, { names: sectorState?.names ?? null, subs });
 // Rows kept from the last build were placed with the list that was current
-// then. A new list means every fund is placed again.
-const sectorListAt = weekly?.builtAt ?? `monthly:${mf.buildId}`;
+// then. A new list means every fund is placed again — and so does the same
+// list read without its memory file (names and subsectors), which a run can
+// miss for a moment: rows placed without it must not outlive its return.
+const sectorListAt = `${weekly?.builtAt ?? `monthly:${mf.buildId}`}${subs && sectorState?.names ? "" : "|without-memory"}`;
 log(`sector list: ${weekly ? `weekly, built ${weekly.builtAt}` : "monthly"} · ${Object.keys(sectorEnv?.data ?? {}).length} tickers` +
     ` · ${subs ? `${Object.keys(subs).length} with a subsector` : "no subsectors"}`);
 
