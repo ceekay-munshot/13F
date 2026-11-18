@@ -463,18 +463,19 @@
 .move-chip b { color: #111827; font-weight: 600; }
 
 /* Stocks view: "Most sold" | "Most bought", side by side (.split-2). The stock
- * cell takes the room left by the two number columns, and the company name
- * gives way first, ending in an ellipsis, so the ticker is always whole. */
+ * cell takes the room left by the two number columns. The company name gets a
+ * line of its own under the ticker, as the theme row's note does: sharing the
+ * ticker's line on a laptop-width card left it three letters ("NVI…"). */
 .stock-list-label {
   font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
   padding: 10px 10px 4px;
 }
 .stock-cell { width: 100%; max-width: 0; }
-.stock-pick { display: flex; align-items: baseline; gap: 6px; width: 100%; min-width: 0; }
-.stock-pick b { color: #111827; font-weight: 700; flex-shrink: 0; }
+.stock-pick { display: block; width: 100%; }
+.stock-pick b { color: #111827; font-weight: 700; }
 .stock-name {
-  font-size: 11px; font-weight: 400; color: #9ca3af;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  display: block; font-size: 10.5px; font-weight: 400; color: #9ca3af; margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 @media (hover: hover) and (pointer: fine) {
   .sector-row:hover .stock-pick b { color: #4338ca; }
