@@ -723,11 +723,11 @@ export async function loadPeriodSectors(period: string, mf: Manifest): Promise<S
 // ---------------------------------------------------------------------------
 
 /**
- * [ticker, action N/A/T/X, sharesChangePct, tradedUsd, weightBefore, weightAfter, sector]
- * `sector` is a position in SECTORS (shared/sic.mjs); absent in files built
- * before it was added.
+ * [ticker, action N/A/T/X, sharesChangePct, tradedUsd, weightBefore, weightAfter, sector, subsector]
+ * `sector` is a position in SECTORS (shared/sic.mjs) and `subsector` one in the
+ * file's own `subsectors` list; each is absent in files built before it was added.
  */
-export type MoverMove = [string, "N" | "A" | "T" | "X", number | null, number, number | null, number, number?];
+export type MoverMove = [string, "N" | "A" | "T" | "X", number | null, number, number | null, number, number?, number?];
 /** [cik, name, valueLongUsd, positionsLong, moves] */
 export type MoverFund = [string, string, number, number, MoverMove[]];
 
@@ -738,6 +738,8 @@ export interface Movers {
   funds: MoverFund[];
   /** Ticker -> company name as most funds filed it; absent in files built before it was added. */
   names?: Record<string, string>;
+  /** What each move's subsector number means; absent in files built before subsectors. */
+  subsectors?: string[];
 }
 
 const moversMemo = new Map<string, Promise<Movers | null>>();

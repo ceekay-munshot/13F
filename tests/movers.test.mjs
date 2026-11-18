@@ -5,8 +5,12 @@ import { describe, it, expect } from "vitest";
 import { encodeHoldings } from "../shared/artifacts.mjs";
 import { fundMoves, pickNames, MOVERS_MAX_POSITIONS } from "../shared/movers.mjs";
 import { SECTORS } from "../shared/sic.mjs";
+import { SUBSECTORS } from "../shared/subsectors.mjs";
+import { createPlacer } from "../shared/sector-list.mjs";
 
+// A trade nothing placed: Unclassified, in its only subsector.
 const U = SECTORS.indexOf("Unclassified");
+const UU = SUBSECTORS.indexOf("Unclassified");
 
 const row = (o) => ({
   ticker: "AAA", name: "AAA INC", issuerId: "i1", cls: "COM", type: "", unit: "SH",
@@ -28,7 +32,7 @@ describe("fundMoves", () => {
       rows: [row({ ticker: "NVDA", action: "TRIMMED", shares: 6, value: 600, weight: 6,
                    dShares: -4, dSharesPct: -40, dWeightPp: -4 })],
     }));
-    expect(r.moves).toEqual([["NVDA", "T", -40, -400, 10, 6, U]]);
+    expect(r.moves).toEqual([["NVDA", "T", -40, -400, 10, 6, U, UU]]);
   });
 
   it("counts a new position as all bought and a sale-out at last quarter's value", () => {
@@ -36,7 +40,7 @@ describe("fundMoves", () => {
       rows: [row({ ticker: "MU", action: "NEW", value: 500, weight: 5, dShares: null, dSharesPct: null, dWeightPp: null })],
       exits: [{ ticker: "AMAT", issuerId: "i9", type: "", unit: "SH", valuePrior: 700, weightPrior: 7 }],
     }));
-    expect(r.moves).toEqual([["MU", "N", null, 500, 0, 5, U], ["AMAT", "X", -100, -700, 7, 0, U]]);
+    expect(r.moves).toEqual([["MU", "N", null, 500, 0, 5, U, UU], ["AMAT", "X", -100, -700, 7, 0, U, UU]]);
   });
 
   it("places each trade in a sector, with the filed name to hand", () => {
@@ -48,6 +52,33 @@ describe("fundMoves", () => {
     }), { sectorOf });
     expect(r.moves.map((m) => SECTORS[m[6]])).toEqual(["Semiconductors", "Unclassified"]);
     expect(seen[1]).toMatchObject({ ticker: null, name: "SANDISK CORP" });
+    // A sector with no subsector given lands in that sector's catch-all.
+    expect(r.moves.map((m) => SUBSECTORS[m[7]])).toEqual(["Other semiconductors", "Unclassified"]);
+  });
+
+  it("places each trade in a subsector inside its sector", () => {
+    const placeOf = createPlacer(
+      { MU: "Semiconductors", NVDA: "Semiconductors", LLY: "Health Care" },
+      { subs: { NVDA: "Chips", LLY: "Biotech" } },
+    );
+    const r = fundMoves(fund({
+      rows: [
+        row({ ticker: "NVDA", action: "ADDED", dShares: 1, dSharesPct: 10 }),
+        row({ ticker: "MU", action: "ADDED", dShares: 1, dSharesPct: 10 }),
+      ],
+      exits: [{ ticker: "LLY", issuerId: "i8", type: "", unit: "SH", valuePrior: 5, weightPrior: 1 }],
+    }), { placeOf });
+    expect(r.moves.map((m) => [SECTORS[m[6]], SUBSECTORS[m[7]]])).toEqual([
+      ["Semiconductors", "Chips"],
+      ["Semiconductors", "Memory"], // hand-placed: the SEC files Micron beside NVIDIA
+      ["Health Care", "Biotech"],
+    ]);
+  });
+
+  it("never lets a subsector disagree with its sector", () => {
+    const placeOf = () => ({ sector: "Health Care", subsector: "Chips" });
+    const r = fundMoves(fund({ rows: [row({ ticker: "X", action: "ADDED", dShares: 1, dSharesPct: 10 })] }), { placeOf });
+    expect([SECTORS[r.moves[0][6]], SUBSECTORS[r.moves[0][7]]]).toEqual(["Health Care", "Other health care"]);
   });
 
   it("leaves out unchanged holdings, options, and splits", () => {
@@ -64,7 +95,7 @@ describe("fundMoves", () => {
   it("counts a sale reported twice only once, at the smaller weight", () => {
     const exit = { ticker: "STX", issuerId: "i5", type: "", unit: "SH", valuePrior: 900 };
     const r = fundMoves(fund({ exits: [{ ...exit, weightPrior: 9 }, { ...exit, weightPrior: 4 }] }));
-    expect(r.moves).toEqual([["STX", "X", -100, -900, 4, 0, U]]);
+    expect(r.moves).toEqual([["STX", "X", -100, -900, 4, 0, U, UU]]);
   });
 
   it("is only for focused managers", () => {

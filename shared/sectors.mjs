@@ -15,6 +15,11 @@
 //
 // The first two are fixed in build-sectors.mjs. The last two, and funds the
 // SEC's fund list does not name, are fixed here.
+//
+// Each holding also gets a SUBSECTOR, chosen inside the sector this file
+// decides and never instead of it. That half lives in shared/sector-list.mjs,
+// which only the pipeline loads: the dashboard reads each trade's subsector
+// from the file, so visitors never download the subsector lists.
 
 /** Upper case, letters and digits only: BRK-B, BRK.B, BRK/B and BRKB are one ticker. */
 export function normTicker(t) {
@@ -87,7 +92,7 @@ const NAME_NOISE = new Set([
  * older version is rebuilt on the next run instead of waiting out its week,
  * because its name index was keyed by the old rules.
  */
-export const SECTOR_LIST_VERSION = 2;
+export const SECTOR_LIST_VERSION = 3; // 3: every ticker and name carries its subsector
 
 /**
  * A fund or ETF, judged from what the filer wrote. Used only when the ticker
@@ -110,7 +115,7 @@ const FUND_NAME = new RegExp(
 const FUND_CLASS = /\b(ETFS?|TR UNIT|UNIT SER|UNITS? BEN|MF CLOSED|MF OPEN)\b/;
 
 // Only applied to a registrant with no industry code — see assembleSectorMap.
-const INVESTMENT_VEHICLE = /\b(BDC|FUND|FD|TRUST|LENDING|CREDIT|INCOME|CAPITAL CORP|INVESTMENT CORP|FINANCE CORP)\b/;
+export const INVESTMENT_VEHICLE = /\b(BDC|FUND|FD|TRUST|LENDING|CREDIT|INCOME|CAPITAL CORP|INVESTMENT CORP|FINANCE CORP)\b/;
 
 export function looksLikeFund(name, cls) {
   return FUND_NAME.test(String(name ?? "").toUpperCase()) || FUND_CLASS.test(String(cls ?? "").toUpperCase());
@@ -160,7 +165,8 @@ export const PLACED_BY_BUSINESS = {
  *
  * `names` is optional: normalised company name -> sector, for holdings filed
  * with no ticker. The dashboard does without it (it would be a large download
- * for a small share of rows); the pipeline uses it.
+ * for a small share of rows); the pipeline uses it. Its list holds subsectors
+ * rather than sectors, so it passes `nameSector` to read one as a sector.
  *
  * Order matters and is the point of this function:
  *   1. the ticker as filed            — the SEC's own classification
@@ -168,101 +174,51 @@ export const PLACED_BY_BUSINESS = {
  *   3. fund by name or share class    — SPY filed as "SPDR S&P 500 ETF TR"
  *   4. the company name               — a holding with no ticker
  */
-export function createSectorLookup(map, { names = null } = {}) {
+export function createSectorLookup(map, opts = {}) {
+  const resolve = createResolver(map, opts);
+  return (row) => resolve(row).sector;
+}
+
+/**
+ * The lookup's workings -> { sector, key, named }: the sector, the ticker in
+ * the list it was found under (a preferred share's is its issuer's), and the
+ * name list's own value when it was found by name.
+ */
+export function createResolver(map, { names = null, nameSector = (v) => v } = {}) {
   const byNorm = new Map();
   for (const [t, s] of Object.entries(map ?? {})) {
     const k = normTicker(t);
     // An exact spelling already in the list wins over a stripped one.
-    if (k && !byNorm.has(k)) byNorm.set(k, s);
+    if (k && !byNorm.has(k)) byNorm.set(k, t);
   }
-  const byTicker = (t) => {
+  /** The list's own spelling of a ticker, or null. */
+  const keyOf = (t) => {
     if (!t) return null;
-    const exact = map?.[String(t).toUpperCase()];
-    if (exact && exact !== UNCLASSIFIED) return exact;
+    const up = String(t).toUpperCase();
+    const exact = map?.[up];
+    if (exact && exact !== UNCLASSIFIED) return up;
     const loose = byNorm.get(normTicker(t));
-    return loose && loose !== UNCLASSIFIED ? loose : null;
+    return loose && map[loose] !== UNCLASSIFIED ? loose : null;
   };
-  return function sectorOf({ ticker, name, cls } = {}) {
-    const direct = byTicker(ticker);
-    if (direct) return direct;
+  const found = (key) => ({ sector: map[key], key, named: null });
+  return function resolve({ ticker, name, cls } = {}) {
+    const direct = keyOf(ticker);
+    if (direct) return found(direct);
     // A preferred share is its issuer's: BAPRA is Boeing's, NEEPRV NextEra's,
     // ORCLPRD Oracle's. Only ever tried on a ticker the list does not know.
     const pref = /^([A-Z]{1,5})PR([A-Z]?)$/.exec(normTicker(ticker));
-    const issuer = pref && byTicker(pref[1]);
-    if (issuer) return issuer;
+    const issuer = pref && keyOf(pref[1]);
+    if (issuer) return found(issuer);
     // "General Motors Co (GM)": the filer wrote the ticker into the name.
     const inName = /\(([A-Z]{1,5})\)/.exec(String(name ?? "").toUpperCase());
-    const named = inName && byTicker(inName[1]);
-    if (named) return named;
-    if (looksLikeFund(name, cls)) return FUNDS;
+    const named = inName && keyOf(inName[1]);
+    if (named) return found(named);
+    if (looksLikeFund(name, cls)) return { sector: FUNDS, key: null, named: null };
     if (names && name) {
-      const byName = names[normName(name)];
-      if (byName) return byName;
+      const v = names[normName(name)];
+      const sector = v ? nameSector(v) : null;
+      if (sector && sector !== UNCLASSIFIED) return { sector, key: null, named: v };
     }
-    return UNCLASSIFIED;
+    return { sector: UNCLASSIFIED, key: null, named: null };
   };
-}
-
-/**
- * Assemble the ticker -> sector list from what the SEC publishes.
- *
- *   tickers      ticker -> { cik, title }        (company_tickers.json)
- *   fundSymbols  Set of fund and ETF tickers     (company_tickers_mf.json)
- *   sicOf        cik -> SIC code, or 0 for "asked, none on file"
- *   sectorForSic the SIC -> sector rule (shared/sic.mjs)
- *
- *   filedNames   normName -> SIC, from the financial data sets' own company
- *                names. These outlive a ticker: a company bought out this
- *                year (Electronic Arts, Janus Henderson) has left the ticker
- *                list but its last 10-Q is still there, and funds still sold it.
- *
- * Returns { sectors: ticker -> { sic, sector }, names: normName -> sector }.
- *
- * Every ticker with punctuation also gets its bare spelling (BRK-B -> BRKB),
- * because that is how 13F holdings arrive, and consumers that look tickers up
- * exactly — the monthly build's own sector totals — then match too.
- */
-export function assembleSectorMap({ tickers, fundSymbols, sicOf, sectorForSic, filedNames = new Map() }) {
-  const sectors = {};
-  for (const [ticker, { cik, title }] of tickers) {
-    const sic = sicOf.get(cik) || null;
-    let sector = PLACED_BY_BUSINESS[ticker] ?? (sic ? sectorForSic(sic) : null);
-    // A fund the SEC lists as one, or a registrant whose name says so, is a
-    // fund — unless its own industry code says it is an operating company.
-    if ((!sector || sector === UNCLASSIFIED) && (fundSymbols.has(ticker) || looksLikeFund(title))) sector = FUNDS;
-    // A listed name with no industry code on its SEC record at all is an
-    // investment vehicle — every operating company has one. Business
-    // development companies (FS KKR, Golub Capital BDC) and closed-end credit
-    // funds are the bulk of it, and their names say so.
-    if (!sector && sicOf.has(cik) === false && INVESTMENT_VEHICLE.test(String(title).toUpperCase())) sector = FUNDS;
-    if (!sector) continue;
-    sectors[ticker] = { sic, sector };
-  }
-  // Fund share classes that are not in the company list. Open-end mutual fund
-  // classes (five letters ending in X) never appear in a 13F, so they are left
-  // out rather than shipped to every visitor.
-  for (const sym of fundSymbols) {
-    if (sectors[sym] || (sym.length === 5 && sym.endsWith("X"))) continue;
-    sectors[sym] = { sic: null, sector: FUNDS };
-  }
-  for (const [ticker, v] of Object.entries(sectors)) {
-    const bare = normTicker(ticker);
-    if (bare && bare !== ticker && !sectors[bare]) sectors[bare] = v;
-  }
-
-  // Company name -> sector, for holdings filed without a ticker. A name two
-  // companies normalise to with DIFFERENT sectors is dropped, not guessed.
-  const names = {};
-  const clash = new Set();
-  const add = (k, s) => {
-    if (!s || s === UNCLASSIFIED || !k || clash.has(k)) return;
-    if (names[k] && names[k] !== s) { clash.add(k); delete names[k]; return; }
-    names[k] = s;
-  };
-  for (const [ticker, { title }] of tickers) add(normName(title), sectors[ticker]?.sector);
-  // Names from the financial data sets, for companies no longer in the ticker
-  // list. Only where the list itself had nothing to say about that name.
-  const listed = new Set(Object.keys(names));
-  for (const [k, sic] of filedNames) if (!listed.has(k)) add(k, sectorForSic(sic));
-  return { sectors, names };
 }

@@ -55,7 +55,8 @@ import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry } from "./_unzip.mjs";
 import { sectorForSic } from "../shared/sic.mjs";
-import { assembleSectorMap, looksLikeFund, normName, SECTOR_LIST_VERSION } from "../shared/sectors.mjs";
+import { looksLikeFund, normName, SECTOR_LIST_VERSION } from "../shared/sectors.mjs";
+import { assembleSectorMap, packSubsectors } from "../shared/sector-list.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { createR2 } from "./_r2.mjs";
 
@@ -256,7 +257,11 @@ await runJob(async () => {
   const resolved = Object.keys(sectors).length;
 
   const bySector = {};
-  for (const v of Object.values(sectors)) bySector[v.sector] = (bySector[v.sector] ?? 0) + 1;
+  const bySubsector = {};
+  for (const v of Object.values(sectors)) {
+    bySector[v.sector] = (bySector[v.sector] ?? 0) + 1;
+    bySubsector[v.subsector] = (bySubsector[v.subsector] ?? 0) + 1;
+  }
 
   const builtAt = new Date().toISOString();
   const sicByCik = Object.fromEntries([...asked.entries()].map(([k, v]) => [k, v]));
@@ -286,14 +291,20 @@ await runJob(async () => {
       v: 1, kind: "sector-map", builtAt, listVersion: SECTOR_LIST_VERSION,
       data: Object.fromEntries(Object.entries(sectors).map(([t, v]) => [t, v.sector])),
     })));
-    // The pipeline's memory: names for holdings with no ticker, and every
-    // company already asked about.
-    await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({ v: 1, builtAt, listVersion: SECTOR_LIST_VERSION, names, sicByCik })));
+    // The pipeline's memory: names for holdings with no ticker, every company
+    // already asked about, and each ticker's subsector. The subsectors live
+    // here rather than in the list above because only the pipeline needs them
+    // — every trade it writes carries its own — so visitors never download them.
+    await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({
+      v: 2, builtAt, listVersion: SECTOR_LIST_VERSION, names, sicByCik, ...packSubsectors(sectors),
+    })));
     log("published movers/sectors.json and movers/sectors.state.json");
   }
 
   log(`\n${"=".repeat(60)}`);
   log(`${resolved} tickers classified from ${sets} data set(s), ${sec.requestCount} SEC requests`);
   log(Object.entries(bySector).sort((a, b) => b[1] - a[1]).map(([s, n]) => `  ${String(n).padStart(5)}  ${s}`).join("\n"));
+  log("by subsector:");
+  log(Object.entries(bySubsector).sort((a, b) => b[1] - a[1]).map(([s, n]) => `  ${String(n).padStart(5)}  ${s}`).join("\n"));
   log(`written to ${OUT}`);
 });
