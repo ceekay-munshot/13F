@@ -78,6 +78,39 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **19 Nov 2026 — every sector on the Sectors tab opens into subsectors.**
+  Click a sector and 3 to 9 smaller groups open underneath it, with the same
+  Sold / Bought / Net / Sellers / Buyers columns. Health Care splits into drug
+  makers, biotech, medical devices, diagnostics, hospitals and drug
+  distributors. Semiconductors splits into chips, memory, chip equipment,
+  solar and circuit boards. Funds split into broad market, sector,
+  international, bonds & credit, gold/commodities/crypto and leveraged. Click
+  a subsector and the right side, Managers and Stocks, shows only it. Click
+  the sector again to go back up to it, and once more to close it. AI & semis
+  stays on top as before.
+
+  It answers questions a sector row could not. In Q3, focused managers net
+  bought chips (+$3.05B) and memory (+$2.94B) but net sold chip equipment
+  (−$2.41B). They sold storage hardest (−$4.89B: SanDisk, Seagate, Western
+  Digital), and sold the big US banks (−$2.59B) while regional banks were
+  flat.
+
+  The groups come mostly from the SEC's own industry codes. Short hand-kept
+  lists cover the names those codes misfile: Micron is memory, not next to
+  NVIDIA; Booking.com is travel, not trucking; First Solar is solar; REITs go
+  by kind; foreign banks sit apart from US ones. **A subsector never moves a
+  company to another sector**, so every sector total, and Consensus's Sector
+  flows, are exactly as before. If those rules are ever edited, the Sectors
+  job notices by itself and rebuilds everything. There is no version number
+  to remember.
+
+  Checked before merging with two dry runs of the Sectors job on the real
+  data, publishing nothing. In Q3 most sectors leave 0–4% of their money in
+  their "Other…" group. The largest are Other funds (12%: mostly one $2.5B
+  holding filed only as "mutual funds"), Regional & other banks (15%), and
+  Satellite & other communications (15%: Viasat, EchoStar, AST SpaceMobile, a
+  real group in its own right).
+
 - **19 Nov 2026 — the Sectors tab now shows which stocks were sold and bought
   most.** The right-hand panel has a **Stocks | Managers** switch. Stocks
   shows the selected sector's "Most sold" and "Most bought" side by side, for
