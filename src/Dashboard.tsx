@@ -90,15 +90,14 @@ const VIEW_IMPORTS: Record<ViewId, () => Promise<unknown>> = {
 // when it depends on none of them. Requested at module scope it overlaps the
 // manifest entirely and is parsed and ready by the time there is a period to
 // render. Costs nothing extra: this is the default view, it is always needed.
-void importConsensus().catch(() => { /* the lazy boundary retries and handles it */ });
+void importSectors().catch(() => { /* the lazy boundary retries and handles it */ });
 
 export default function Dashboard() {
   const { session, market } = useHostContext();
-  // Consensus, not Fund. "What is the group accumulating, and who entered or
-  // exited?" is the question this product was built to answer; the Fund view is
-  // where you go once a name in the matrix makes you curious about one manager.
-  // Opening on Fund also meant opening on a single arbitrary filer.
-  const [view, setView] = useState<ViewId>("consensus");
+  // Sectors, the owner's choice (18 Nov 2026): "which focused managers cut AI
+  // and chips this quarter?" is the question asked most, and that tab answers it
+  // on arrival. Never Fund — that would open on a single arbitrary filer.
+  const [view, setView] = useState<ViewId>("sectors");
   const [mf, setMf] = useState<Manifest | null>(null);
   const [filers, setFilers] = useState<Filer[]>([]);
   const [cik, setCik] = useState<string | null>(null);
