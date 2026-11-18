@@ -7,3 +7,4 @@ export declare function inSector(sub: string | null | undefined, sector: string)
 export declare function subsectorForSic(sic: number | string | null | undefined): string;
 export declare function subsectorByTicker(ticker: string | null | undefined, sector: string): string | null;
 export declare function fundKind(row?: { ticker?: string | null; name?: string | null; cls?: string | null }): string | null;
+export declare const SUBSECTORS_KEY: string;

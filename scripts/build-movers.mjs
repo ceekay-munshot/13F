@@ -27,7 +27,7 @@ import { fundMoves, pickNames, moversPath, moversSeenPath, MOVERS_MAX_POSITIONS,
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { createPlacer, unpackSubsectors } from "../shared/sector-list.mjs";
 import { SECTORS } from "../shared/sic.mjs";
-import { SUBSECTORS, otherSubsector } from "../shared/subsectors.mjs";
+import { SUBSECTORS, SUBSECTORS_KEY, otherSubsector } from "../shared/subsectors.mjs";
 import { createR2, pool } from "./_r2.mjs";
 
 const args = Object.fromEntries(
@@ -136,10 +136,11 @@ for (const period of periods) {
     get(`${moversSeenPath(period)}?${FRESH}`).catch(() => null),
   ]);
   // A different rule or threshold means last run's rows answer a different
-  // question. Start again rather than mix them.
+  // question. Start again rather than mix them. That includes the subsector
+  // rules: a kept row's subsector is a position in the list it was built with.
   const reusable = prevSeen?.version === MOVERS_VERSION
     && prevSeen?.maxPositions === MOVERS_MAX_POSITIONS && prevSeen?.minPositions === MOVERS_MIN_POSITIONS
-    && prevSeen?.sectorListAt === sectorListAt;
+    && prevSeen?.sectorListAt === sectorListAt && prevSeen?.subsectorsKey === SUBSECTORS_KEY;
   const seenBefore = reusable ? prevSeen.keys ?? {} : {};
   const rowsBefore = new Map(reusable ? (prev?.funds ?? []).map((f) => [f[0], f]) : []);
 
@@ -230,7 +231,8 @@ for (const period of periods) {
   };
   const seenBody = {
     v: 1, kind: "period-movers-seen", period, version: MOVERS_VERSION,
-    maxPositions: MOVERS_MAX_POSITIONS, minPositions: MOVERS_MIN_POSITIONS, sectorListAt, keys: seen,
+    maxPositions: MOVERS_MAX_POSITIONS, minPositions: MOVERS_MIN_POSITIONS, sectorListAt,
+    subsectorsKey: SUBSECTORS_KEY, keys: seen,
   };
 
   for (const [path, obj] of [[moversPath(period), body], [moversSeenPath(period), seenBody]]) {

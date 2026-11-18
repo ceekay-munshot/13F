@@ -469,3 +469,19 @@ export function fundKind({ ticker, name, cls } = {}) {
   for (const [kind, rule] of FUND_NAME_RULES) if (rule.test(text)) return kind;
   return null;
 }
+
+/**
+ * A fingerprint of every rule in this file. It changes whenever the rules do,
+ * and the pipeline rebuilds what it placed under the old ones: the sector
+ * list at once rather than after its week, and every fund's trades rather
+ * than only the funds that filed again. Nobody has to remember to bump a
+ * version number for a change here.
+ */
+export const SUBSECTORS_KEY = (() => {
+  const s = JSON.stringify([
+    TREE, FUND_TICKERS, FUND_NAME_RULES.map(([kind, rule]) => [kind, rule.source]), FAMILY_NOISE.source,
+  ]);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+})();

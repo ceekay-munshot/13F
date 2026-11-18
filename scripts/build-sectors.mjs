@@ -57,6 +57,7 @@ import { listEntries, readEntry } from "./_unzip.mjs";
 import { sectorForSic } from "../shared/sic.mjs";
 import { looksLikeFund, normName, SECTOR_LIST_VERSION } from "../shared/sectors.mjs";
 import { assembleSectorMap, packSubsectors } from "../shared/sector-list.mjs";
+import { SUBSECTORS_KEY } from "../shared/subsectors.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { createR2 } from "./_r2.mjs";
 
@@ -116,8 +117,10 @@ function recentDataSetQuarters(n) {
 
 await runJob(async () => {
   const previous = await readPrevious(PREVIOUS);
-  // A list built under older rules is rebuilt now, not after its week is up.
-  if (previous?.builtAt && FRESH_DAYS != null && previous.listVersion === SECTOR_LIST_VERSION) {
+  // A list built under older rules is rebuilt now, not after its week is up —
+  // older subsector rules included.
+  if (previous?.builtAt && FRESH_DAYS != null && previous.listVersion === SECTOR_LIST_VERSION
+      && previous.subsectorsKey === SUBSECTORS_KEY) {
     const ageDays = (Date.now() - Date.parse(previous.builtAt)) / 86_400_000;
     if (ageDays < FRESH_DAYS) {
       log(`sector list built ${ageDays.toFixed(1)} days ago — fresh, nothing to do.`);
@@ -296,7 +299,8 @@ await runJob(async () => {
     // here rather than in the list above because only the pipeline needs them
     // — every trade it writes carries its own — so visitors never download them.
     await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({
-      v: 2, builtAt, listVersion: SECTOR_LIST_VERSION, names, sicByCik, ...packSubsectors(sectors),
+      v: 2, builtAt, listVersion: SECTOR_LIST_VERSION, subsectorsKey: SUBSECTORS_KEY, names, sicByCik,
+      ...packSubsectors(sectors),
     })));
     log("published movers/sectors.json and movers/sectors.state.json");
   }
