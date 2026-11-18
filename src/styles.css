@@ -400,6 +400,41 @@
   font: inherit; font-weight: 600; color: inherit; text-align: left;
 }
 .sector-pick:focus-visible { outline: 2px solid #4f46e5; outline-offset: 2px; border-radius: 3px; }
+/* Press feedback on the label, not the row: a transform on a <tr> or <td>
+ * would break the sticky first column. */
+.sector-pick { transition: transform 140ms var(--ease-out); transform-origin: left center; }
+.sector-row:active .sector-pick { transform: scale(0.97); }
+
+/* A chevron before each sector that splits into subsectors: right when shut,
+ * down when open. Rows that do not split keep the space, so names line up. */
+.sector-label { display: inline-flex; align-items: center; max-width: 100%; }
+.sector-caret {
+  flex: none; width: 5px; height: 5px; margin: 0 9px 1px 1px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  color: #9ca3af; transform: rotate(-45deg);
+  transition: transform 180ms var(--ease-out), color 120ms ease;
+}
+.sector-caret[data-open="true"] { transform: rotate(45deg) translate(-1px, -1px); color: #4f46e5; }
+.sector-caret:not([data-open]) { visibility: hidden; }
+@media (hover: hover) and (pointer: fine) {
+  .sector-row:hover .sector-caret[data-open="false"] { color: #4b5563; }
+}
+
+/* Net is the column the table is read by. */
+.net-cell { font-weight: 700; }
+
+/* Subsectors: indented under their open sector, a tint lighter than it, in a
+ * lighter weight so the sector rows still read as the outline. They arrive
+ * with a short fade and a 6px slide of the label — never a height animation,
+ * which would re-lay-out the table every frame. */
+.sub-row td { font-size: 11.5px; background: #fcfcfe; animation: subRowIn 200ms var(--ease-out) both; animation-delay: var(--row-delay, 0ms); }
+.sub-row td:first-child { padding-left: 33px; background: #fcfcfe; }
+.sub-row .sector-pick { font-weight: 500; color: #374151; }
+.sub-row .sector-label { animation: subLabelIn 220ms var(--ease-out) both; animation-delay: var(--row-delay, 0ms); }
+.sub-row .net-bar { height: 2px; margin-top: 3px; opacity: 0.6; }
+.sub-row .net-cell { font-weight: 600; }
+@keyframes subRowIn { from { opacity: 0; } }
+@keyframes subLabelIn { from { transform: translateX(-6px); } }
 
 /* The AI & semis theme row: pinned first, set apart from the SEC's sectors
  * below it by a heavier rule, and its button in the accent colour. */
@@ -490,5 +525,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .net-bar, .sector-row td { transition: none; }
+  .net-bar, .sector-row td, .sector-caret, .sector-pick { transition: none; }
+  .sector-row:active .sector-pick { transform: none; }
+  .sub-row .sector-label { animation: none; }
 }

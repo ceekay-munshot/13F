@@ -3,8 +3,10 @@
 // 2026. Each case here is one of the ways that happened.
 
 import { describe, it, expect } from "vitest";
-import { createSectorLookup, assembleSectorMap, normTicker, normName, looksLikeFund } from "../shared/sectors.mjs";
+import { createSectorLookup, normTicker, normName, looksLikeFund } from "../shared/sectors.mjs";
+import { assembleSectorMap, createPlacer } from "../shared/sector-list.mjs";
 import { sectorForSic } from "../shared/sic.mjs";
+import { SUBSECTOR_SECTOR } from "../shared/subsectors.mjs";
 
 describe("normTicker / normName", () => {
   it("treats BRK-B, BRK.B and BRKB as one ticker", () => {
@@ -86,7 +88,9 @@ describe("assembleSectorMap", () => {
     expect(sectors.VFIAX).toBeUndefined();
   });
   it("drops a name two companies share with different sectors", () => {
-    expect(names[normName("EXXON MOBIL CORP")]).toBe("Energy");
+    // The name list holds the subsector, which names its sector.
+    expect(names[normName("EXXON MOBIL CORP")]).toBe("Integrated oil & refiners");
+    expect(SUBSECTOR_SECTOR[names[normName("EXXON MOBIL CORP")]]).toBe("Energy");
     expect(names[normName("SAME NAME CORP")]).toBeUndefined();
   });
 });
@@ -111,11 +115,14 @@ describe("catch-all codes and bought-out companies", () => {
     expect(sectors.ACME.sector).toBe("Industrials");
   });
   it("finds a company that has left the ticker list by its filed name", () => {
-    const look = createSectorLookup({}, { names });
-    expect(look({ ticker: "EA", name: "ELECTRONIC ARTS INC", cls: "COM" })).toBe("Software & IT Services");
+    // The name list holds subsectors; the pipeline reads it with createPlacer.
+    const look = createPlacer({}, { names });
+    expect(look({ ticker: "EA", name: "ELECTRONIC ARTS INC", cls: "COM" })).toEqual({
+      sector: "Software & IT Services", subsector: "Software",
+    });
   });
   it("lets the ticker list's own name win over an older filed name", () => {
-    expect(names[normName("ACME STAFFING INC")]).toBe("Industrials");
+    expect(SUBSECTOR_SECTOR[names[normName("ACME STAFFING INC")]]).toBe("Industrials");
   });
 });
 

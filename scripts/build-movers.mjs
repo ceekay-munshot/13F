@@ -25,8 +25,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fundMoves, pickNames, moversPath, moversSeenPath, MOVERS_MAX_POSITIONS, MOVERS_MIN_POSITIONS, MOVERS_VERSION } from "../shared/movers.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
-import { createSectorLookup } from "../shared/sectors.mjs";
+import { createPlacer, unpackSubsectors } from "../shared/sector-list.mjs";
 import { SECTORS } from "../shared/sic.mjs";
+import { SUBSECTORS, SUBSECTORS_KEY, otherSubsector } from "../shared/subsectors.mjs";
 import { createR2, pool } from "./_r2.mjs";
 
 const args = Object.fromEntries(
@@ -94,11 +95,20 @@ const sectorEnv = weekly ?? await get(`meta/sectors.json?b=${mf.buildId}`).catch
 const sectorState = local
   ? { names: local.names }
   : weekly ? await get(`movers/sectors.state.json?${FRESH}`).catch(() => null) : null;
-const sectorOf = createSectorLookup(sectorEnv?.data ?? {}, { names: sectorState?.names ?? null });
+// Each ticker's subsector, from the same build as the list. Without it (a list
+// built before subsectors) every trade still gets its right sector, and a
+// subsector only where a hand-kept name or a fund's own name gives one.
+const subs = local
+  ? Object.fromEntries(Object.entries(local.sectors ?? {}).filter(([, v]) => v.subsector).map(([t, v]) => [t, v.subsector]))
+  : unpackSubsectors(sectorState);
+const placeOf = createPlacer(sectorEnv?.data ?? {}, { names: sectorState?.names ?? null, subs });
 // Rows kept from the last build were placed with the list that was current
-// then. A new list means every fund is placed again.
-const sectorListAt = weekly?.builtAt ?? `monthly:${mf.buildId}`;
-log(`sector list: ${weekly ? `weekly, built ${weekly.builtAt}` : "monthly"} · ${Object.keys(sectorEnv?.data ?? {}).length} tickers`);
+// then. A new list means every fund is placed again — and so does the same
+// list read without its memory file (names and subsectors), which a run can
+// miss for a moment: rows placed without it must not outlive its return.
+const sectorListAt = `${weekly?.builtAt ?? `monthly:${mf.buildId}`}${subs && sectorState?.names ? "" : "|without-memory"}`;
+log(`sector list: ${weekly ? `weekly, built ${weekly.builtAt}` : "monthly"} · ${Object.keys(sectorEnv?.data ?? {}).length} tickers` +
+    ` · ${subs ? `${Object.keys(subs).length} with a subsector` : "no subsectors"}`);
 
 const periods = (mf.periods ?? [])
   .filter((p) => (p.funds ?? 0) > 0)
@@ -128,10 +138,11 @@ for (const period of periods) {
     get(`${moversSeenPath(period)}?${FRESH}`).catch(() => null),
   ]);
   // A different rule or threshold means last run's rows answer a different
-  // question. Start again rather than mix them.
+  // question. Start again rather than mix them. That includes the subsector
+  // rules: a kept row's subsector is a position in the list it was built with.
   const reusable = prevSeen?.version === MOVERS_VERSION
     && prevSeen?.maxPositions === MOVERS_MAX_POSITIONS && prevSeen?.minPositions === MOVERS_MIN_POSITIONS
-    && prevSeen?.sectorListAt === sectorListAt;
+    && prevSeen?.sectorListAt === sectorListAt && prevSeen?.subsectorsKey === SUBSECTORS_KEY;
   const seenBefore = reusable ? prevSeen.keys ?? {} : {};
   const rowsBefore = new Map(reusable ? (prev?.funds ?? []).map((f) => [f[0], f]) : []);
 
@@ -167,7 +178,7 @@ for (const period of periods) {
       seen[cik] = [key, null];
       return;
     }
-    const r = fundMoves(env, { sectorOf });
+    const r = fundMoves(env, { placeOf });
     seen[cik] = [key, r.positions ?? null];
     if (r.skip) {
       skips[r.skip] = (skips[r.skip] ?? 0) + 1;
@@ -195,6 +206,7 @@ for (const period of periods) {
     const top = [...left.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25);
     log(`  largest still unplaced: ${top.map(([t, v]) => `${t} $${(v / 1e6).toFixed(0)}M`).join(", ")}`);
   }
+  logSubsectors(period, funds);
   log(`${period}: ${funds.length} concentrated managers, ${moves} trades · ` +
       `read ${tally.read}, reused ${tally.reused}, not filed ${tally.notFiled}, failed ${tally.failed} · ` +
       `left out ${JSON.stringify(skips)}`);
@@ -206,8 +218,11 @@ for (const period of periods) {
     // so an unchanged rebuild is byte-identical and is not re-uploaded.
     asOf: mf.generatedAt ?? null,
     fields: ["cik", "name", "valueLongUsd", "positionsLong", "moves"],
-    moveFields: ["ticker", "action", "sharesChangePct", "tradedUsd", "weightBefore", "weightAfter", "sector"],
+    moveFields: ["ticker", "action", "sharesChangePct", "tradedUsd", "weightBefore", "weightAfter", "sector", "subsector"],
     sectors: SECTORS,
+    // What each move's subsector number means, so the file reads back
+    // correctly whatever the list in the code later becomes.
+    subsectors: SUBSECTORS,
     funds,
     // Ticker -> company name, for the tab's most-sold / most-bought lists.
     names: pickNames(
@@ -218,7 +233,8 @@ for (const period of periods) {
   };
   const seenBody = {
     v: 1, kind: "period-movers-seen", period, version: MOVERS_VERSION,
-    maxPositions: MOVERS_MAX_POSITIONS, minPositions: MOVERS_MIN_POSITIONS, sectorListAt, keys: seen,
+    maxPositions: MOVERS_MAX_POSITIONS, minPositions: MOVERS_MIN_POSITIONS, sectorListAt,
+    subsectorsKey: SUBSECTORS_KEY, keys: seen,
   };
 
   for (const [path, obj] of [[moversPath(period), body], [moversSeenPath(period), seenBody]]) {
@@ -247,6 +263,39 @@ for (const period of periods) {
     await r2.put(moversPath(period), Buffer.from(JSON.stringify(body)));
     await r2.put(moversSeenPath(period), Buffer.from(JSON.stringify(seenBody)));
     log(`${period}: published`);
+  }
+}
+
+/**
+ * Each sector's money split by subsector, and how much of it is left in the
+ * sector's catch-all ("Other health care") — the number that says whether the
+ * split is doing its job.
+ */
+function logSubsectors(period, funds) {
+  const bySector = new Map();
+  for (const f of funds) {
+    for (const m of f[4]) {
+      const sector = SECTORS[m[6]] ?? "Unclassified";
+      const sub = SUBSECTORS[m[7]] ?? otherSubsector(sector);
+      let s = bySector.get(sector);
+      if (!s) bySector.set(sector, (s = { total: 0, subs: new Map() }));
+      let e = s.subs.get(sub);
+      if (!e) s.subs.set(sub, (e = { v: 0, t: new Map() }));
+      const v = Math.abs(m[3]);
+      s.total += v;
+      e.v += v;
+      e.t.set(m[0], (e.t.get(m[0]) ?? 0) + v);
+    }
+  }
+  const pct = (a, b) => `${(100 * a / Math.max(1, b)).toFixed(1)}%`;
+  log(`${period}: money traded by subsector, with the share left in each sector's catch-all`);
+  for (const [sector, s] of [...bySector].sort((a, b) => b[1].total - a[1].total)) {
+    const other = s.subs.get(otherSubsector(sector))?.v ?? 0;
+    log(`  ${sector} $${(s.total / 1e9).toFixed(2)}B · ${otherSubsector(sector)} ${pct(other, s.total)}`);
+    for (const [sub, e] of [...s.subs].sort((a, b) => b[1].v - a[1].v)) {
+      const top = [...e.t].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([t]) => t).join(" ");
+      log(`    ${pct(e.v, s.total).padStart(6)}  ${sub} — ${top}`);
+    }
   }
 }
 

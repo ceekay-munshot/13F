@@ -2,12 +2,12 @@
 //
 // Which focused managers bought or sold each sector this quarter, and who.
 //
-// Two panels and nothing else: sectors on the left, and on the right either the
-// managers behind the selected one or the stocks they sold and bought most.
-// "Focused" is the only setting, because it is the only one the question
-// depends on.
+// Two panels and nothing else: sectors on the left, each opening on its
+// subsectors (shared/subsectors.mjs), and on the right either the managers
+// behind the selected row or the stocks they sold and bought most. "Focused"
+// is the only setting, because it is the only one the question depends on.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { WidgetCard, ViewToggle } from "../components/WidgetCard";
 import { EmptyState, ErrorState, TableSkeleton } from "../components/states";
 import { t, ACTION_COLORS } from "../theme";
@@ -41,61 +41,90 @@ interface Manager {
 }
 
 interface SectorRow {
+  /** The row's name: a sector, the theme, or a subsector. */
   sector: string;
+  /** A subsector's sector; null on a sector or the theme. */
+  parent: string | null;
   bought: number;
   sold: number;
   net: number;
   sellers: number;
   buyers: number;
   managers: Manager[];
+  /** The sector split by subsector — empty where a split would say nothing. */
+  subs: SectorRow[];
+}
+
+type Fund = Movers["funds"][number];
+type Groups = Map<string, Map<string, Manager>>;
+
+/** One trade into one group's manager. */
+function addTo(groups: Groups, group: string, fund: Fund, m: MoverMove) {
+  const [cik, name, value, positions] = fund;
+  let byFund = groups.get(group);
+  if (!byFund) groups.set(group, (byFund = new Map()));
+  let mgr = byFund.get(cik);
+  if (!mgr) {
+    mgr = { cik, name, value, positions, bought: 0, sold: 0, net: 0, weight: 0, moves: [] };
+    byFund.set(cik, mgr);
+  }
+  if (m[3] > 0) mgr.bought += m[3];
+  else mgr.sold -= m[3];
+  mgr.net += m[3];
+  mgr.weight += fundShare(m);
+  mgr.moves.push(m);
+}
+
+function toRow(sector: string, parent: string | null, group: Map<string, Manager>): SectorRow {
+  const managers = [...group.values()];
+  for (const mgr of managers) mgr.moves.sort((a, b) => Math.abs(b[3]) - Math.abs(a[3]));
+  return {
+    sector,
+    parent,
+    managers,
+    bought: managers.reduce((a, x) => a + x.bought, 0),
+    sold: managers.reduce((a, x) => a + x.sold, 0),
+    net: managers.reduce((a, x) => a + x.net, 0),
+    sellers: managers.filter((x) => x.net < 0).length,
+    buyers: managers.filter((x) => x.net > 0).length,
+    subs: [],
+  };
 }
 
 /**
- * Every focused manager's trades, grouped by sector, for one stock cap.
+ * Every focused manager's trades, grouped by sector and inside each sector by
+ * subsector, for one stock cap.
  *
  * Plus one theme row, AI & semis, which a trade joins as well as its own
  * sector: the SEC's codes spread that trade over four sectors (see
  * shared/themes.mjs), so no sector row could answer "who cut AI and chips?".
  */
-function bySector(movers: Movers, sectorMap: Record<string, string>, cap: number): SectorRow[] {
-  const sectors = new Map<string, Map<string, Manager>>();
-  const add = (group: string, fund: Movers["funds"][number], m: MoverMove) => {
-    const [cik, name, value, positions] = fund;
-    let byFund = sectors.get(group);
-    if (!byFund) sectors.set(group, (byFund = new Map()));
-    let mgr = byFund.get(cik);
-    if (!mgr) {
-      mgr = { cik, name, value, positions, bought: 0, sold: 0, net: 0, weight: 0, moves: [] };
-      byFund.set(cik, mgr);
-    }
-    if (m[3] > 0) mgr.bought += m[3];
-    else mgr.sold -= m[3];
-    mgr.net += m[3];
-    mgr.weight += fundShare(m);
-    mgr.moves.push(m);
-  };
+function bySector(movers: Movers, sectorMap: Record<string, string>, cap: number, sort: SectorSort): SectorRow[] {
+  const sectors: Groups = new Map();
+  const subsectors = new Map<string, Groups>();
   for (const fund of movers.funds) {
     if (fund[3] > cap) continue;
     for (const m of fund[4]) {
       // Placed by the pipeline, which had the filed name and share class to go
       // on; the ticker alone is the fallback for a file built before that.
       const sector = (m[6] != null && SECTORS[m[6]]) || sectorMap[m[0].toUpperCase()] || "Unclassified";
-      add(sector, fund, m);
-      if (inAiTheme(m[0], sector)) add(AI_THEME, fund, m);
+      addTo(sectors, sector, fund, m);
+      if (inAiTheme(m[0], sector)) addTo(sectors, AI_THEME, fund, m);
+      // The file names its own subsectors, so its numbers always read right.
+      const sub = m[7] != null ? movers.subsectors?.[m[7]] : undefined;
+      if (sub) {
+        let groups = subsectors.get(sector);
+        if (!groups) subsectors.set(sector, (groups = new Map()));
+        addTo(groups, sub, fund, m);
+      }
     }
   }
   return [...sectors.entries()].map(([sector, group]) => {
-    const managers = [...group.values()];
-    for (const mgr of managers) mgr.moves.sort((a, b) => Math.abs(b[3]) - Math.abs(a[3]));
-    return {
-      sector,
-      managers,
-      bought: managers.reduce((a, x) => a + x.bought, 0),
-      sold: managers.reduce((a, x) => a + x.sold, 0),
-      net: managers.reduce((a, x) => a + x.net, 0),
-      sellers: managers.filter((x) => x.net < 0).length,
-      buyers: managers.filter((x) => x.net > 0).length,
-    };
+    const row = toRow(sector, null, group);
+    const subs = [...(subsectors.get(sector) ?? [])].map(([sub, g]) => toRow(sub, sector, g));
+    // A sector whose trades all sit in one subsector has nothing to open.
+    if (subs.length > 1) row.subs = subs.sort(SORTERS[sort]);
+    return row;
   });
 }
 
@@ -167,7 +196,10 @@ export function SectorsView({
   const [err, setErr] = useState<string | null>(null);
   const [cap, setCap] = useState<Cap>("40");
   const [sort, setSort] = useState<SectorSort>("net");
-  const [picked, setPicked] = useState<string | null>(null);
+  /** The selected row: a sector (or the theme), and a subsector of it if one is picked. */
+  const [picked, setPicked] = useState<{ sector: string; sub: string | null } | null>(null);
+  /** The sector whose subsectors are showing. */
+  const [open, setOpen] = useState<string | null>(null);
   const [pane, setPane] = useState<Pane>("Managers");
   const [side, setSide] = useState<Side>("Sellers");
   const [byWeight, setByWeight] = useState(false);
@@ -193,12 +225,25 @@ export function SectorsView({
   // "who cut AI and chips?" is the question it was built for.
   const rows = useMemo(() => {
     if (!movers || !sectorMap) return [];
-    const all = bySector(movers, sectorMap, Number(cap));
+    const all = bySector(movers, sectorMap, Number(cap), sort);
     const theme = all.filter((r) => r.sector === AI_THEME);
     return [...theme, ...all.filter((r) => r.sector !== AI_THEME).sort(SORTERS[sort])];
   }, [movers, sectorMap, cap, sort]);
-  const current = rows.find((r) => r.sector === picked) ?? rows[0] ?? null;
+  // A subsector that has no trades at a smaller cap falls back to its sector,
+  // not to the top of the list.
+  const pickedSector = rows.find((r) => r.sector === picked?.sector) ?? null;
+  const current = (picked?.sub && pickedSector?.subs.find((s) => s.sector === picked.sub)) || pickedSector || rows[0] || null;
+  const openRow = rows.find((r) => r.sector === open && r.subs.length) ?? null;
   const peak = Math.max(1, ...rows.map((r) => Math.abs(r.net)));
+
+  // A sector opens on its subsectors when picked, and closes when picked again.
+  // Picking a sector while one of its subsectors is selected goes back up to
+  // the sector and leaves it open.
+  const pickSector = (r: SectorRow) => {
+    setPicked({ sector: r.sector, sub: null });
+    setOpen(current === r && openRow === r ? null : r.subs.length ? r.sector : null);
+  };
+  const pickSub = (s: SectorRow) => setPicked({ sector: s.parent ?? s.sector, sub: s.sector });
 
   // Back to the top of the list whenever the list itself changes.
   useEffect(() => { setShown(PAGE); }, [current?.sector, side, query, cap, byWeight]);
@@ -331,41 +376,37 @@ export function SectorsView({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
-                  const on = r.sector === current?.sector;
+                {rows.flatMap((r) => {
                   const theme = r.sector === AI_THEME;
-                  return (
-                    // The whole row is the target for a pointer; the button in the
-                    // first cell is the same action for a keyboard or a screen
-                    // reader, which a clickable <tr> is invisible to.
-                    <tr
+                  const isOpen = openRow === r;
+                  const out = [
+                    <SectorTr
                       key={r.sector}
+                      row={r}
+                      on={r === current}
+                      peak={peak}
                       className={theme ? "sector-row theme-row" : "sector-row"}
-                      data-active={on}
-                      onClick={() => setPicked(r.sector)}
-                    >
-                      <td style={{ maxWidth: 220 }}>
-                        <button className="sector-pick" aria-pressed={on} onClick={() => setPicked(r.sector)}>
-                          {r.sector}
-                        </button>
-                        {theme && <span className="theme-note">Chips, chip tools, memory, AI infra</span>}
-                        <span
-                          className="net-bar"
-                          style={{
-                            transform: `scaleX(${Math.max(0.02, Math.abs(r.net) / peak)})`,
-                            background: r.net >= 0 ? ACTION_COLORS.ADDED : ACTION_COLORS.TRIMMED,
-                          }}
-                        />
-                      </td>
-                      <td>{usd(r.sold)}</td>
-                      <td>{usd(r.bought)}</td>
-                      <td style={{ fontWeight: 700, color: r.net > 0 ? "#059669" : r.net < 0 ? "#dc2626" : t.textMuted }}>
-                        {r.net > 0 ? "+" : ""}{usd(r.net)}
-                      </td>
-                      <td>{r.sellers}</td>
-                      <td>{r.buyers}</td>
-                    </tr>
-                  );
+                      expanded={r.subs.length ? isOpen : undefined}
+                      onPick={() => pickSector(r)}
+                      note={theme ? "Chips, chip tools, memory, AI infra" : undefined}
+                    />,
+                  ];
+                  if (isOpen) {
+                    r.subs.forEach((s, i) => out.push(
+                      <SectorTr
+                        key={`${r.sector}/${s.sector}`}
+                        row={s}
+                        on={s === current}
+                        peak={peak}
+                        className="sector-row sub-row"
+                        onPick={() => pickSub(s)}
+                        // A short cascade as the subsectors arrive, never long
+                        // enough to wait on.
+                        delay={Math.min(i, 8) * 18}
+                      />,
+                    ));
+                  }
+                  return out;
                 })}
               </tbody>
             </table>
@@ -377,7 +418,8 @@ export function SectorsView({
         title={current ? current.sector : "Managers"}
         subtitle={
           current
-            ? (pane === "Stocks"
+            ? (current.parent ? `${current.parent} · ` : "")
+              + (pane === "Stocks"
                 ? `${stocks.sold.length} stocks sold · ${stocks.bought.length} bought`
                 : `${managers.length} ${side === "Sellers" ? "sellers" : "buyers"}`)
               + (query.trim() ? ` · “${query.trim()}”` : "")
@@ -489,6 +531,61 @@ export function SectorsView({
         )}
       </WidgetCard>
     </div>
+  );
+}
+
+/**
+ * One row of the sector table: a sector, the theme, or (indented, under its
+ * open sector) a subsector. The same columns for all three.
+ */
+function SectorTr({
+  row: r, on, peak, className, expanded, onPick, note, delay,
+}: {
+  row: SectorRow;
+  on: boolean;
+  peak: number;
+  className: string;
+  /** Set on a sector that has subsectors: whether they are showing. */
+  expanded?: boolean;
+  onPick: () => void;
+  note?: string;
+  delay?: number;
+}) {
+  const style = delay ? ({ "--row-delay": `${delay}ms` } as CSSProperties) : undefined;
+  return (
+    // The whole row is the target for a pointer; the button in the first cell
+    // is the same action for a keyboard or a screen reader, which a clickable
+    // <tr> is invisible to.
+    <tr className={className} data-active={on} onClick={onPick} style={style}>
+      <td style={{ maxWidth: 220 }}>
+        <span className="sector-label">
+          {!r.parent && <span className="sector-caret" data-open={expanded} aria-hidden="true" />}
+          <button
+            className="sector-pick"
+            aria-pressed={on}
+            aria-expanded={expanded}
+            onClick={(e) => { e.stopPropagation(); onPick(); }}
+          >
+            {r.sector}
+          </button>
+        </span>
+        {note && <span className="theme-note">{note}</span>}
+        <span
+          className="net-bar"
+          style={{
+            transform: `scaleX(${Math.max(0.02, Math.abs(r.net) / peak)})`,
+            background: r.net >= 0 ? ACTION_COLORS.ADDED : ACTION_COLORS.TRIMMED,
+          }}
+        />
+      </td>
+      <td>{usd(r.sold)}</td>
+      <td>{usd(r.bought)}</td>
+      <td className="net-cell" style={{ color: r.net > 0 ? "#059669" : r.net < 0 ? "#dc2626" : t.textMuted }}>
+        {r.net > 0 ? "+" : ""}{usd(r.net)}
+      </td>
+      <td>{r.sellers}</td>
+      <td>{r.buyers}</td>
+    </tr>
   );
 }
 

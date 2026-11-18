@@ -55,7 +55,9 @@ import { dirname } from "node:path";
 import { SecFetcher, SEC_URLS, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry } from "./_unzip.mjs";
 import { sectorForSic } from "../shared/sic.mjs";
-import { assembleSectorMap, looksLikeFund, normName, SECTOR_LIST_VERSION } from "../shared/sectors.mjs";
+import { looksLikeFund, normName, SECTOR_LIST_VERSION } from "../shared/sectors.mjs";
+import { assembleSectorMap, packSubsectors } from "../shared/sector-list.mjs";
+import { SUBSECTORS_KEY } from "../shared/subsectors.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { createR2 } from "./_r2.mjs";
 
@@ -115,8 +117,10 @@ function recentDataSetQuarters(n) {
 
 await runJob(async () => {
   const previous = await readPrevious(PREVIOUS);
-  // A list built under older rules is rebuilt now, not after its week is up.
-  if (previous?.builtAt && FRESH_DAYS != null && previous.listVersion === SECTOR_LIST_VERSION) {
+  // A list built under older rules is rebuilt now, not after its week is up —
+  // older subsector rules included.
+  if (previous?.builtAt && FRESH_DAYS != null && previous.listVersion === SECTOR_LIST_VERSION
+      && previous.subsectorsKey === SUBSECTORS_KEY) {
     const ageDays = (Date.now() - Date.parse(previous.builtAt)) / 86_400_000;
     if (ageDays < FRESH_DAYS) {
       log(`sector list built ${ageDays.toFixed(1)} days ago — fresh, nothing to do.`);
@@ -256,7 +260,11 @@ await runJob(async () => {
   const resolved = Object.keys(sectors).length;
 
   const bySector = {};
-  for (const v of Object.values(sectors)) bySector[v.sector] = (bySector[v.sector] ?? 0) + 1;
+  const bySubsector = {};
+  for (const v of Object.values(sectors)) {
+    bySector[v.sector] = (bySector[v.sector] ?? 0) + 1;
+    bySubsector[v.subsector] = (bySubsector[v.subsector] ?? 0) + 1;
+  }
 
   const builtAt = new Date().toISOString();
   const sicByCik = Object.fromEntries([...asked.entries()].map(([k, v]) => [k, v]));
@@ -286,14 +294,21 @@ await runJob(async () => {
       v: 1, kind: "sector-map", builtAt, listVersion: SECTOR_LIST_VERSION,
       data: Object.fromEntries(Object.entries(sectors).map(([t, v]) => [t, v.sector])),
     })));
-    // The pipeline's memory: names for holdings with no ticker, and every
-    // company already asked about.
-    await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({ v: 1, builtAt, listVersion: SECTOR_LIST_VERSION, names, sicByCik })));
+    // The pipeline's memory: names for holdings with no ticker, every company
+    // already asked about, and each ticker's subsector. The subsectors live
+    // here rather than in the list above because only the pipeline needs them
+    // — every trade it writes carries its own — so visitors never download them.
+    await r2.put("movers/sectors.state.json", Buffer.from(JSON.stringify({
+      v: 2, builtAt, listVersion: SECTOR_LIST_VERSION, subsectorsKey: SUBSECTORS_KEY, names, sicByCik,
+      ...packSubsectors(sectors),
+    })));
     log("published movers/sectors.json and movers/sectors.state.json");
   }
 
   log(`\n${"=".repeat(60)}`);
   log(`${resolved} tickers classified from ${sets} data set(s), ${sec.requestCount} SEC requests`);
   log(Object.entries(bySector).sort((a, b) => b[1] - a[1]).map(([s, n]) => `  ${String(n).padStart(5)}  ${s}`).join("\n"));
+  log("by subsector:");
+  log(Object.entries(bySubsector).sort((a, b) => b[1] - a[1]).map(([s, n]) => `  ${String(n).padStart(5)}  ${s}`).join("\n"));
   log(`written to ${OUT}`);
 });

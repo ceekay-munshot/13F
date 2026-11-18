@@ -14,6 +14,7 @@
 
 import { decodeHoldings } from "./artifacts.mjs";
 import { SECTORS } from "./sic.mjs";
+import { SUBSECTORS, inSector, otherSubsector } from "./subsectors.mjs";
 
 /** "Concentrated" means this many long stock positions or fewer. */
 export const MOVERS_MAX_POSITIONS = 40;
@@ -55,7 +56,7 @@ export const MOVERS_MAX_SINGLE_WEIGHT = 50;
  * rows for any fund whose data has not changed, so without this a change to
  * the rules would only reach funds that happened to file again.
  */
-export const MOVERS_VERSION = 4; // 2: every move carries its sector. 3: preferreds and abbreviated names placed. 4: company names
+export const MOVERS_VERSION = 5; // 2: every move carries its sector. 3: preferreds and abbreviated names placed. 4: company names. 5: every move carries its subsector
 
 export const moversPath = (period) => `movers/${period}.json`;
 /** Which funds the last build looked at, and under which build key. */
@@ -82,14 +83,19 @@ const round = (n, dp) => (n == null || !Number.isFinite(n) ? null : Number(n.toF
  *   - no comparable prior quarter, or changes withheld (a structural event);
  *   - a uniform cut across every holding, which is money leaving the fund.
  *
- * Each move is [ticker, code, sharesChangePct, tradedUsd, weightBefore, weightAfter, sector],
+ * Each move is [ticker, code, sharesChangePct, tradedUsd, weightBefore, weightAfter, sector, subsector],
  * where sector is a position in SECTORS (shared/sic.mjs) — a fixed list, so a
- * row kept from an earlier build still means the same thing. It is decided
- * here, with the filed name and share class to hand, because the dashboard
- * only sees the ticker and could not place a fund or a holding with no ticker.
+ * row kept from an earlier build still means the same thing — and subsector a
+ * position in SUBSECTORS (shared/subsectors.mjs), always one of that sector's.
+ * The file carries the subsector list beside the rows. Both are decided here,
+ * with the filed name and share class to hand, because the dashboard only sees
+ * the ticker and could not place a fund or a holding with no ticker.
+ *
+ * `placeOf` (createPlacer) answers both; `sectorOf` (createSectorLookup) only
+ * the sector, which then gets its catch-all subsector.
  */
 export function fundMoves(env, {
-  maxPositions = MOVERS_MAX_POSITIONS, minPositions = MOVERS_MIN_POSITIONS, sectorOf = null,
+  maxPositions = MOVERS_MAX_POSITIONS, minPositions = MOVERS_MIN_POSITIONS, sectorOf = null, placeOf = null,
 } = {}) {
   const meta = env?.meta ?? {};
   if (COMPANY_FILERS.has(env?.cik)) return { skip: "company", positions: meta.positions_long ?? null };
@@ -112,9 +118,14 @@ export function fundMoves(env, {
   for (const e of env.exits ?? []) if (!e.type) top = Math.max(top, e.weightPrior ?? 0);
   if (top > MOVERS_MAX_SINGLE_WEIGHT) return { skip: "one-stock-book", positions };
 
-  const sectorIndex = (h) => {
-    const i = sectorOf ? SECTORS.indexOf(sectorOf({ ticker: h.ticker, name: h.name, cls: h.cls })) : -1;
-    return i >= 0 ? i : SECTORS.indexOf("Unclassified");
+  /** -> [sector, subsector], as positions in SECTORS and SUBSECTORS. */
+  const placeIndex = (h) => {
+    const row = { ticker: h.ticker, name: h.name, cls: h.cls };
+    const p = placeOf ? placeOf(row) : sectorOf ? { sector: sectorOf(row), subsector: null } : null;
+    const i = p ? SECTORS.indexOf(p.sector) : -1;
+    const sector = i >= 0 ? SECTORS[i] : "Unclassified";
+    const sub = inSector(p?.subsector, sector) ? p.subsector : otherSubsector(sector);
+    return [SECTORS.indexOf(sector), SUBSECTORS.indexOf(sub)];
   };
 
   const moves = [];
@@ -136,7 +147,7 @@ export function fundMoves(env, {
     moves.push([
       label(h), code,
       code === "N" ? null : round(h.dSharesPct, 1),
-      Math.round(traded), round(before, 2), round(h.weight ?? 0, 2), sectorIndex(h),
+      Math.round(traded), round(before, 2), round(h.weight ?? 0, 2), ...placeIndex(h),
     ]);
   }
 
@@ -152,7 +163,7 @@ export function fundMoves(env, {
       if (e.weightPrior != null && (prev[4] == null || e.weightPrior < prev[4])) prev[4] = round(e.weightPrior, 2);
       continue;
     }
-    const m = [label(e), "X", -100, -Math.round(e.valuePrior ?? 0), round(e.weightPrior, 2), 0, sectorIndex(e)];
+    const m = [label(e), "X", -100, -Math.round(e.valuePrior ?? 0), round(e.weightPrior, 2), 0, ...placeIndex(e)];
     seen.set(k, m);
     moves.push(m);
     named(e);
