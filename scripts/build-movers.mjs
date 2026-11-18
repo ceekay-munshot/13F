@@ -23,7 +23,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fundMoves, moversPath, moversSeenPath, MOVERS_MAX_POSITIONS, MOVERS_MIN_POSITIONS, MOVERS_VERSION } from "../shared/movers.mjs";
+import { fundMoves, pickNames, moversPath, moversSeenPath, MOVERS_MAX_POSITIONS, MOVERS_MIN_POSITIONS, MOVERS_VERSION } from "../shared/movers.mjs";
 import { CACHE_CONTROL } from "../shared/artifacts.mjs";
 import { createSectorLookup } from "../shared/sectors.mjs";
 import { SECTORS } from "../shared/sic.mjs";
@@ -137,6 +137,8 @@ for (const period of periods) {
 
   const seen = {};
   const rows = new Map();
+  // Ticker -> filed name -> how many funds filed it that way (funds read this run).
+  const votes = new Map();
   const tally = { reused: 0, read: 0, notFiled: 0, failed: 0, included: 0 };
   const skips = {};
 
@@ -172,6 +174,11 @@ for (const period of periods) {
       return;
     }
     rows.set(cik, [cik, names.get(cik), Math.round(r.value), r.positions, r.moves]);
+    for (const [ticker, filed] of Object.entries(r.names ?? {})) {
+      let v = votes.get(ticker);
+      if (!v) votes.set(ticker, (v = new Map()));
+      v.set(filed, (v.get(filed) ?? 0) + 1);
+    }
   }, (done, total) => log(`  ${period}: ${done}/${total}`));
 
   const funds = [...rows.values()].sort((a, b) => b[2] - a[2]);
@@ -202,6 +209,12 @@ for (const period of periods) {
     moveFields: ["ticker", "action", "sharesChangePct", "tradedUsd", "weightBefore", "weightAfter", "sector"],
     sectors: SECTORS,
     funds,
+    // Ticker -> company name, for the tab's most-sold / most-bought lists.
+    names: pickNames(
+      funds.flatMap((f) => f[4].map((m) => m[0])),
+      votes,
+      reusable ? prev?.names ?? {} : {},
+    ),
   };
   const seenBody = {
     v: 1, kind: "period-movers-seen", period, version: MOVERS_VERSION,

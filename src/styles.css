@@ -435,9 +435,11 @@
   .th-sort:hover { color: #111827; }
 }
 
+/* Grows to fill the toolbar row up to 320px, leaving room beside it for the
+ * Sellers / Buyers switch rather than pushing it onto a line of its own. */
 .sectors-search {
   font-size: 12px; font-family: inherit; padding: 6px 10px; border-radius: 8px;
-  border: 1px solid rgba(229, 231, 235, 0.8); width: 100%; max-width: 320px;
+  border: 1px solid rgba(229, 231, 235, 0.8); flex: 1 1 200px; min-width: 0; max-width: 320px;
   color: #111827; background: #fff; outline: none;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
@@ -459,6 +461,25 @@
   background: #f9fafb; border: 1px solid #f0f1f3;
 }
 .move-chip b { color: #111827; font-weight: 600; }
+
+/* Stocks view: "Most sold" | "Most bought", side by side (.split-2). The stock
+ * cell takes the room left by the two number columns. The company name gets a
+ * line of its own under the ticker, as the theme row's note does: sharing the
+ * ticker's line on a laptop-width card left it three letters ("NVI…"). */
+.stock-list-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 10px 10px 4px;
+}
+.stock-cell { width: 100%; max-width: 0; }
+.stock-pick { display: block; width: 100%; }
+.stock-pick b { color: #111827; font-weight: 700; }
+.stock-name {
+  display: block; font-size: 10.5px; font-weight: 400; color: #9ca3af; margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (hover: hover) and (pointer: fine) {
+  .sector-row:hover .stock-pick b { color: #4338ca; }
+}
 
 .show-more {
   border: 1px solid #e5e7eb; background: #fff; color: #374151; cursor: pointer;

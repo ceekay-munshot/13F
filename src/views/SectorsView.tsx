@@ -2,9 +2,10 @@
 //
 // Which focused managers bought or sold each sector this quarter, and who.
 //
-// Two panels and nothing else: sectors on the left, the managers behind the
-// selected one on the right. "Focused" is the only setting, because it is the
-// only one the question depends on.
+// Two panels and nothing else: sectors on the left, and on the right either the
+// managers behind the selected one or the stocks they sold and bought most.
+// "Focused" is the only setting, because it is the only one the question
+// depends on.
 
 import { useEffect, useMemo, useState } from "react";
 import { WidgetCard, ViewToggle } from "../components/WidgetCard";
@@ -17,6 +18,8 @@ import { AI_THEME, inAiTheme } from "../../shared/themes.mjs";
 
 const CAPS = ["20", "30", "40"] as const;
 type Cap = (typeof CAPS)[number];
+const PANES = ["Managers", "Stocks"] as const;
+type Pane = (typeof PANES)[number];
 type Side = "Sellers" | "Buyers";
 type SectorSort = "sold" | "bought" | "net" | "sellers" | "buyers";
 
@@ -96,6 +99,38 @@ function bySector(movers: Movers, sectorMap: Record<string, string>, cap: number
   });
 }
 
+interface StockRow {
+  ticker: string;
+  sold: number;
+  bought: number;
+  sellers: number;
+  buyers: number;
+}
+
+/**
+ * The same trades added up by stock: how much the sector's focused managers
+ * sold and bought of each, and how many of them did. Every focused manager in
+ * the sector, not a watchlist, which is the one thing Consensus cannot show.
+ */
+function byStock(managers: Manager[]): StockRow[] {
+  const stocks = new Map<string, StockRow & { lastSeller?: string; lastBuyer?: string }>();
+  for (const mgr of managers) {
+    for (const m of mgr.moves) {
+      let s = stocks.get(m[0]);
+      if (!s) stocks.set(m[0], (s = { ticker: m[0], sold: 0, bought: 0, sellers: 0, buyers: 0 }));
+      // A manager counts once per stock, even with two share classes of it.
+      if (m[3] > 0) {
+        s.bought += m[3];
+        if (s.lastBuyer !== mgr.cik) { s.buyers++; s.lastBuyer = mgr.cik; }
+      } else if (m[3] < 0) {
+        s.sold -= m[3];
+        if (s.lastSeller !== mgr.cik) { s.sellers++; s.lastSeller = mgr.cik; }
+      }
+    }
+  }
+  return [...stocks.values()];
+}
+
 /** One trade as a share of the fund — see Manager.weight. */
 function fundShare([, code, pct, , before, after]: MoverMove): number {
   if (code === "N") return after;
@@ -115,6 +150,9 @@ const SORTERS: Record<SectorSort, (a: SectorRow, b: SectorRow) => number> = {
 };
 
 const PAGE = 60;
+const STOCK_PAGE = 25;
+/** A file built before company names were added: tickers alone. */
+const NO_NAMES: Record<string, string> = {};
 
 export function SectorsView({
   period, mf, refreshing, onFund,
@@ -130,10 +168,12 @@ export function SectorsView({
   const [cap, setCap] = useState<Cap>("40");
   const [sort, setSort] = useState<SectorSort>("net");
   const [picked, setPicked] = useState<string | null>(null);
+  const [pane, setPane] = useState<Pane>("Managers");
   const [side, setSide] = useState<Side>("Sellers");
   const [byWeight, setByWeight] = useState(false);
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(PAGE);
+  const [stockShown, setStockShown] = useState(STOCK_PAGE);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,6 +202,16 @@ export function SectorsView({
 
   // Back to the top of the list whenever the list itself changes.
   useEffect(() => { setShown(PAGE); }, [current?.sector, side, query, cap, byWeight]);
+  useEffect(() => { setStockShown(STOCK_PAGE); }, [current?.sector, query, cap]);
+
+  // What the filter box matches, for both lists. A ticker the sector actually
+  // has is matched exactly — clicking MU must not bring in MUFG — and anything
+  // else by how it starts, so "NV" finds NVDA and NVMI.
+  const tickerHit = useMemo(() => {
+    const q = query.trim().toUpperCase();
+    const exact = q.length < 2 || !!current?.managers.some((m) => m.moves.some((x) => x[0].toUpperCase() === q));
+    return (tk: string) => (exact ? tk.toUpperCase() === q : tk.toUpperCase().startsWith(q));
+  }, [current, query]);
 
   // A TICKER IN THE FILTER NARROWS THE NUMBERS, NOT JUST THE LIST.
   //
@@ -172,7 +222,6 @@ export function SectorsView({
     if (!current) return [];
     const q = query.trim().toUpperCase();
     const sellers = side === "Sellers";
-    const tickerHit = (tk: string) => (q.length < 2 ? tk.toUpperCase() === q : tk.toUpperCase().startsWith(q));
     const rows: Manager[] = [];
     for (const m of current.managers) {
       let row = m;
@@ -192,7 +241,29 @@ export function SectorsView({
         ? (sellers ? a.weight - b.weight : b.weight - a.weight)
         : (sellers ? a.net - b.net : b.net - a.net),
     );
-  }, [current, side, query, byWeight]);
+  }, [current, side, query, byWeight, tickerHit]);
+
+  // Both lists at once, never one behind a toggle: a stock sold by some focused
+  // managers and bought by others is the interesting case, and it only shows
+  // when the two lists sit side by side.
+  const names = movers?.names ?? NO_NAMES;
+  const stocks = useMemo(() => {
+    if (!current) return { sold: [], bought: [] };
+    const q = query.trim().toUpperCase();
+    const all = byStock(current.managers).filter((s) =>
+      !q || tickerHit(s.ticker) || (q.length >= 3 && (names[s.ticker] ?? "").toUpperCase().includes(q)));
+    return {
+      sold: all.filter((s) => s.sold > 0).sort((a, b) => b.sold - a.sold),
+      bought: all.filter((s) => s.bought > 0).sort((a, b) => b.bought - a.bought),
+    };
+  }, [current, query, tickerHit, names]);
+
+  // A stock in either list opens the managers who sold (or bought) it.
+  const pickStock = (ticker: string, s: Side) => {
+    setQuery(ticker);
+    setSide(s);
+    setPane("Managers");
+  };
 
   const loading = movers === undefined && !err;
   const cutLabel = `${movers?.minPositions ?? 5}–${cap} stocks`;
@@ -306,26 +377,59 @@ export function SectorsView({
         title={current ? current.sector : "Managers"}
         subtitle={
           current
-            ? `${managers.length} ${side === "Sellers" ? "sellers" : "buyers"}${query.trim() ? ` · “${query.trim()}”` : ""}`
+            ? (pane === "Stocks"
+                ? `${stocks.sold.length} stocks sold · ${stocks.bought.length} bought`
+                : `${managers.length} ${side === "Sellers" ? "sellers" : "buyers"}`)
+              + (query.trim() ? ` · “${query.trim()}”` : "")
             : undefined
         }
-        actions={
-          <ViewToggle options={["Sellers", "Buyers"] as const} value={side} onChange={setSide} />
-        }
+        actions={<ViewToggle options={PANES} value={pane} onChange={setPane} />}
         toolbar={
-          <input
-            className="sectors-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter by ticker or manager…"
-            aria-label="Filter by ticker or manager"
-          />
+          <>
+            <input
+              className="sectors-search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={pane === "Stocks" ? "Filter by ticker or company…" : "Filter by ticker or manager…"}
+              aria-label={pane === "Stocks" ? "Filter by ticker or company" : "Filter by ticker or manager"}
+            />
+            {pane === "Managers" && (
+              <span style={{ marginLeft: "auto" }}>
+                <ViewToggle options={["Sellers", "Buyers"] as const} value={side} onChange={setSide} />
+              </span>
+            )}
+          </>
         }
         refreshing={refreshing}
         bodyMinHeight={420}
       >
         {loading ? (
-          <TableSkeleton rows={10} cols={4} />
+          <TableSkeleton rows={10} cols={pane === "Stocks" ? 6 : 4} />
+        ) : pane === "Stocks" ? (
+          !stocks.sold.length && !stocks.bought.length ? (
+            <EmptyState icon="◫" message={query ? "No stock matches that" : "No trades here"} />
+          ) : (
+            <div className="sectors-scroll">
+              <div className="split-2">
+                <StockList
+                  label="Most sold" side="Sellers" color={ACTION_COLORS.TRIMMED}
+                  rows={stocks.sold} shown={stockShown} names={names} onPick={pickStock}
+                />
+                <div className="split-rule" style={{ background: t.border }} />
+                <StockList
+                  label="Most bought" side="Buyers" color={ACTION_COLORS.ADDED}
+                  rows={stocks.bought} shown={stockShown} names={names} onPick={pickStock}
+                />
+              </div>
+              {Math.max(stocks.sold.length, stocks.bought.length) > stockShown && (
+                <div style={{ padding: 12, textAlign: "center" }}>
+                  <button className="pressable show-more" onClick={() => setStockShown((n) => n + STOCK_PAGE * 2)}>
+                    Show more
+                  </button>
+                </div>
+              )}
+            </div>
+          )
         ) : !managers.length ? (
           <EmptyState
             icon="◫"
@@ -394,6 +498,76 @@ const CHIP: Record<MoverMove[1], { color: string; text: (m: MoverMove) => string
   N: { color: ACTION_COLORS.NEW, text: () => "new" },
   A: { color: ACTION_COLORS.ADDED, text: (m) => (m[2] == null ? "added" : `+${Math.round(m[2])}%`) },
 };
+
+/**
+ * One half of the Stocks view: the sector's stocks by money sold (or bought),
+ * with how many focused managers did it. A row opens those managers.
+ */
+function StockList({
+  label, side, color, rows, shown, names, onPick,
+}: {
+  label: string;
+  side: Side;
+  color: string;
+  rows: StockRow[];
+  shown: number;
+  names: Record<string, string>;
+  onPick: (ticker: string, side: Side) => void;
+}) {
+  const sold = side === "Sellers";
+  const amount = (s: StockRow) => (sold ? s.sold : s.bought);
+  const peak = Math.max(1, ...rows.slice(0, 1).map(amount));
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div className="stock-list-label" style={{ color }}>
+        {label} <span style={{ color: t.textHint, fontWeight: 600 }}>{rows.length}</span>
+      </div>
+      {!rows.length ? (
+        <div style={{ padding: "8px 14px 14px", fontSize: 12, color: t.textHint }}>
+          Nothing {sold ? "sold" : "bought"}
+        </div>
+      ) : (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Stock</th>
+              <th>{sold ? "Sold" : "Bought"}</th>
+              <th>{side}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, shown).map((s) => {
+              const name = names[s.ticker];
+              const pick = () => onPick(s.ticker, side);
+              return (
+                // As with the sector rows: the row for a pointer, the button for
+                // a keyboard or a screen reader.
+                <tr key={s.ticker} className="sector-row" onClick={pick}>
+                  <td className="stock-cell">
+                    <button
+                      className="sector-pick stock-pick"
+                      onClick={pick}
+                      title={`${name ? `${s.ticker} · ${name}` : s.ticker} — see who ${sold ? "sold" : "bought"} it`}
+                    >
+                      <b>{s.ticker}</b>
+                      {name && <span className="stock-name">{name}</span>}
+                    </button>
+                    <span
+                      className="net-bar"
+                      style={{ transform: `scaleX(${Math.max(0.02, amount(s) / peak)})`, background: color }}
+                    />
+                  </td>
+                  <td style={{ fontWeight: 700 }}>{usd(amount(s))}</td>
+                  <td style={{ color: t.textMuted }}>{sold ? s.sellers : s.buyers}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 function MoveChip({ move }: { move: MoverMove }) {
   const c = CHIP[move[1]];

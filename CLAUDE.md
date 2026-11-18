@@ -78,6 +78,17 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **19 Nov 2026 — the Sectors tab now shows which stocks were sold and bought
+  most.** The right-hand panel has a **Stocks | Managers** switch. Stocks
+  shows the selected sector's "Most sold" and "Most bought" side by side, for
+  every focused manager in it, not just your favourites as on Consensus. Each
+  line shows how much and how many managers. Clicking a stock opens the
+  managers who sold (or bought) it. For AI & semis in Q3: most sold NVDA
+  $3.26B by 154 managers, then Seagate, SanDisk and TSMC; most bought Intel
+  $3.86B, SK Hynix $3.47B, and NVDA again, $2.99B by 155. Company names come
+  from the filings; the Sectors job now saves one name per ticker. The
+  dashboard has opened on the Sectors tab since 18 Nov.
+
 - **17 Nov 2026 — the check for "a name that does not exist" now looks where
   the name is used, not just anywhere in the file.** This is the check that
   missed the monthly-rebuild mistake described in the next entry: a line used

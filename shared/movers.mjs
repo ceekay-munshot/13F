@@ -55,7 +55,7 @@ export const MOVERS_MAX_SINGLE_WEIGHT = 50;
  * rows for any fund whose data has not changed, so without this a change to
  * the rules would only reach funds that happened to file again.
  */
-export const MOVERS_VERSION = 3; // 2: every move carries its sector. 3: preferreds and abbreviated names placed
+export const MOVERS_VERSION = 4; // 2: every move carries its sector. 3: preferreds and abbreviated names placed. 4: company names
 
 export const moversPath = (period) => `movers/${period}.json`;
 /** Which funds the last build looked at, and under which build key. */
@@ -118,6 +118,9 @@ export function fundMoves(env, {
   };
 
   const moves = [];
+  // Ticker -> the company name as this fund filed it, for the tab's stock lists.
+  const names = {};
+  const named = (h) => { if (h.ticker && h.name && !(h.ticker in names)) names[h.ticker] = h.name; };
   for (const h of holdings) {
     if (h.type || h.unit !== "SH") continue; // long stock only
     const code = MOVE_CODE[h.action];
@@ -128,6 +131,7 @@ export function fundMoves(env, {
       ? h.value ?? 0
       : h.dShares != null && h.price != null ? h.dShares * h.price : null;
     if (traded == null) continue;
+    named(h);
     const before = code === "N" ? 0 : h.dWeightPp != null ? (h.weight ?? 0) - h.dWeightPp : null;
     moves.push([
       label(h), code,
@@ -151,9 +155,36 @@ export function fundMoves(env, {
     const m = [label(e), "X", -100, -Math.round(e.valuePrior ?? 0), round(e.weightPrior, 2), 0, sectorIndex(e)];
     seen.set(k, m);
     moves.push(m);
+    named(e);
   }
 
-  return { positions, value: meta.value_long_usd ?? 0, moves };
+  return { positions, value: meta.value_long_usd ?? 0, moves, names };
+}
+
+/**
+ * One company name per ticker traded, for the file's `names` table.
+ *
+ * Funds spell the same company differently ("SEAGATE TECHNOLOGY HLDNGS PL",
+ * "SEAGATE TECHNOLOGY HOLDINGS P"), so the spelling most of them filed wins.
+ * A name the last build already chose is kept, so a rebuild that re-reads a
+ * few funds does not reshuffle names, and an unchanged rebuild is byte-identical.
+ *
+ * @param {Iterable<string>} tickers every ticker in this build's moves
+ * @param {Map<string, Map<string, number>>} votes ticker -> filed name -> funds
+ * @param {Record<string, string>} previous the last build's table
+ * @returns {Record<string, string>} sorted by ticker
+ */
+export function pickNames(tickers, votes, previous = {}) {
+  const out = {};
+  for (const t of [...new Set(tickers)].sort()) {
+    let name = previous[t];
+    if (!name) {
+      const v = votes.get(t);
+      if (v) name = [...v.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))[0][0];
+    }
+    if (name && name !== t) out[t] = name;
+  }
+  return out;
 }
 
 /** The ticker where there is one; otherwise a short form of the filed name. */
