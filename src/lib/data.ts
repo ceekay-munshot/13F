@@ -736,6 +736,8 @@ export interface Movers {
   maxPositions: number;
   minPositions: number;
   funds: MoverFund[];
+  /** Ticker -> company name as most funds filed it; absent in files built before it was added. */
+  names?: Record<string, string>;
 }
 
 const moversMemo = new Map<string, Promise<Movers | null>>();

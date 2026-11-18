@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from "vitest";
 import { encodeHoldings } from "../shared/artifacts.mjs";
-import { fundMoves, MOVERS_MAX_POSITIONS } from "../shared/movers.mjs";
+import { fundMoves, pickNames, MOVERS_MAX_POSITIONS } from "../shared/movers.mjs";
 import { SECTORS } from "../shared/sic.mjs";
 
 const U = SECTORS.indexOf("Unclassified");
@@ -92,5 +92,41 @@ describe("fundMoves", () => {
     expect(fundMoves(fund({ meta: { priorState: "PRIOR_MISSING" } })).skip).toBe("no-comparison");
     expect(fundMoves(fund({ meta: { deltasSuppressed: true } })).skip).toBe("no-comparison");
     expect(fundMoves(fund({ meta: { structuralEvent: "PRO_RATA_REDUCTION" } })).skip).toBe("withdrawal");
+  });
+});
+
+describe("company names for the stock lists", () => {
+  it("keeps the filed name of every stock traded, sold out included", () => {
+    const r = fundMoves(fund({
+      rows: [
+        row({ ticker: "NVDA", name: "NVIDIA CORPORATION", action: "TRIMMED", dShares: -1, dSharesPct: -10, dWeightPp: -1 }),
+        row({ ticker: "HLD", name: "HELD ONLY INC", action: "HELD" }),
+      ],
+      exits: [
+        { ticker: "STX", name: "SEAGATE TECHNOLOGY HLDNGS PL", issuerId: "i5", type: "", unit: "SH", valuePrior: 9, weightPrior: 1 },
+        { ticker: null, name: "NO TICKER CO", issuerId: "i6", type: "", unit: "SH", valuePrior: 9, weightPrior: 1 },
+      ],
+    }));
+    // Only stocks that were traded, and only where there is a ticker to show it by.
+    expect(r.names).toEqual({ NVDA: "NVIDIA CORPORATION", STX: "SEAGATE TECHNOLOGY HLDNGS PL" });
+  });
+
+  it("takes the spelling most funds filed, and keeps last build's choice", () => {
+    const votes = new Map([
+      ["STX", new Map([["SEAGATE TECHNOLOGY HOLDINGS P", 1], ["SEAGATE TECHNOLOGY HLDNGS PL", 3]])],
+      ["MU", new Map([["MICRON TECHNOLOGY INC", 2]])],
+    ]);
+    expect(pickNames(["STX", "MU", "STX", "ZZZ"], votes)).toEqual({
+      MU: "MICRON TECHNOLOGY INC", STX: "SEAGATE TECHNOLOGY HLDNGS PL",
+    });
+    // A rebuild that re-reads a few funds does not reshuffle names already chosen,
+    // and a stock no longer traded drops out of the table.
+    expect(pickNames(["STX"], votes, { STX: "SEAGATE TECH", MU: "MICRON" })).toEqual({ STX: "SEAGATE TECH" });
+    // Keys come out sorted, so an unchanged rebuild writes the same bytes.
+    expect(Object.keys(pickNames(["MU", "STX"], votes))).toEqual(["MU", "STX"]);
+  });
+
+  it("does not repeat a label that is already the name", () => {
+    expect(pickNames(["SOME FUND LP"], new Map([["SOME FUND LP", new Map([["SOME FUND LP", 1]])]]))).toEqual({});
   });
 });
