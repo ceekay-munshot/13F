@@ -16,8 +16,8 @@ import { loadMovers, loadSectorMap, type Manifest, type Movers, type MoverMove }
 import { SECTORS } from "../../shared/sic.mjs";
 import { AI_THEME, inAiTheme } from "../../shared/themes.mjs";
 
+/** One-click stock caps. Any other number from the smallest to the largest can be typed. */
 const CAPS = ["20", "30", "40"] as const;
-type Cap = (typeof CAPS)[number];
 const PANES = ["Managers", "Stocks"] as const;
 type Pane = (typeof PANES)[number];
 type Side = "Sellers" | "Buyers";
@@ -194,7 +194,7 @@ export function SectorsView({
   const [movers, setMovers] = useState<Movers | null | undefined>(undefined);
   const [sectorMap, setSectorMap] = useState<Record<string, string> | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [cap, setCap] = useState<Cap>("40");
+  const [cap, setCap] = useState(40);
   const [sort, setSort] = useState<SectorSort>("net");
   /** The selected row: a sector (or the theme), and a subsector of it if one is picked. */
   const [picked, setPicked] = useState<{ sector: string; sub: string | null } | null>(null);
@@ -225,7 +225,7 @@ export function SectorsView({
   // "who cut AI and chips?" is the question it was built for.
   const rows = useMemo(() => {
     if (!movers || !sectorMap) return [];
-    const all = bySector(movers, sectorMap, Number(cap), sort);
+    const all = bySector(movers, sectorMap, cap, sort);
     const theme = all.filter((r) => r.sector === AI_THEME);
     return [...theme, ...all.filter((r) => r.sector !== AI_THEME).sort(SORTERS[sort])];
   }, [movers, sectorMap, cap, sort]);
@@ -311,15 +311,11 @@ export function SectorsView({
   };
 
   const loading = movers === undefined && !err;
-  const cutLabel = `${movers?.minPositions ?? 5}–${cap} stocks`;
+  const minCap = movers?.minPositions ?? 5;
+  const maxCap = movers?.maxPositions ?? 40;
+  const cutLabel = cap > minCap ? `${minCap}–${cap} stocks` : `${minCap} stocks`;
 
-  const capToggle = (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: t.textMuted }}>
-      Up to
-      <ViewToggle options={CAPS} value={cap} onChange={setCap} />
-      stocks
-    </span>
-  );
+  const capToggle = <CapPicker value={cap} min={minCap} max={maxCap} onChange={setCap} />;
 
   if (err) {
     return (
@@ -663,6 +659,71 @@ function StockList({
         </table>
       )}
     </div>
+  );
+}
+
+/**
+ * "Up to [20] [30] [40] [Other] stocks". The last segment is a box for any
+ * other cap. The tab follows it as you type, once the number is one the data
+ * covers, and it is highlighted like a selected button while it is in use.
+ */
+function CapPicker({ value, min, max, onChange }: {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (n: number) => void;
+}) {
+  const preset = CAPS.find((c) => Number(c) === value) ?? null;
+  const [text, setText] = useState(preset ? "" : String(value));
+  const apply = (n: number) => {
+    const v = Math.min(max, Math.max(min, n));
+    onChange(v);
+    return v;
+  };
+  // Leaving the box settles it: a number out of range is brought into range,
+  // 20, 30 or 40 lights its own button instead, and an empty box keeps the cap.
+  const settle = () => {
+    const n = parseInt(text, 10);
+    if (!Number.isFinite(n)) { setText(preset ? "" : String(value)); return; }
+    const v = apply(n);
+    setText(CAPS.some((c) => Number(c) === v) ? "" : String(v));
+  };
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: t.textMuted }}>
+      Up to
+      <ViewToggle
+        options={CAPS}
+        value={preset}
+        onChange={(c) => { setText(""); onChange(Number(c)); }}
+        trailing={
+          <input
+            className="cap-input"
+            data-active={!preset}
+            inputMode="numeric"
+            maxLength={2}
+            value={text}
+            placeholder="Other"
+            aria-label={`Up to how many stocks, ${min} to ${max}`}
+            title={`Type any number from ${min} to ${max}`}
+            onChange={(e) => {
+              const digits = e.target.value.replace(/\D/g, "").slice(0, 2);
+              setText(digits);
+              const n = parseInt(digits, 10);
+              if (n >= min && n <= max) onChange(n);
+            }}
+            onBlur={settle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                e.preventDefault();
+                setText(String(apply(value + (e.key === "ArrowUp" ? 1 : -1))));
+              }
+            }}
+          />
+        }
+      />
+      stocks
+    </span>
   );
 }
 

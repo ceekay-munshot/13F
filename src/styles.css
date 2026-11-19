@@ -524,7 +524,27 @@
   .show-more:hover { background: #f9fafb; }
 }
 
+/* "Up to 20 30 40 [Other] stocks": the box for a cap of your own is the fourth
+ * segment of the same switch, the same size as its buttons, so it reads as one
+ * more choice. Grey "Other" at rest; white with a shadow, like a selected
+ * button, once a number of your own is in use; a soft ring while typing. */
+.cap-input {
+  width: 42px; border: none; border-radius: 6px; padding: 3px 4px; margin: 0;
+  font: inherit; font-size: 11px; font-weight: 600; line-height: inherit; text-align: center;
+  color: #111827; background: transparent; outline: none; cursor: text;
+  font-variant-numeric: tabular-nums;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.cap-input::placeholder { color: #6b7280; opacity: 1; }
+.cap-input[data-active="true"] { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06); }
+.cap-input:focus { background: #fff; box-shadow: 0 0 0 2px #c7d2fe; }
+.cap-input:focus::placeholder { color: transparent; }
+@media (hover: hover) and (pointer: fine) {
+  .cap-input:not(:focus):not([data-active="true"]):hover::placeholder { color: #111827; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .cap-input { transition: none; }
   .net-bar, .sector-row td, .sector-caret, .sector-pick { transition: none; }
   .sector-row:active .sector-pick { transform: none; }
   .sub-row .sector-label { animation: none; }

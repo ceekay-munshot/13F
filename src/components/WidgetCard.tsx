@@ -161,12 +161,15 @@ export function WidgetCard({
  * everywhere it is used.
  */
 export function ViewToggle<T extends string>({
-  options, value, onChange, hints,
+  options, value, onChange, hints, trailing,
 }: {
   options: readonly T[];
-  value: T;
+  /** null when the value is not one of the options, so none is highlighted. */
+  value: T | null;
   onChange: (v: T) => void;
   hints?: Partial<Record<T, string>>;
+  /** A last segment that is not a button, such as a box to type a value of your own. */
+  trailing?: ReactNode;
 }) {
   return (
     <div style={{ display: "inline-flex", flexWrap: "wrap", maxWidth: "100%", background: "#f3f4f6", borderRadius: 8, padding: 2, gap: 2 }}>
@@ -192,6 +195,7 @@ export function ViewToggle<T extends string>({
         const hint = hints?.[opt];
         return hint ? <Hint key={opt} text={hint}>{button}</Hint> : <span key={opt} style={{ display: "inline-flex" }}>{button}</span>;
       })}
+      {trailing}
     </div>
   );
 }
