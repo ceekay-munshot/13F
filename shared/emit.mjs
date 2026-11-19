@@ -58,7 +58,10 @@ export function artifactRow(h, ch, { nameMismatch = false } = {}) {
     // Which column is wrong cannot be told from the filing, so neither is
     // chosen: the line shows the name exactly as filed and no ticker. Value,
     // shares and the issuer id stay — those are what was filed.
-    ticker: nameMismatch ? null : h.ticker ?? null,
+    //
+    // A line re-filed under a new code that has no ticker yet keeps the one it
+    // had last quarter (see pairRecoded in shared/filed-line.mjs).
+    ticker: nameMismatch ? null : h.ticker ?? ch?.ticker_prior ?? null,
     name: h.name_of_issuer,
     issuerId: h.issuerId,
     cls: h.title_of_class,

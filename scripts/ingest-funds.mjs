@@ -22,6 +22,7 @@ import {
   decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor,
 } from "./_sec-parse.mjs";
 import { foldFilings, PRIOR_STATE } from "../shared/fold.mjs";
+import { cleanSecurities } from "../shared/filed-line.mjs";
 import { fundQuarter, seriesEntry, filingRow, noticeEntry, mergeManagers, NAMES_MISALIGNED } from "../shared/emit.mjs";
 import {
   currentPeriod, priorPeriod, recentPeriods, filingDeadline, periodLabel,
@@ -143,7 +144,8 @@ const SECURITIES = (() => {
     log(`  (no ${path} — run scripts/build-securities.mjs for tickers)`);
     return {};
   }
-  return JSON.parse(readFileSync(path, "utf8")).securities ?? {};
+  // ZZZZ off every ticker, so one company is not two (see cleanTicker).
+  return cleanSecurities(JSON.parse(readFileSync(path, "utf8")).securities ?? {});
 })();
 
 let resolvedCount = 0;

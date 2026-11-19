@@ -35,6 +35,7 @@ import { SecFetcher, runJob } from "./_sec-fetch.mjs";
 import { listEntries, readEntry, entryLines } from "./_unzip.mjs";
 import { decideValueUnits, aggregateHoldings, summarizeHoldings, reconcileTotal, issuerIdFor, normalizeDate } from "./_sec-parse.mjs";
 import { PRIOR_STATE } from "../shared/fold.mjs";
+import { cleanSecurities } from "../shared/filed-line.mjs";
 import { foldQuarter } from "./_source-load.mjs";
 import { SERIES_FIELDS } from "../shared/series-fields.mjs";
 import { fundQuarter, seriesEntry, filingRow, noticeEntry, NAMES_MISALIGNED } from "../shared/emit.mjs";
@@ -119,7 +120,8 @@ const log = (m) => console.log(m);
 const SECURITIES = (() => {
   const p = args.securities || "data/securities.json";
   if (!existsSync(p)) return {};
-  return JSON.parse(readFileSync(p, "utf8")).securities ?? {};
+  // ZZZZ off every ticker, so one company is not two (see cleanTicker).
+  return cleanSecurities(JSON.parse(readFileSync(p, "utf8")).securities ?? {});
 })();
 
 /**

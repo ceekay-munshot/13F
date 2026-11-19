@@ -15,6 +15,7 @@
 import { decodeHoldings } from "./artifacts.mjs";
 import { SECTORS } from "./sic.mjs";
 import { SUBSECTORS, inSector, otherSubsector } from "./subsectors.mjs";
+import { cleanTicker, putCallFromClass } from "./filed-line.mjs";
 
 /** "Concentrated" means this many long stock positions or fewer. */
 export const MOVERS_MAX_POSITIONS = 40;
@@ -56,7 +57,7 @@ export const MOVERS_MAX_SINGLE_WEIGHT = 50;
  * rows for any fund whose data has not changed, so without this a change to
  * the rules would only reach funds that happened to file again.
  */
-export const MOVERS_VERSION = 6; // 2: every move carries its sector. 3: preferreds and abbreviated names placed. 4: company names. 5: every move carries its subsector. 6: funds selling out left out
+export const MOVERS_VERSION = 7; // 2: every move carries its sector. 3: preferreds and abbreviated names placed. 4: company names. 5: every move carries its subsector. 6: funds selling out left out. 7: options filed as a class left out, ZZZZ off tickers
 
 /**
  * A fund that sold most of almost everything at once is closing, or most of its
@@ -133,12 +134,21 @@ export function fundMoves(env, {
   if (meta.priorState !== "PRIOR_OK" || meta.deltasSuppressed) return { skip: "no-comparison", positions };
   if (meta.structuralEvent === "PRO_RATA_REDUCTION") return { skip: "withdrawal", positions };
   if (isSellingOut(meta.structuralDetail)) return { skip: "selling-out", positions };
-  if ((meta.value_options_usd ?? 0) > (meta.value_long_usd ?? 0)) return { skip: "mostly-options", positions };
 
   const holdings = decodeHoldings(env.data);
+  // An option the filer typed as its class (PUT, CALL) rather than ticking the
+  // box reads as stock: Alpine's $585M SanDisk put was a $585M "purchase". The
+  // ingest reads these as options now (shared/filed-line.mjs); a fund file
+  // written before that still has them as stock, so they are set aside here too.
+  const isOption = (h) => Boolean(h.type) || putCallFromClass(h.cls) != null;
+  const misfiled = holdings.reduce((a, h) => (!h.type && isOption(h) ? a + (h.value ?? 0) : a), 0);
+  if ((meta.value_options_usd ?? 0) + misfiled > (meta.value_long_usd ?? 0) - misfiled) {
+    return { skip: "mostly-options", positions };
+  }
+
   let top = 0;
   for (const h of holdings) {
-    if (h.type || h.unit !== "SH") continue;
+    if (isOption(h) || h.unit !== "SH") continue;
     top = Math.max(top, h.weight ?? 0);
     if (h.action !== "NEW" && h.dWeightPp != null) top = Math.max(top, (h.weight ?? 0) - h.dWeightPp);
   }
@@ -147,7 +157,7 @@ export function fundMoves(env, {
 
   /** -> [sector, subsector], as positions in SECTORS and SUBSECTORS. */
   const placeIndex = (h) => {
-    const row = { ticker: h.ticker, name: h.name, cls: h.cls };
+    const row = { ticker: cleanTicker(h.ticker), name: h.name, cls: h.cls };
     const p = placeOf ? placeOf(row) : sectorOf ? { sector: sectorOf(row), subsector: null } : null;
     const i = p ? SECTORS.indexOf(p.sector) : -1;
     const sector = i >= 0 ? SECTORS[i] : "Unclassified";
@@ -158,9 +168,9 @@ export function fundMoves(env, {
   const moves = [];
   // Ticker -> the company name as this fund filed it, for the tab's stock lists.
   const names = {};
-  const named = (h) => { if (h.ticker && h.name && !(h.ticker in names)) names[h.ticker] = h.name; };
+  const named = (h) => { const t = cleanTicker(h.ticker); if (t && h.name && !(t in names)) names[t] = h.name; };
   for (const h of holdings) {
-    if (h.type || h.unit !== "SH") continue; // long stock only
+    if (isOption(h) || h.unit !== "SH") continue; // long stock only
     const code = MOVE_CODE[h.action];
     if (!code) continue; // HELD, or no action
     // A stock split changes the share count with no decision behind it.
@@ -227,5 +237,5 @@ export function pickNames(tickers, votes, previous = {}) {
 
 /** The ticker where there is one; otherwise a short form of the filed name. */
 function label(h) {
-  return h.ticker || (h.name ?? "?").slice(0, 24);
+  return cleanTicker(h.ticker) || (h.name ?? "?").slice(0, 24);
 }
