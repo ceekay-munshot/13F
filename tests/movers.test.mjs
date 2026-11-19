@@ -126,6 +126,42 @@ describe("fundMoves", () => {
   });
 });
 
+// Each case is a real fund's own filing, June or September 2026: its book now
+// against last quarter (valueRatio), the share of the typical stock it kept
+// (medianRatio), and how many stocks it kept at all (retained).
+describe("a fund selling out is not a view on a sector", () => {
+  const filed = (detail) => fundMoves(fund({ meta: { structuralEvent: "REVIEW", structuralDetail: detail } }));
+
+  it("leaves out a fund that sold most of almost everything", () => {
+    // SoMa Equity, closing (press, Sept 2026): $1.44B -> $66M, kept ~8% of each stock.
+    expect(filed({ valueRatio: 0.046, medianRatio: 0.084, retained: 9 }).skip).toBe("selling-out");
+    // Motley Fool Wealth Management: kept 2%, filed no holdings the quarter after.
+    expect(filed({ valueRatio: 0.01, medianRatio: 0.02, retained: 19 }).skip).toBe("selling-out");
+    // Nine Ten Capital: the loosest case caught, 18% kept.
+    expect(filed({ valueRatio: 0.15, medianRatio: 0.18, retained: 7 }).skip).toBe("selling-out");
+  });
+
+  it("keeps the nearest funds that were really trading", () => {
+    // Fourthstone: shrank 76% but kept 46% of the typical stock, and rebuilt to $420M next quarter.
+    expect(filed({ valueRatio: 0.24, medianRatio: 0.46, retained: 19 }).skip).toBeUndefined();
+    // DARA: sold a few big holdings outright and left every other one untouched.
+    expect(filed({ valueRatio: 0.12, medianRatio: 1, retained: 24 }).skip).toBeUndefined();
+    // Gallo: the nearest left in, 30% kept.
+    expect(filed({ valueRatio: 0.22, medianRatio: 0.30, retained: 9 }).skip).toBeUndefined();
+    // Napean: cut old holdings by 80% to buy new ones; the book grew.
+    expect(filed({ valueRatio: 1.25, medianRatio: 0.2, retained: 16 }).skip).toBeUndefined();
+  });
+
+  it("does not judge on too little evidence", () => {
+    // Fewer than five stocks kept: no "typical stock" to speak of.
+    expect(filed({ valueRatio: 0.05, medianRatio: 0.05, retained: 4 }).skip).toBeUndefined();
+    // A filing where either measure is missing.
+    expect(filed({ valueRatio: 0.05, retained: 9 }).skip).toBeUndefined();
+    expect(filed({ medianRatio: 0.05, retained: 9 }).skip).toBeUndefined();
+    expect(filed(null).skip).toBeUndefined();
+  });
+});
+
 describe("company names for the stock lists", () => {
   it("keeps the filed name of every stock traded, sold out included", () => {
     const r = fundMoves(fund({

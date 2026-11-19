@@ -56,7 +56,32 @@ export const MOVERS_MAX_SINGLE_WEIGHT = 50;
  * rows for any fund whose data has not changed, so without this a change to
  * the rules would only reach funds that happened to file again.
  */
-export const MOVERS_VERSION = 5; // 2: every move carries its sector. 3: preferreds and abbreviated names placed. 4: company names. 5: every move carries its subsector
+export const MOVERS_VERSION = 6; // 2: every move carries its sector. 3: preferreds and abbreviated names placed. 4: company names. 5: every move carries its subsector. 6: funds selling out left out
+
+/**
+ * A fund that sold most of almost everything at once is closing, or most of its
+ * money is leaving. Either way its selling is not a view on any sector. The test
+ * is two things together, both on the fund's own filings:
+ *   - its book fell by more than three-quarters, AND
+ *   - the typical stock it kept was cut by more than three-quarters (by shares,
+ *     so a market fall cannot trigger it, and nor can a filing in the wrong units).
+ *
+ * Measured on every fund the Sectors tab showed for June and September 2026
+ * (2,657 fund-quarters with both measures): 9 caught, among them SoMa Equity
+ * (closing, Sept 2026, confirmed in the press) and Motley Fool Wealth Management
+ * (no holdings filed the quarter after). The nearest funds left in kept 30% or
+ * more of their typical stock (Fourthstone kept 46% and rebuilt to $420M the
+ * next quarter), kept every stock untouched while selling a few (DARA), or cut
+ * old holdings to buy new ones without shrinking (Napean, JAT): real decisions.
+ */
+export const MOVERS_SELL_OUT = 0.25;
+
+/** Does the fund's own filing show it selling out (see MOVERS_SELL_OUT)? */
+export function isSellingOut(detail) {
+  const d = detail ?? {};
+  return d.valueRatio != null && d.valueRatio < MOVERS_SELL_OUT
+    && (d.retained ?? 0) >= 5 && d.medianRatio != null && d.medianRatio < MOVERS_SELL_OUT;
+}
 
 export const moversPath = (period) => `movers/${period}.json`;
 /** Which funds the last build looked at, and under which build key. */
@@ -81,7 +106,8 @@ const round = (n, dp) => (n == null || !Number.isFinite(n) ? null : Number(n.toF
  *     family office or a venture fund (Valor);
  *   - an operating company reporting its stakes (COMPANY_FILERS);
  *   - no comparable prior quarter, or changes withheld (a structural event);
- *   - a uniform cut across every holding, which is money leaving the fund.
+ *   - a uniform cut across every holding, which is money leaving the fund;
+ *   - most of almost everything sold at once: a fund closing (MOVERS_SELL_OUT).
  *
  * Each move is [ticker, code, sharesChangePct, tradedUsd, weightBefore, weightAfter, sector, subsector],
  * where sector is a position in SECTORS (shared/sic.mjs) — a fixed list, so a
@@ -106,6 +132,7 @@ export function fundMoves(env, {
   if (positions < minPositions) return { skip: "too-few-stocks", positions };
   if (meta.priorState !== "PRIOR_OK" || meta.deltasSuppressed) return { skip: "no-comparison", positions };
   if (meta.structuralEvent === "PRO_RATA_REDUCTION") return { skip: "withdrawal", positions };
+  if (isSellingOut(meta.structuralDetail)) return { skip: "selling-out", positions };
   if ((meta.value_options_usd ?? 0) > (meta.value_long_usd ?? 0)) return { skip: "mostly-options", positions };
 
   const holdings = decodeHoldings(env.data);

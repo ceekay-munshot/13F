@@ -78,6 +78,31 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **19 Nov 2026 — a fund selling out is no longer counted as selling a
+  sector.** The owner spotted SoMa Equity Partners as the biggest seller of AI
+  & semis among small funds: $1.44B in June, $66M in September. It is closing
+  and returning investors' money (press, 22 Sept). Its own SEC filing matches
+  the dashboard exactly, so the numbers were right. Counting them as a view on
+  chips was wrong.
+
+  The Sectors tab already left out a fund that cut every holding by an
+  identical percentage. SoMa's cuts varied a little (it kept 6–13% of each
+  stock), so it slipped through. The tab now also leaves out a fund whose book
+  fell by more than three-quarters and that cut its typical remaining stock by
+  more than three-quarters. Both are measured on the fund's own filing, by
+  shares, so a market fall cannot trigger it.
+
+  Tested on all 2,657 fund-quarters the tab showed for June and September:
+  9 caught, about 1.7% of September's selling. Among them, SoMa is closing and
+  Motley Fool Wealth Management filed no holdings the next quarter. The nearest
+  funds left in were really trading:
+  - Fourthstone kept 46% and rebuilt to $420M;
+  - DARA sold a few holdings outright and left the rest untouched;
+  - Napean cut old names to buy new ones.
+
+  What a filing cannot say is *why*: a fund closing and a fund whose investors
+  took most of their money out look the same, and both are left out.
+
 - **19 Nov 2026 — every sector on the Sectors tab opens into subsectors.**
   Click a sector and 3 to 9 smaller groups open underneath it, with the same
   Sold / Bought / Net / Sellers / Buyers columns. Health Care splits into drug
