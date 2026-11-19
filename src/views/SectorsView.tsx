@@ -22,6 +22,8 @@ const PANES = ["Managers", "Stocks"] as const;
 type Pane = (typeof PANES)[number];
 type Side = "Sellers" | "Buyers";
 type SectorSort = "sold" | "bought" | "net" | "sellers" | "buyers";
+/** The managers list: by money traded, by share of the fund, or by fund size. */
+type ManagerSort = "amount" | "weight" | "size";
 
 interface Manager {
   cik: string;
@@ -202,7 +204,7 @@ export function SectorsView({
   const [open, setOpen] = useState<string | null>(null);
   const [pane, setPane] = useState<Pane>("Managers");
   const [side, setSide] = useState<Side>("Sellers");
-  const [byWeight, setByWeight] = useState(false);
+  const [mgrSort, setMgrSort] = useState<ManagerSort>("amount");
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(PAGE);
   const [stockShown, setStockShown] = useState(STOCK_PAGE);
@@ -246,7 +248,7 @@ export function SectorsView({
   const pickSub = (s: SectorRow) => setPicked({ sector: s.parent ?? s.sector, sub: s.sector });
 
   // Back to the top of the list whenever the list itself changes.
-  useEffect(() => { setShown(PAGE); }, [current?.sector, side, query, cap, byWeight]);
+  useEffect(() => { setShown(PAGE); }, [current?.sector, side, query, cap, mgrSort]);
   useEffect(() => { setStockShown(STOCK_PAGE); }, [current?.sector, query, cap]);
 
   // What the filter box matches, for both lists. A ticker the sector actually
@@ -281,12 +283,15 @@ export function SectorsView({
       }
       if (sellers ? row.net < 0 : row.net > 0) rows.push(row);
     }
+    // Fund size is the value of the shares the manager reports to the SEC, the
+    // figure under each name; largest first, and by money traded among equals.
+    const byAmount = (a: Manager, b: Manager) => (sellers ? a.net - b.net : b.net - a.net);
     return rows.sort((a, b) =>
-      byWeight
-        ? (sellers ? a.weight - b.weight : b.weight - a.weight)
-        : (sellers ? a.net - b.net : b.net - a.net),
+      mgrSort === "size" ? b.value - a.value || byAmount(a, b)
+        : mgrSort === "weight" ? (sellers ? a.weight - b.weight : b.weight - a.weight)
+        : byAmount(a, b),
     );
-  }, [current, side, query, byWeight, tickerHit]);
+  }, [current, side, query, mgrSort, tickerHit]);
 
   // Both lists at once, never one behind a toggle: a stock sold by some focused
   // managers and bought by others is the interesting case, and it only shows
@@ -478,14 +483,23 @@ export function SectorsView({
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Manager</th>
-                  <th aria-sort={!byWeight ? "descending" : undefined}>
-                    <button className="th-sort" data-active={!byWeight} onClick={() => setByWeight(false)}>
+                  <th aria-sort={mgrSort === "size" ? "descending" : undefined}>
+                    <button
+                      className="th-sort"
+                      data-active={mgrSort === "size"}
+                      onClick={() => setMgrSort("size")}
+                      title="Largest fund first"
+                    >
+                      Manager
+                    </button>
+                  </th>
+                  <th aria-sort={mgrSort === "amount" ? "descending" : undefined}>
+                    <button className="th-sort" data-active={mgrSort === "amount"} onClick={() => setMgrSort("amount")}>
                       {side === "Sellers" ? "Sold" : "Bought"}
                     </button>
                   </th>
-                  <th aria-sort={byWeight ? "descending" : undefined}>
-                    <button className="th-sort" data-active={byWeight} onClick={() => setByWeight(true)}>
+                  <th aria-sort={mgrSort === "weight" ? "descending" : undefined}>
+                    <button className="th-sort" data-active={mgrSort === "weight"} onClick={() => setMgrSort("weight")}>
                       % of fund
                     </button>
                   </th>
