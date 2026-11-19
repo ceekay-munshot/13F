@@ -241,11 +241,20 @@ export function SectorsView({
   // A sector opens on its subsectors when picked, and closes when picked again.
   // Picking a sector while one of its subsectors is selected goes back up to
   // the sector and leaves it open.
+  //
+  // Moving to another row empties the filter box: a ticker typed for one sector
+  // (MSFT under Software) matches nothing in the next, and the right side would
+  // go blank with "No manager matches that". Clicking the row already selected
+  // (to close it) keeps the filter.
   const pickSector = (r: SectorRow) => {
+    if (r !== current) setQuery("");
     setPicked({ sector: r.sector, sub: null });
     setOpen(current === r && openRow === r ? null : r.subs.length ? r.sector : null);
   };
-  const pickSub = (s: SectorRow) => setPicked({ sector: s.parent ?? s.sector, sub: s.sector });
+  const pickSub = (s: SectorRow) => {
+    if (s !== current) setQuery("");
+    setPicked({ sector: s.parent ?? s.sector, sub: s.sector });
+  };
 
   // Back to the top of the list whenever the list itself changes.
   useEffect(() => { setShown(PAGE); }, [current?.sector, side, query, cap, mgrSort]);
