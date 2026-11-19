@@ -497,10 +497,39 @@
 }
 .move-chip b { color: #111827; font-weight: 600; }
 
-/* Stocks view: "Most sold" | "Most bought", side by side (.split-2). The stock
+/* Stocks view: "Net sold" | "Net bought", side by side (.split-2). The stock
  * cell takes the room left by the two number columns. The company name gets a
  * line of its own under the ticker, as the theme row's note does: sharing the
  * ticker's line on a laptop-width card left it three letters ("NVI…"). */
+
+/* "54 ▬▬▬▬▬▬ 23": how many focused managers sold a stock against how many
+ * bought it. Amber is the sellers' count and share, green the buyers', in the
+ * same order in both lists, so a one-sided stock reads at a glance and a split
+ * one looks split. The larger count is bold, the smaller one faded. Each count
+ * gets three digits' room, so the bars line up down the column. Drawn with
+ * scaleX, as the net bars are, so a change of stock cap never re-lays-out the
+ * table. */
+.stock-half { min-width: 0; container-type: inline-size; }
+.lean { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+.lean-n { min-width: 3ch; font-weight: 500; text-align: left; opacity: 0.55; }
+.lean-sold { color: #b45309; text-align: right; }
+.lean-bought { color: #047857; }
+.lean-n[data-lead="true"] { font-weight: 700; opacity: 1; }
+.lean-track {
+  position: relative; flex: none; width: 52px; height: 6px; border-radius: 3px;
+  overflow: hidden; background: #059669; opacity: 0.75;
+}
+.lean-fill {
+  position: absolute; inset: 0; background: #d97706;
+  transform-origin: left center; transition: transform 200ms var(--ease-out);
+}
+/* A half-width list on a laptop-size screen: a shorter bar, so the three
+ * columns fit without the list scrolling sideways. */
+@container (max-width: 330px) {
+  .lean { gap: 4px; }
+  .lean-n { min-width: 2ch; }
+  .lean-track { width: 30px; }
+}
 .stock-list-label {
   font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
   padding: 10px 10px 4px;
@@ -545,7 +574,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .cap-input { transition: none; }
-  .net-bar, .sector-row td, .sector-caret, .sector-pick { transition: none; }
+  .net-bar, .lean-fill, .sector-row td, .sector-caret, .sector-pick { transition: none; }
   .sector-row:active .sector-pick { transform: none; }
   .sub-row .sector-label { animation: none; }
 }

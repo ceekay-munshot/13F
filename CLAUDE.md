@@ -78,6 +78,27 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **19 Nov 2026 — the Stocks view now says which way each stock went, and
+  whether managers agreed.** The owner could not read anything off it. It
+  listed each stock twice, once under "Most sold" and once under "Most
+  bought", with the money on each side but never the net, so Visa showed
+  $966.6M sold and $218.9M bought in two places.
+
+  Now each stock appears once. It sits under **Net sold** or **Net bought**,
+  shows its net, and has a small bar of how many focused managers sold it
+  (amber) against how many bought it (green). Clicking **Managers** puts the
+  most one-sided stocks first. Hovering the net shows the money on each side.
+
+  What it shows that could not be seen before (Q3, up to 30 stocks):
+  - **Payments:** Visa is a real consensus sale, 54 sellers against 23 buyers.
+    Mastercard looks like a big sale (−$563M), but managers split 34 to 27,
+    and one fund, Valley Forge, did $494M of it. PayPal's +$273M is mostly
+    one fund (Sessa, $165M), with buyers and sellers split 5 to 4.
+  - **AI & semis:** NVIDIA is the most net sold (−$1.48B), but managers split
+    90 to 83, and H&H International alone sold $905M. Intel is a real
+    consensus buy (37 to 18, +$2.31B). AMD is the clearest sale among the big
+    names (38 to 25).
+
 - **19 Nov 2026 — a fund selling out is no longer counted as selling a
   sector.** The owner spotted SoMa Equity Partners as the biggest seller of AI
   & semis among small funds: $1.44B in June, $66M in September. It is closing
