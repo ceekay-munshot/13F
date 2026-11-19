@@ -5,6 +5,8 @@
 // filings — this file is where a regression would silently ship wrong numbers
 // to a client, so it must be the most-tested code in the repo.
 
+import { pairRecoded } from "./filed-line.mjs";
+
 // ---------------------------------------------------------------------------
 // The amendment fold
 // ---------------------------------------------------------------------------
@@ -722,9 +724,17 @@ export function computeChanges(current, prior, priorState, opts = {}) {
   const currentByKey = new Map(current.holdings.map((h) => [key(h), h]));
   const changes = [];
 
+  // The same stock under a different code is one holding, not a sale and a
+  // purchase. See pairRecoded in shared/filed-line.mjs.
+  const recoded = pairRecoded(
+    current.holdings.filter((h) => !priorByKey.has(key(h))),
+    prior.holdings.filter((p) => !currentByKey.has(key(p))),
+  );
+  const recodedPrior = new Set(recoded.values());
+
   for (const h of current.holdings) {
-    const p = priorByKey.get(key(h));
-    const flags = [];
+    const p = priorByKey.get(key(h)) ?? recoded.get(h);
+    const flags = recoded.has(h) ? ["RECODED"] : [];
 
     let action;
     let dShares = null;
@@ -793,6 +803,9 @@ export function computeChanges(current, prior, priorState, opts = {}) {
       prior_period: prior.period_end,
       prior_accession: prior.accession ?? null,
       flags: flags.length ? flags : null,
+      // A re-coded line keeps last quarter's ticker when its new code has none,
+      // so Teva stays TEVA rather than becoming a name with no ticker.
+      ...(recoded.has(h) ? { ticker_prior: p.ticker ?? null } : {}),
     });
   }
 
@@ -817,7 +830,7 @@ export function computeChanges(current, prior, priorState, opts = {}) {
   // ---------------------------------------------------------------------------
   let exitsWithheld = 0;
   for (const p of prior.holdings) {
-    if (currentByKey.has(key(p))) continue;
+    if (currentByKey.has(key(p)) || recodedPrior.has(p)) continue;
     // THE SAME INFERENCE, AND IT FAILS FOR THE SAME REASON.
     //
     // An exit is read off ABSENCE, which only means a sale if this form covers

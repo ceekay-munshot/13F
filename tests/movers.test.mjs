@@ -92,6 +92,23 @@ describe("fundMoves", () => {
     expect(r.moves).toEqual([]);
   });
 
+  it("leaves out an option the filer typed as its class, and counts it as options", () => {
+    // Alpine's SanDisk put: $585M "bought" at $173,989 a share, as filed.
+    const put = row({ ticker: null, name: "SANDISK CORP", cls: "PUT", action: "NEW", value: 3_000, weight: 30,
+                      dShares: null, dSharesPct: null, dWeightPp: null });
+    expect(fundMoves(fund({ rows: [put] })).moves).toEqual([]);
+    expect(fundMoves(fund({ rows: [{ ...put, value: 6_000 }] })).skip).toBe("mostly-options");
+  });
+
+  it("shows a ticker without the SEC's ZZZZ", () => {
+    const r = fundMoves(fund({
+      rows: [row({ ticker: "GTESZZZZ", name: "GATES INDL CORP PLC", action: "NEW", value: 500, weight: 5,
+                   dShares: null, dSharesPct: null, dWeightPp: null })],
+    }));
+    expect(r.moves.map((m) => m[0])).toEqual(["GTES"]);
+    expect(r.names).toEqual({ GTES: "GATES INDL CORP PLC" });
+  });
+
   it("counts a sale reported twice only once, at the smaller weight", () => {
     const exit = { ticker: "STX", issuerId: "i5", type: "", unit: "SH", valuePrior: 900 };
     const r = fundMoves(fund({ exits: [{ ...exit, weightPrior: 9 }, { ...exit, weightPrior: 4 }] }));

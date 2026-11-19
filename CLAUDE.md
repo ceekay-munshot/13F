@@ -78,6 +78,40 @@ they send to the SEC (the US financial regulator) every three months.
 
 ### Done
 
+- **19 Nov 2026 — the extra rows with no ticker on the Sectors tab were three
+  different mistakes, all fixed.** The owner saw "FISERV INC" sitting apart
+  from FISV and a $220M "ADVANCED MICRO DEVICES I" apart from AMD.
+  1. **Options filed as if they were shares.** Some funds type PUT or CALL
+     where the type of share goes, instead of ticking the form's put/call box.
+     We read those as shares. Alpine's $585M SanDisk *put* (a bet the price
+     falls) was the biggest "purchase" of SanDisk; the AMD row was a put too.
+     They are now options everywhere. Measured on the Sectors tab's funds,
+     June and September: 59 such lines, $1.59B. In September, 20 trades
+     ($0.25B) leave the tab, and so do Alpine and TAM Capital, whose books
+     turn out to be mostly options.
+  2. **One stock filed under a new code** read as "sold everything" plus "new
+     purchase". Lingotto's Teva showed as $685M sold and $694M bought; it had
+     cut its shares by 13%. It is ordinary: ExxonMobil, Carnival and Gates
+     moved to new holding companies, Teva's shares replaced its ADRs, Ascendis
+     moved from ADRs to shares. Such a pair is now one holding when it has the
+     same ticker, or the same name with the same kind of share. It must also
+     be the only candidate on each side, at a price between half and double
+     the old one. Over June and September: 139 holdings, $4.77B of sales and
+     $4.77B of purchases that did not happen. Each was checked by eye. Left
+     apart, rightly: iShares funds sharing one name, a preferred share
+     against the common, and a 1-for-10 share consolidation.
+  3. **"ZZZZ" tickers** (XOMZZZZ, GTESZZZZ). This is how the SEC's list marks
+     a company's second code. The ZZZZ now comes off, so they read XOM and
+     GTES. 48 September trades.
+
+  **When it shows:** the Sectors tab gets 1 and 3 on its next run after merge.
+  Fund pages, Consensus and point 2 need every fund's quarters compared again,
+  which the monthly rebuild on 3 December does by itself.
+
+  Not fixed, and correct as they are: holdings that really have no ticker.
+  These are private companies (Korsana, ADARx), mutual funds (the University
+  of California's $2.5B State Street fund) and DFA's funds.
+
 - **19 Nov 2026 — the Stocks view now says which way each stock went, and
   whether managers agreed.** The owner could not read anything off it. It
   listed each stock twice, once under "Most sold" and once under "Most

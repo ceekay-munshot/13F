@@ -11,6 +11,7 @@
 
 import { XMLParser } from "fast-xml-parser";
 import { weighHoldings } from "../shared/fold.mjs";
+import { putCallOf } from "../shared/filed-line.mjs";
 
 // removeNSPrefix is the whole reason this dependency exists. Namespace prefixes
 // are NOT stable across filers: Bridgewater emits <ns1:infoTable> while Citadel
@@ -388,7 +389,7 @@ export const UNIT_CUTOVER_ISO = "2023-01-03"; // EDGAR release 22.4.1
 function pricedRows(rows) {
   return rows.filter(
     (r) =>
-      r.put_call == null &&
+      putCallOf(r.put_call, r.title_of_class) == null &&
       r.ssh_prnamt_type === "SH" &&
       r.ssh_prnamt > 0 &&
       r.value_raw > 0,
@@ -523,7 +524,10 @@ export function aggregateHoldings(rows, units) {
   const byKey = new Map();
 
   for (const r of rows) {
-    const putCall = r.put_call ?? "";
+    // An option is an option whether the filer ticked the put/call box or typed
+    // PUT or CALL as its class. Read here, where every path's rows pass, so a
+    // filing archived before this rule is read the same way on a rebuild.
+    const putCall = putCallOf(r.put_call, r.title_of_class) ?? "";
     const type = r.ssh_prnamt_type ?? "SH";
     const key = `${r.cusip}|${putCall}|${type}`;
 
