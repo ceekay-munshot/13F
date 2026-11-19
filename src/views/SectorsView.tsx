@@ -25,7 +25,7 @@ type SectorSort = "sold" | "bought" | "net" | "sellers" | "buyers";
 /** The managers list: by money traded, by share of the fund, or by fund size. */
 type ManagerSort = "amount" | "weight" | "size";
 
-interface Manager {
+export interface Manager {
   cik: string;
   name: string;
   value: number;
@@ -130,36 +130,61 @@ function bySector(movers: Movers, sectorMap: Record<string, string>, cap: number
   });
 }
 
-interface StockRow {
+export interface StockRow {
   ticker: string;
   sold: number;
   bought: number;
+  /** bought − sold: which way the money went. */
+  net: number;
+  /** Managers whose trades in the stock add up to a sale, and to a purchase. */
   sellers: number;
   buyers: number;
 }
 
 /**
  * The same trades added up by stock: how much the sector's focused managers
- * sold and bought of each, and how many of them did. Every focused manager in
- * the sector, not a watchlist, which is the one thing Consensus cannot show.
+ * sold and bought of each, and how many of them were on each side. Every
+ * focused manager in the sector, not a watchlist, which is the one thing
+ * Consensus cannot show.
+ *
+ * A manager is a seller or a buyer of a stock by what their trades in it add
+ * up to, so one with two share classes of it is counted once, on one side.
  */
-function byStock(managers: Manager[]): StockRow[] {
-  const stocks = new Map<string, StockRow & { lastSeller?: string; lastBuyer?: string }>();
+export function byStock(managers: Manager[]): StockRow[] {
+  const stocks = new Map<string, { row: StockRow; byFund: Map<string, number> }>();
   for (const mgr of managers) {
     for (const m of mgr.moves) {
       let s = stocks.get(m[0]);
-      if (!s) stocks.set(m[0], (s = { ticker: m[0], sold: 0, bought: 0, sellers: 0, buyers: 0 }));
-      // A manager counts once per stock, even with two share classes of it.
-      if (m[3] > 0) {
-        s.bought += m[3];
-        if (s.lastBuyer !== mgr.cik) { s.buyers++; s.lastBuyer = mgr.cik; }
-      } else if (m[3] < 0) {
-        s.sold -= m[3];
-        if (s.lastSeller !== mgr.cik) { s.sellers++; s.lastSeller = mgr.cik; }
+      if (!s) {
+        s = { row: { ticker: m[0], sold: 0, bought: 0, net: 0, sellers: 0, buyers: 0 }, byFund: new Map() };
+        stocks.set(m[0], s);
       }
+      if (m[3] > 0) s.row.bought += m[3];
+      else s.row.sold -= m[3];
+      s.row.net += m[3];
+      s.byFund.set(mgr.cik, (s.byFund.get(mgr.cik) ?? 0) + m[3]);
     }
   }
-  return [...stocks.values()];
+  return [...stocks.values()].map(({ row, byFund }) => {
+    for (const v of byFund.values()) {
+      if (v < 0) row.sellers++;
+      else if (v > 0) row.buyers++;
+    }
+    return row;
+  });
+}
+
+/**
+ * Either list of the Stocks view, by money (the default) or by how one-sided
+ * the managers were: most more sellers than buyers first in the sold list, the
+ * reverse in the bought one. Money breaks a tie.
+ */
+export type StockSort = "net" | "agree";
+export function sortStocks(rows: StockRow[], side: Side, by: StockSort): StockRow[] {
+  const sign = side === "Sellers" ? 1 : -1;
+  const lean = (s: StockRow) => sign * (s.sellers - s.buyers);
+  return rows.sort((a, b) =>
+    (by === "agree" ? lean(b) - lean(a) : 0) || sign * (a.net - b.net));
 }
 
 /** One trade as a share of the fund — see Manager.weight. */
@@ -205,6 +230,7 @@ export function SectorsView({
   const [pane, setPane] = useState<Pane>("Managers");
   const [side, setSide] = useState<Side>("Sellers");
   const [mgrSort, setMgrSort] = useState<ManagerSort>("amount");
+  const [stockSort, setStockSort] = useState<StockSort>("net");
   const [query, setQuery] = useState("");
   const [shown, setShown] = useState(PAGE);
   const [stockShown, setStockShown] = useState(STOCK_PAGE);
@@ -258,7 +284,7 @@ export function SectorsView({
 
   // Back to the top of the list whenever the list itself changes.
   useEffect(() => { setShown(PAGE); }, [current?.sector, side, query, cap, mgrSort]);
-  useEffect(() => { setStockShown(STOCK_PAGE); }, [current?.sector, query, cap]);
+  useEffect(() => { setStockShown(STOCK_PAGE); }, [current?.sector, query, cap, stockSort]);
 
   // What the filter box matches, for both lists. A ticker the sector actually
   // has is matched exactly — clicking MU must not bring in MUFG — and anything
@@ -302,20 +328,24 @@ export function SectorsView({
     );
   }, [current, side, query, mgrSort, tickerHit]);
 
-  // Both lists at once, never one behind a toggle: a stock sold by some focused
-  // managers and bought by others is the interesting case, and it only shows
-  // when the two lists sit side by side.
+  // Each stock once, in the list its net puts it in, with how many managers
+  // were on each side. Both lists at once, never one behind a toggle. A stock
+  // sold by some focused managers and bought by others shows as a split bar
+  // on its own row, not as the same name in two lists.
   const names = movers?.names ?? NO_NAMES;
   const stocks = useMemo(() => {
-    if (!current) return { sold: [], bought: [] };
+    if (!current) return { sold: [], bought: [], peak: 1 };
     const q = query.trim().toUpperCase();
     const all = byStock(current.managers).filter((s) =>
       !q || tickerHit(s.ticker) || (q.length >= 3 && (names[s.ticker] ?? "").toUpperCase().includes(q)));
     return {
-      sold: all.filter((s) => s.sold > 0).sort((a, b) => b.sold - a.sold),
-      bought: all.filter((s) => s.bought > 0).sort((a, b) => b.bought - a.bought),
+      sold: sortStocks(all.filter((s) => s.net < 0), "Sellers", stockSort),
+      bought: sortStocks(all.filter((s) => s.net > 0), "Buyers", stockSort),
+      // One scale for both lists, so a bar on the left and one on the right
+      // can be compared.
+      peak: Math.max(1, ...all.map((s) => Math.abs(s.net))),
     };
-  }, [current, query, tickerHit, names]);
+  }, [current, query, tickerHit, names, stockSort]);
 
   // A stock in either list opens the managers who sold (or bought) it.
   const pickStock = (ticker: string, s: Side) => {
@@ -430,7 +460,7 @@ export function SectorsView({
           current
             ? (current.parent ? `${current.parent} · ` : "")
               + (pane === "Stocks"
-                ? `${stocks.sold.length} stocks sold · ${stocks.bought.length} bought`
+                ? `${stocks.sold.length} net sold · ${stocks.bought.length} net bought`
                 : `${managers.length} ${side === "Sellers" ? "sellers" : "buyers"}`)
               + (query.trim() ? ` · “${query.trim()}”` : "")
             : undefined
@@ -464,13 +494,13 @@ export function SectorsView({
             <div className="sectors-scroll">
               <div className="split-2">
                 <StockList
-                  label="Most sold" side="Sellers" color={ACTION_COLORS.TRIMMED}
-                  rows={stocks.sold} shown={stockShown} names={names} onPick={pickStock}
+                  label="Net sold" side="Sellers" rows={stocks.sold} peak={stocks.peak}
+                  shown={stockShown} names={names} sort={stockSort} onSort={setStockSort} onPick={pickStock}
                 />
                 <div className="split-rule" style={{ background: t.border }} />
                 <StockList
-                  label="Most bought" side="Buyers" color={ACTION_COLORS.ADDED}
-                  rows={stocks.bought} shown={stockShown} names={names} onPick={pickStock}
+                  label="Net bought" side="Buyers" rows={stocks.bought} peak={stocks.peak}
+                  shown={stockShown} names={names} sort={stockSort} onSort={setStockSort} onPick={pickStock}
                 />
               </div>
               {Math.max(stocks.sold.length, stocks.bought.length) > stockShown && (
@@ -616,45 +646,56 @@ const CHIP: Record<MoverMove[1], { color: string; text: (m: MoverMove) => string
 };
 
 /**
- * One half of the Stocks view: the sector's stocks by money sold (or bought),
- * with how many focused managers did it. A row opens those managers.
+ * One half of the Stocks view: the stocks focused managers net sold (or net
+ * bought), each with its net and how many managers sold it against how many
+ * bought it. A row opens the managers on its side.
  */
 function StockList({
-  label, side, color, rows, shown, names, onPick,
+  label, side, rows, peak, shown, names, sort, onSort, onPick,
 }: {
   label: string;
   side: Side;
-  color: string;
   rows: StockRow[];
+  /** The largest net in either list: the full length of a bar. */
+  peak: number;
   shown: number;
   names: Record<string, string>;
+  sort: StockSort;
+  onSort: (s: StockSort) => void;
   onPick: (ticker: string, side: Side) => void;
 }) {
   const sold = side === "Sellers";
-  const amount = (s: StockRow) => (sold ? s.sold : s.bought);
-  const peak = Math.max(1, ...rows.slice(0, 1).map(amount));
+  const color = sold ? ACTION_COLORS.TRIMMED : ACTION_COLORS.ADDED;
+  const head = (key: StockSort, text: string, title?: string) => (
+    <th aria-sort={sort === key ? "descending" : undefined}>
+      <button className="th-sort" data-active={sort === key} onClick={() => onSort(key)} title={title}>
+        {text}
+      </button>
+    </th>
+  );
   return (
-    <div style={{ minWidth: 0 }}>
+    <div className="stock-half">
       <div className="stock-list-label" style={{ color }}>
         {label} <span style={{ color: t.textHint, fontWeight: 600 }}>{rows.length}</span>
       </div>
       {!rows.length ? (
         <div style={{ padding: "8px 14px 14px", fontSize: 12, color: t.textHint }}>
-          Nothing {sold ? "sold" : "bought"}
+          Nothing {sold ? "net sold" : "net bought"}
         </div>
       ) : (
         <table className="data-table">
           <thead>
             <tr>
               <th>Stock</th>
-              <th>{sold ? "Sold" : "Bought"}</th>
-              <th>{side}</th>
+              {head("net", "Net")}
+              {head("agree", "Managers", `How many sold it (amber) against how many bought it (green). Click: most ${sold ? "sellers over buyers" : "buyers over sellers"} first`)}
             </tr>
           </thead>
           <tbody>
             {rows.slice(0, shown).map((s) => {
               const name = names[s.ticker];
               const pick = () => onPick(s.ticker, side);
+              const traders = s.sellers + s.buyers;
               return (
                 // As with the sector rows: the row for a pointer, the button for
                 // a keyboard or a screen reader.
@@ -662,7 +703,7 @@ function StockList({
                   <td className="stock-cell">
                     <button
                       className="sector-pick stock-pick"
-                      onClick={pick}
+                      onClick={(e) => { e.stopPropagation(); pick(); }}
                       title={`${name ? `${s.ticker} · ${name}` : s.ticker} — see who ${sold ? "sold" : "bought"} it`}
                     >
                       <b>{s.ticker}</b>
@@ -670,11 +711,32 @@ function StockList({
                     </button>
                     <span
                       className="net-bar"
-                      style={{ transform: `scaleX(${Math.max(0.02, amount(s) / peak)})`, background: color }}
+                      style={{ transform: `scaleX(${Math.max(0.02, Math.abs(s.net) / peak)})`, background: color }}
                     />
                   </td>
-                  <td style={{ fontWeight: 700 }}>{usd(amount(s))}</td>
-                  <td style={{ color: t.textMuted }}>{sold ? s.sellers : s.buyers}</td>
+                  <td
+                    className="net-cell"
+                    style={{ color: sold ? "#dc2626" : "#059669" }}
+                    title={`Sold ${usd(s.sold)} · bought ${usd(s.bought)}`}
+                  >
+                    {sold ? "" : "+"}{usd(s.net)}
+                  </td>
+                  <td>
+                    <span
+                      className="lean"
+                      aria-label={`${s.sellers} sold, ${s.buyers} bought`}
+                      title={`${s.sellers} managers sold, ${s.buyers} bought`}
+                    >
+                      <span className="lean-n lean-sold" data-lead={s.sellers > s.buyers}>{s.sellers}</span>
+                      <span className="lean-track" aria-hidden="true">
+                        <span
+                          className="lean-fill"
+                          style={{ transform: `scaleX(${traders ? s.sellers / traders : 0})` }}
+                        />
+                      </span>
+                      <span className="lean-n lean-bought" data-lead={s.buyers > s.sellers}>{s.buyers}</span>
+                    </span>
+                  </td>
                 </tr>
               );
             })}
